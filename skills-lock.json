@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "rust-mcp-server-generator": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "computedHash": "420ae9213c67ac826ea54fbc3d7571189d74f22f3dfda3645fd3c6f7277c4944"
+    }
+  }
+}
