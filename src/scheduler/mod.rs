@@ -1,6 +1,7 @@
 use chrono::Utc;
 use regex::Regex;
 
+#[allow(dead_code)]
 pub fn substitute_variables(
     prompt: &str,
     task_id: &str,

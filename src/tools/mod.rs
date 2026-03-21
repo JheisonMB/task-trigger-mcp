@@ -2,6 +2,7 @@ use crate::state::{Cli, WatchEvent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskAddParams {
     pub id: String,
@@ -13,6 +14,7 @@ pub struct TaskAddParams {
     pub working_dir: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskWatchParams {
     pub id: String,
@@ -25,17 +27,21 @@ pub struct TaskWatchParams {
     pub recursive: Option<bool>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskIdParam {
     pub id: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskListParam {}
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskStatusParam {}
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskLogsParams {
     pub id: String,
@@ -43,11 +49,13 @@ pub struct TaskLogsParams {
     pub since: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TaskListResult {
     pub tasks: Vec<TaskInfo>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TaskInfo {
     pub id: String,
@@ -60,11 +68,13 @@ pub struct TaskInfo {
     pub expires_in: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WatchersListResult {
     pub watchers: Vec<WatcherInfo>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WatcherInfo {
     pub id: String,
@@ -76,6 +86,7 @@ pub struct WatcherInfo {
     pub trigger_count: u64,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct StatusResult {
     pub version: String,
@@ -86,12 +97,14 @@ pub struct StatusResult {
     pub scheduler_available: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LogsResult {
     pub logs: String,
     pub lines_count: usize,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TaskAddResult {
     pub id: String,

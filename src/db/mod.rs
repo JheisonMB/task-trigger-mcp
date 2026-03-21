@@ -3,7 +3,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 
-use crate::state::{Cli, Task, Watcher, WatchEvent, RunLog, TriggerType};
+use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
 
 pub struct Database {
     db_path: PathBuf,
@@ -76,7 +76,8 @@ impl Database {
             [],
         )?;
 
-        conn.close().map_err(|_| anyhow::anyhow!("Failed to close db"))?;
+        conn.close()
+            .map_err(|_| anyhow::anyhow!("Failed to close db"))?;
         Ok(())
     }
 
@@ -138,14 +139,27 @@ impl Database {
         })?;
 
         for row_result in rows {
-            let (id, prompt, schedule_expr, cli_str, model, working_dir, enabled, created_at_str, expires_at_str, last_run_at_str, last_run_ok, log_path) = row_result?;
+            let (
+                id,
+                prompt,
+                schedule_expr,
+                cli_str,
+                model,
+                working_dir,
+                enabled,
+                created_at_str,
+                expires_at_str,
+                last_run_at_str,
+                last_run_ok,
+                log_path,
+            ) = row_result?;
             let cli = match cli_str.as_str() {
                 "kiro" => Cli::Kiro,
                 _ => Cli::OpenCode,
             };
 
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)?
-                .with_timezone(&Utc);
+            let created_at =
+                chrono::DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc);
             let expires_at = expires_at_str
                 .as_ref()
                 .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
@@ -182,7 +196,10 @@ impl Database {
 
     pub fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self.get_connection()?;
-        conn.execute("UPDATE tasks SET enabled = ?1 WHERE id = ?2", params![enabled, id])?;
+        conn.execute(
+            "UPDATE tasks SET enabled = ?1 WHERE id = ?2",
+            params![enabled, id],
+        )?;
         Ok(())
     }
 
@@ -242,15 +259,28 @@ impl Database {
         })?;
 
         for row_result in rows {
-            let (id, path, events_json, prompt, cli_str, model, debounce_seconds, recursive, enabled, created_at_str, last_triggered_at_str, trigger_count) = row_result?;
+            let (
+                id,
+                path,
+                events_json,
+                prompt,
+                cli_str,
+                model,
+                debounce_seconds,
+                recursive,
+                enabled,
+                created_at_str,
+                last_triggered_at_str,
+                trigger_count,
+            ) = row_result?;
             let cli = match cli_str.as_str() {
                 "kiro" => Cli::Kiro,
                 _ => Cli::OpenCode,
             };
 
             let events: Vec<WatchEvent> = serde_json::from_str(&events_json)?;
-            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)?
-                .with_timezone(&Utc);
+            let created_at =
+                chrono::DateTime::parse_from_rfc3339(&created_at_str)?.with_timezone(&Utc);
             let last_triggered_at = last_triggered_at_str
                 .as_ref()
                 .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
@@ -275,6 +305,7 @@ impl Database {
         Ok(result)
     }
 
+    #[allow(dead_code)]
     pub fn delete_watcher(&self, id: &str) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute("DELETE FROM watchers WHERE id = ?1", params![id])?;
@@ -283,10 +314,14 @@ impl Database {
 
     pub fn update_watcher_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self.get_connection()?;
-        conn.execute("UPDATE watchers SET enabled = ?1 WHERE id = ?2", params![enabled, id])?;
+        conn.execute(
+            "UPDATE watchers SET enabled = ?1 WHERE id = ?2",
+            params![enabled, id],
+        )?;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn update_watcher_triggered(&self, id: &str) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
@@ -296,6 +331,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn insert_run(&self, run: &RunLog) -> Result<()> {
         let conn = self.get_connection()?;
         let trigger_str = match run.trigger_type {
@@ -319,6 +355,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
@@ -328,6 +365,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn get_state(&self, key: &str) -> Result<Option<String>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare("SELECT value FROM daemon_state WHERE key = ?1")?;

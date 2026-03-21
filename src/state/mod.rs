@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 /// Tarea programada en el scheduler
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +75,7 @@ impl std::fmt::Display for Cli {
 }
 
 /// Registro de ejecución de una tarea
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
     pub task_id: String,
@@ -84,6 +85,7 @@ pub struct RunLog {
     pub trigger_type: TriggerType,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerType {
@@ -103,6 +105,7 @@ impl std::fmt::Display for TriggerType {
 }
 
 /// Estado general del daemon
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonStatus {
     pub version: String,

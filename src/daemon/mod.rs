@@ -1,7 +1,6 @@
 use crate::db::Database;
 use crate::scheduler::natural_to_cron;
 use crate::state::{Cli, Task, Watcher};
-use crate::tools::*;
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::sync::Arc;
