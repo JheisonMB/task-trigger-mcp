@@ -31,6 +31,12 @@ pub struct TaskIdParam {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskListParam {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TaskStatusParam {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct TaskLogsParams {
     pub id: String,
     pub lines: Option<usize>,

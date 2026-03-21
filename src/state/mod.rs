@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use schemars::JsonSchema;
 
 /// Tarea programada en el scheduler
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub prompt: String,
@@ -20,7 +20,7 @@ pub struct Task {
 }
 
 /// Watcher de archivos/directorios
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watcher {
     pub id: String,
     pub path: String,

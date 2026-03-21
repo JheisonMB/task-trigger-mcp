@@ -3,7 +3,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 
-use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
+use crate::state::{Cli, Task, Watcher, WatchEvent, RunLog, TriggerType};
 
 pub struct Database {
     db_path: PathBuf,
@@ -19,7 +19,6 @@ impl Database {
     fn init(&self) -> Result<()> {
         let conn = Connection::open(&self.db_path)?;
 
-        // Crear tabla de tareas
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tasks (
                 id TEXT PRIMARY KEY,
@@ -38,7 +37,6 @@ impl Database {
             [],
         )?;
 
-        // Crear tabla de watchers
         conn.execute(
             "CREATE TABLE IF NOT EXISTS watchers (
                 id TEXT PRIMARY KEY,
@@ -57,7 +55,6 @@ impl Database {
             [],
         )?;
 
-        // Crear tabla de logs de ejecución
         conn.execute(
             "CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,7 +68,6 @@ impl Database {
             [],
         )?;
 
-        // Crear tabla de estado del daemon
         conn.execute(
             "CREATE TABLE IF NOT EXISTS daemon_state (
                 key TEXT PRIMARY KEY,
@@ -80,8 +76,7 @@ impl Database {
             [],
         )?;
 
-        conn.close()
-            .map_err(|_| anyhow::anyhow!("Failed to close db"))?;
+        conn.close().map_err(|_| anyhow::anyhow!("Failed to close db"))?;
         Ok(())
     }
 
@@ -89,11 +84,8 @@ impl Database {
         Ok(Connection::open(&self.db_path)?)
     }
 
-    // === TASKS ===
-
     pub fn insert_or_update_task(&self, task: &Task) -> Result<()> {
         let conn = self.get_connection()?;
-
         let cli_str = match task.cli {
             Cli::OpenCode => "opencode",
             Cli::Kiro => "kiro",
@@ -120,94 +112,66 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_task(&self, id: &str) -> Result<Option<Task>> {
-        let conn = self.get_connection()?;
-
-        let mut stmt = conn.prepare(
-            "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, last_run_at, last_run_ok, log_path 
-             FROM tasks WHERE id = ?1"
-        )?;
-
-        let task = stmt
-            .query_row(params![id], |row| {
-                let cli_str: String = row.get(3)?;
-                let cli = match cli_str.as_str() {
-                    "kiro" => Cli::Kiro,
-                    _ => Cli::OpenCode,
-                };
-
-                Ok(Task {
-                    id: row.get(0)?,
-                    prompt: row.get(1)?,
-                    schedule_expr: row.get(2)?,
-                    cli,
-                    model: row.get(4)?,
-                    working_dir: row.get(5)?,
-                    enabled: row.get(6)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)?
-                        .with_timezone(&Utc),
-                    expires_at: row
-                        .get::<_, Option<String>>(8)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    last_run_at: row
-                        .get::<_, Option<String>>(9)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    last_run_ok: row.get(10)?,
-                    log_path: row.get(11)?,
-                })
-            })
-            .optional()?;
-
-        Ok(task)
-    }
-
     pub fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self.get_connection()?;
-
         let mut stmt = conn.prepare(
             "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, last_run_at, last_run_ok, log_path 
              FROM tasks ORDER BY created_at DESC"
         )?;
 
-        let tasks = stmt
-            .query_map([], |row| {
-                let cli_str: String = row.get(3)?;
-                let cli = match cli_str.as_str() {
-                    "kiro" => Cli::Kiro,
-                    _ => Cli::OpenCode,
-                };
+        let mut result = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, bool>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<bool>>(10)?,
+                row.get::<_, String>(11)?,
+            ))
+        })?;
 
-                Ok(Task {
-                    id: row.get(0)?,
-                    prompt: row.get(1)?,
-                    schedule_expr: row.get(2)?,
-                    cli,
-                    model: row.get(4)?,
-                    working_dir: row.get(5)?,
-                    enabled: row.get(6)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)?
-                        .with_timezone(&Utc),
-                    expires_at: row
-                        .get::<_, Option<String>>(8)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    last_run_at: row
-                        .get::<_, Option<String>>(9)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    last_run_ok: row.get(10)?,
-                    log_path: row.get(11)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        for row_result in rows {
+            let (id, prompt, schedule_expr, cli_str, model, working_dir, enabled, created_at_str, expires_at_str, last_run_at_str, last_run_ok, log_path) = row_result?;
+            let cli = match cli_str.as_str() {
+                "kiro" => Cli::Kiro,
+                _ => Cli::OpenCode,
+            };
 
-        Ok(tasks)
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)?
+                .with_timezone(&Utc);
+            let expires_at = expires_at_str
+                .as_ref()
+                .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+                .transpose()?;
+            let last_run_at = last_run_at_str
+                .as_ref()
+                .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+                .transpose()?;
+
+            result.push(Task {
+                id,
+                prompt,
+                schedule_expr,
+                cli,
+                model,
+                working_dir,
+                enabled,
+                created_at,
+                expires_at,
+                last_run_at,
+                last_run_ok,
+                log_path,
+            });
+        }
+
+        Ok(result)
     }
 
     pub fn delete_task(&self, id: &str) -> Result<()> {
@@ -218,18 +182,12 @@ impl Database {
 
     pub fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self.get_connection()?;
-        conn.execute(
-            "UPDATE tasks SET enabled = ?1 WHERE id = ?2",
-            params![enabled, id],
-        )?;
+        conn.execute("UPDATE tasks SET enabled = ?1 WHERE id = ?2", params![enabled, id])?;
         Ok(())
     }
 
-    // === WATCHERS ===
-
     pub fn insert_or_update_watcher(&self, watcher: &Watcher) -> Result<()> {
         let conn = self.get_connection()?;
-
         let cli_str = match watcher.cli {
             Cli::OpenCode => "opencode",
             Cli::Kiro => "kiro",
@@ -258,92 +216,63 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_watcher(&self, id: &str) -> Result<Option<Watcher>> {
-        let conn = self.get_connection()?;
-
-        let mut stmt = conn.prepare(
-            "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive, enabled, created_at, last_triggered_at, trigger_count 
-             FROM watchers WHERE id = ?1"
-        )?;
-
-        let watcher = stmt
-            .query_row(params![id], |row| {
-                let cli_str: String = row.get(4)?;
-                let cli = match cli_str.as_str() {
-                    "kiro" => Cli::Kiro,
-                    _ => Cli::OpenCode,
-                };
-
-                let events_json: String = row.get(2)?;
-                let events: Vec<WatchEvent> = serde_json::from_str(&events_json)?;
-
-                Ok(Watcher {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    events,
-                    prompt: row.get(3)?,
-                    cli,
-                    model: row.get(5)?,
-                    debounce_seconds: row.get(6)?,
-                    recursive: row.get(7)?,
-                    enabled: row.get(8)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)?
-                        .with_timezone(&Utc),
-                    last_triggered_at: row
-                        .get::<_, Option<String>>(10)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    trigger_count: row.get(11)?,
-                })
-            })
-            .optional()?;
-
-        Ok(watcher)
-    }
-
     pub fn list_watchers(&self) -> Result<Vec<Watcher>> {
         let conn = self.get_connection()?;
-
         let mut stmt = conn.prepare(
             "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive, enabled, created_at, last_triggered_at, trigger_count 
              FROM watchers ORDER BY created_at DESC"
         )?;
 
-        let watchers = stmt
-            .query_map([], |row| {
-                let cli_str: String = row.get(4)?;
-                let cli = match cli_str.as_str() {
-                    "kiro" => Cli::Kiro,
-                    _ => Cli::OpenCode,
-                };
+        let mut result = Vec::new();
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, u64>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, bool>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, u64>(11)?,
+            ))
+        })?;
 
-                let events_json: String = row.get(2)?;
-                let events: Vec<WatchEvent> = serde_json::from_str(&events_json)?;
+        for row_result in rows {
+            let (id, path, events_json, prompt, cli_str, model, debounce_seconds, recursive, enabled, created_at_str, last_triggered_at_str, trigger_count) = row_result?;
+            let cli = match cli_str.as_str() {
+                "kiro" => Cli::Kiro,
+                _ => Cli::OpenCode,
+            };
 
-                Ok(Watcher {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    events,
-                    prompt: row.get(3)?,
-                    cli,
-                    model: row.get(5)?,
-                    debounce_seconds: row.get(6)?,
-                    recursive: row.get(7)?,
-                    enabled: row.get(8)?,
-                    created_at: chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(9)?)?
-                        .with_timezone(&Utc),
-                    last_triggered_at: row
-                        .get::<_, Option<String>>(10)?
-                        .map(|s| chrono::DateTime::parse_from_rfc3339(&s))
-                        .transpose()?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    trigger_count: row.get(11)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            let events: Vec<WatchEvent> = serde_json::from_str(&events_json)?;
+            let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)?
+                .with_timezone(&Utc);
+            let last_triggered_at = last_triggered_at_str
+                .as_ref()
+                .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+                .transpose()?;
 
-        Ok(watchers)
+            result.push(Watcher {
+                id,
+                path,
+                events,
+                prompt,
+                cli,
+                model,
+                debounce_seconds,
+                recursive,
+                enabled,
+                created_at,
+                last_triggered_at,
+                trigger_count,
+            });
+        }
+
+        Ok(result)
     }
 
     pub fn delete_watcher(&self, id: &str) -> Result<()> {
@@ -354,10 +283,7 @@ impl Database {
 
     pub fn update_watcher_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self.get_connection()?;
-        conn.execute(
-            "UPDATE watchers SET enabled = ?1 WHERE id = ?2",
-            params![enabled, id],
-        )?;
+        conn.execute("UPDATE watchers SET enabled = ?1 WHERE id = ?2", params![enabled, id])?;
         Ok(())
     }
 
@@ -370,11 +296,8 @@ impl Database {
         Ok(())
     }
 
-    // === RUNS ===
-
     pub fn insert_run(&self, run: &RunLog) -> Result<()> {
         let conn = self.get_connection()?;
-
         let trigger_str = match run.trigger_type {
             TriggerType::Scheduled => "scheduled",
             TriggerType::Manual => "manual",
@@ -396,8 +319,6 @@ impl Database {
         Ok(())
     }
 
-    // === DAEMON STATE ===
-
     pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
@@ -409,10 +330,8 @@ impl Database {
 
     pub fn get_state(&self, key: &str) -> Result<Option<String>> {
         let conn = self.get_connection()?;
-
         let mut stmt = conn.prepare("SELECT value FROM daemon_state WHERE key = ?1")?;
         let value = stmt.query_row(params![key], |row| row.get(0)).optional()?;
-
         Ok(value)
     }
 }
