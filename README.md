@@ -40,26 +40,25 @@ graph TB
 ### From source
 
 ```bash
-git clone https://github.com/jheison-com/task-trigger-mcp.git
+git clone https://github.com/JheisonMB/task-trigger-mcp.git
 cd task-trigger-mcp
 cargo build --release
 # Binary at target/release/task-trigger-mcp
 ```
 
-### Via cargo
+### Via cargo (coming soon)
+
+Once published to [crates.io](https://crates.io):
 
 ```bash
 cargo install task-trigger-mcp
 ```
 
+Currently available from GitHub source only.
+
 ### GitHub Releases
 
-Precompiled static binaries for:
-- `x86_64-unknown-linux-musl`
-- `aarch64-apple-darwin`
-- `x86_64-apple-darwin`
-
-Download from the [Releases](https://github.com/jheison-com/task-trigger-mcp/releases) page.
+Check the [Releases](https://github.com/JheisonMB/task-trigger-mcp/releases) page for precompiled binaries and prerelease builds.
 
 ---
 
