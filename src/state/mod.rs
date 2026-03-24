@@ -1,8 +1,12 @@
+//! Core domain models for the task-trigger-mcp daemon.
+//!
+//! Defines tasks, watchers, execution logs, and all supporting types.
+
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Tarea programada en el scheduler
+/// A scheduled task that runs on a cron schedule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
@@ -19,7 +23,14 @@ pub struct Task {
     pub log_path: String,
 }
 
-/// Watcher de archivos/directorios
+impl Task {
+    /// Check if this task has expired.
+    pub fn is_expired(&self) -> bool {
+        self.expires_at.is_some_and(|exp| Utc::now() > exp)
+    }
+}
+
+/// A file system watcher that triggers tasks on file changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watcher {
     pub id: String,
@@ -36,6 +47,7 @@ pub struct Watcher {
     pub trigger_count: u64,
 }
 
+/// File system event types that watchers can respond to.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum WatchEvent {
@@ -45,17 +57,30 @@ pub enum WatchEvent {
     Move,
 }
 
-impl std::fmt::Display for WatchEvent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            WatchEvent::Create => write!(f, "create"),
-            WatchEvent::Modify => write!(f, "modify"),
-            WatchEvent::Delete => write!(f, "delete"),
-            WatchEvent::Move => write!(f, "move"),
+impl WatchEvent {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "create" => Some(Self::Create),
+            "modify" => Some(Self::Modify),
+            "delete" => Some(Self::Delete),
+            "move" => Some(Self::Move),
+            _ => None,
         }
     }
 }
 
+impl std::fmt::Display for WatchEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create => write!(f, "create"),
+            Self::Modify => write!(f, "modify"),
+            Self::Delete => write!(f, "delete"),
+            Self::Move => write!(f, "move"),
+        }
+    }
+}
+
+/// Supported CLI tools for task execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Cli {
@@ -65,17 +90,39 @@ pub enum Cli {
     Kiro,
 }
 
-impl std::fmt::Display for Cli {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Cli {
+    /// Parse from string (defaults to `OpenCode` for unknown values).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "kiro" => Self::Kiro,
+            _ => Self::OpenCode,
+        }
+    }
+
+    /// Return the string representation used for DB storage.
+    pub fn as_str(&self) -> &'static str {
         match self {
-            Cli::OpenCode => write!(f, "opencode"),
-            Cli::Kiro => write!(f, "kiro"),
+            Self::OpenCode => "opencode",
+            Self::Kiro => "kiro",
+        }
+    }
+
+    /// Return the CLI command name.
+    pub fn command_name(&self) -> &'static str {
+        match self {
+            Self::OpenCode => "opencode",
+            Self::Kiro => "kiro-cli",
         }
     }
 }
 
-/// Registro de ejecución de una tarea
-#[allow(dead_code)]
+impl std::fmt::Display for Cli {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Record of a single task execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
     pub task_id: String,
@@ -85,7 +132,7 @@ pub struct RunLog {
     pub trigger_type: TriggerType,
 }
 
-#[allow(dead_code)]
+/// How a task was triggered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerType {
@@ -94,25 +141,27 @@ pub enum TriggerType {
     Watch,
 }
 
-impl std::fmt::Display for TriggerType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl TriggerType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "manual" => Self::Manual,
+            "watch" => Self::Watch,
+            _ => Self::Scheduled,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
         match self {
-            TriggerType::Scheduled => write!(f, "scheduled"),
-            TriggerType::Manual => write!(f, "manual"),
-            TriggerType::Watch => write!(f, "watch"),
+            Self::Scheduled => "scheduled",
+            Self::Manual => "manual",
+            Self::Watch => "watch",
         }
     }
 }
 
-/// Estado general del daemon
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DaemonStatus {
-    pub version: String,
-    pub uptime_seconds: u64,
-    pub port: u16,
-    pub active_tasks: usize,
-    pub active_watchers: usize,
-    pub scheduler_available: bool,
-    pub log_directory: String,
+impl std::fmt::Display for TriggerType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
+
