@@ -1,7 +1,22 @@
-use chrono::Utc;
-use regex::Regex;
+//! Schedule parsing, variable substitution, and internal cron scheduling.
+//!
+//! Provides:
+//! - Cron expression validation
+//! - Prompt template variable substitution
+//! - Internal cron scheduler (tokio-based, replaces OS crontab/launchd)
 
-#[allow(dead_code)]
+pub mod cron_scheduler;
+
+use chrono::Utc;
+
+/// Substitute template variables in a task prompt.
+///
+/// Supported variables:
+/// - `{{TIMESTAMP}}` — current ISO 8601 timestamp
+/// - `{{TASK_ID}}` — the task's ID
+/// - `{{LOG_PATH}}` — the task's log file path
+/// - `{{FILE_PATH}}` — the watched file path (watchers only)
+/// - `{{EVENT_TYPE}}` — the event type (watchers only)
 pub fn substitute_variables(
     prompt: &str,
     task_id: &str,
@@ -10,7 +25,6 @@ pub fn substitute_variables(
     event_type: Option<&str>,
 ) -> String {
     let timestamp = Utc::now().to_rfc3339();
-
     let mut result = prompt.to_string();
 
     result = result.replace("{{TIMESTAMP}}", &timestamp);
@@ -20,7 +34,6 @@ pub fn substitute_variables(
     if let Some(path) = file_path {
         result = result.replace("{{FILE_PATH}}", path);
     }
-
     if let Some(event) = event_type {
         result = result.replace("{{EVENT_TYPE}}", event);
     }
@@ -28,93 +41,28 @@ pub fn substitute_variables(
     result
 }
 
-/// Convierte expresión natural de horario a cron
-/// Soporta patrones como "every day at 9am", "every 5 minutes", etc.
-pub fn natural_to_cron(natural: &str) -> Option<String> {
-    let natural_lower = natural.to_lowercase();
-    let lower = natural_lower.trim();
-
-    // "every 5 minutes" -> "*/5 * * * *"
-    if let Some(caps) = Regex::new(r"every (\d+) minutes?")
-        .ok()
-        .and_then(|r| r.captures(lower))
-    {
-        if let Ok(minutes) = caps[1].parse::<u32>() {
-            return Some(format!("*/{} * * * *", minutes));
-        }
-    }
-
-    // "every hour" -> "0 * * * *"
-    if lower.contains("every hour") {
-        return Some("0 * * * *".to_string());
-    }
-
-    // "every day at 9am" -> "0 9 * * *"
-    if let Some(caps) = Regex::new(r"every day at (\d+)(?::(\d+))?\s*(?:am|pm)?")
-        .ok()
-        .and_then(|r| r.captures(lower))
-    {
-        let hour = caps[1].parse::<u32>().ok()?;
-        return Some(format!("0 {} * * *", hour));
-    }
-
-    // "daily at 9:30am" -> "30 9 * * *"
-    if let Some(caps) = Regex::new(r"daily at (\d+):(\d+)")
-        .ok()
-        .and_then(|r| r.captures(lower))
-    {
-        let hour = caps[1].parse::<u32>().ok()?;
-        let min = caps[2].parse::<u32>().ok()?;
-        return Some(format!("{} {} * * *", min, hour));
-    }
-
-    // "weekly on monday at 10am" -> "0 10 * * 1"
-    if let Some(caps) = Regex::new(r"weekly on (\w+) at (\d+)")
-        .ok()
-        .and_then(|r| r.captures(lower))
-    {
-        let day = match &caps[1].to_lowercase()[..] {
-            "monday" => "1",
-            "tuesday" => "2",
-            "wednesday" => "3",
-            "thursday" => "4",
-            "friday" => "5",
-            "saturday" => "6",
-            "sunday" => "0",
-            _ => return None,
-        };
-        let hour = caps[2].parse::<u32>().ok()?;
-        return Some(format!("0 {} * * {}", hour, day));
-    }
-
-    // Si ya es un cron válido, retornarlo
-    if is_valid_cron(lower) {
-        return Some(lower.to_string());
-    }
-
-    None
-}
-
-fn is_valid_cron(expr: &str) -> bool {
+/// Validate that a string is a valid 5-field cron expression.
+///
+/// The model is responsible for converting natural language to cron.
+/// This function only validates the format.
+pub fn validate_cron(expr: &str) -> bool {
     let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
         return false;
     }
-
-    // Validación básica: todos deben ser números, *, o rangos
     for part in parts {
         if part.is_empty() {
             return false;
         }
+        // Allow: digits, /, -, comma, *
         if part != "*"
             && !part
                 .chars()
-                .all(|c| c.is_numeric() || c == '/' || c == '-' || c == ',')
+                .all(|c| c.is_ascii_digit() || c == '/' || c == '-' || c == ',' || c == '*')
         {
             return false;
         }
     }
-
     true
 }
 
@@ -138,19 +86,20 @@ mod tests {
     }
 
     #[test]
-    fn test_natural_to_cron_minutes() {
-        assert_eq!(
-            natural_to_cron("every 5 minutes"),
-            Some("*/5 * * * *".to_string())
-        );
-        assert_eq!(
-            natural_to_cron("every 30 minutes"),
-            Some("*/30 * * * *".to_string())
-        );
+    fn test_validate_cron_valid() {
+        assert!(validate_cron("*/5 * * * *"));
+        assert!(validate_cron("0 9 * * *"));
+        assert!(validate_cron("0 9 * * 1-5"));
+        assert!(validate_cron("30 14 1,15 * *"));
+        assert!(validate_cron("0 */2 * * *"));
     }
 
     #[test]
-    fn test_natural_to_cron_hour() {
-        assert_eq!(natural_to_cron("every hour"), Some("0 * * * *".to_string()));
+    fn test_validate_cron_invalid() {
+        assert!(!validate_cron("every 5 minutes"));
+        assert!(!validate_cron("daily at 9am"));
+        assert!(!validate_cron("* * *")); // only 3 fields
+        assert!(!validate_cron("")); // empty
+        assert!(!validate_cron("0 9 * * * *")); // 6 fields
     }
 }
