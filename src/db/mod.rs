@@ -559,3 +559,336 @@ impl WatcherRow {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
+    use chrono::{Duration, Utc};
+    use tempfile::NamedTempFile;
+
+    /// Create an in-memory-like DB backed by a temp file (`SQLite` needs a real file for WAL).
+    fn test_db() -> Database {
+        let tmp = NamedTempFile::new().expect("create temp file");
+        let path = tmp.path().to_path_buf();
+        // Keep the temp file alive by leaking it (tests are short-lived).
+        std::mem::forget(tmp);
+        Database::new(&path).expect("create test db")
+    }
+
+    fn sample_task(id: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            prompt: "Run tests".to_string(),
+            schedule_expr: "0 9 * * *".to_string(),
+            cli: Cli::OpenCode,
+            model: None,
+            working_dir: Some("/tmp/project".to_string()),
+            enabled: true,
+            created_at: Utc::now(),
+            expires_at: None,
+            last_run_at: None,
+            last_run_ok: None,
+            log_path: "/tmp/test.log".to_string(),
+        }
+    }
+
+    fn sample_watcher(id: &str) -> Watcher {
+        Watcher {
+            id: id.to_string(),
+            path: "/tmp/watched".to_string(),
+            events: vec![WatchEvent::Create, WatchEvent::Modify],
+            prompt: "Handle file change".to_string(),
+            cli: Cli::Kiro,
+            model: Some("claude-4".to_string()),
+            debounce_seconds: 5,
+            recursive: true,
+            enabled: true,
+            created_at: Utc::now(),
+            last_triggered_at: None,
+            trigger_count: 0,
+        }
+    }
+
+    // ── Task CRUD ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_and_get_task() {
+        let db = test_db();
+        let task = sample_task("build-daily");
+        db.insert_or_update_task(&task).unwrap();
+
+        let retrieved = db.get_task("build-daily").unwrap().expect("task exists");
+        assert_eq!(retrieved.id, "build-daily");
+        assert_eq!(retrieved.prompt, "Run tests");
+        assert_eq!(retrieved.schedule_expr, "0 9 * * *");
+        assert!(matches!(retrieved.cli, Cli::OpenCode));
+        assert_eq!(retrieved.working_dir.as_deref(), Some("/tmp/project"));
+        assert!(retrieved.enabled);
+    }
+
+    #[test]
+    fn test_get_nonexistent_task() {
+        let db = test_db();
+        let result = db.get_task("does-not-exist").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_upsert_task_overwrites() {
+        let db = test_db();
+        let mut task = sample_task("my-task");
+        db.insert_or_update_task(&task).unwrap();
+
+        task.prompt = "Updated prompt".to_string();
+        task.schedule_expr = "*/10 * * * *".to_string();
+        db.insert_or_update_task(&task).unwrap();
+
+        let retrieved = db.get_task("my-task").unwrap().unwrap();
+        assert_eq!(retrieved.prompt, "Updated prompt");
+        assert_eq!(retrieved.schedule_expr, "*/10 * * * *");
+    }
+
+    #[test]
+    fn test_list_tasks_ordered_by_created_at_desc() {
+        let db = test_db();
+
+        let mut t1 = sample_task("first");
+        t1.created_at = Utc::now() - Duration::hours(2);
+        let mut t2 = sample_task("second");
+        t2.created_at = Utc::now() - Duration::hours(1);
+        let mut t3 = sample_task("third");
+        t3.created_at = Utc::now();
+
+        db.insert_or_update_task(&t1).unwrap();
+        db.insert_or_update_task(&t2).unwrap();
+        db.insert_or_update_task(&t3).unwrap();
+
+        let tasks = db.list_tasks().unwrap();
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(tasks[0].id, "third");
+        assert_eq!(tasks[1].id, "second");
+        assert_eq!(tasks[2].id, "first");
+    }
+
+    #[test]
+    fn test_delete_task() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("to-delete")).unwrap();
+        assert!(db.get_task("to-delete").unwrap().is_some());
+
+        db.delete_task("to-delete").unwrap();
+        assert!(db.get_task("to-delete").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_update_task_enabled() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("toggle-me")).unwrap();
+
+        db.update_task_enabled("toggle-me", false).unwrap();
+        let task = db.get_task("toggle-me").unwrap().unwrap();
+        assert!(!task.enabled);
+
+        db.update_task_enabled("toggle-me", true).unwrap();
+        let task = db.get_task("toggle-me").unwrap().unwrap();
+        assert!(task.enabled);
+    }
+
+    #[test]
+    fn test_update_task_last_run() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("run-me")).unwrap();
+
+        db.update_task_last_run("run-me", true).unwrap();
+        let task = db.get_task("run-me").unwrap().unwrap();
+        assert!(task.last_run_at.is_some());
+        assert_eq!(task.last_run_ok, Some(true));
+
+        db.update_task_last_run("run-me", false).unwrap();
+        let task = db.get_task("run-me").unwrap().unwrap();
+        assert_eq!(task.last_run_ok, Some(false));
+    }
+
+    #[test]
+    fn test_task_with_expiration() {
+        let db = test_db();
+        let mut task = sample_task("expiring");
+        task.expires_at = Some(Utc::now() + Duration::hours(1));
+        db.insert_or_update_task(&task).unwrap();
+
+        let retrieved = db.get_task("expiring").unwrap().unwrap();
+        assert!(retrieved.expires_at.is_some());
+        assert!(!retrieved.is_expired());
+    }
+
+    // ── Watcher CRUD ──────────────────────────────────────────────
+
+    #[test]
+    fn test_insert_and_get_watcher() {
+        let db = test_db();
+        let watcher = sample_watcher("watch-src");
+        db.insert_or_update_watcher(&watcher).unwrap();
+
+        let retrieved = db
+            .get_watcher("watch-src")
+            .unwrap()
+            .expect("watcher exists");
+        assert_eq!(retrieved.id, "watch-src");
+        assert_eq!(retrieved.path, "/tmp/watched");
+        assert_eq!(retrieved.events.len(), 2);
+        assert!(retrieved.events.contains(&WatchEvent::Create));
+        assert!(retrieved.events.contains(&WatchEvent::Modify));
+        assert!(matches!(retrieved.cli, Cli::Kiro));
+        assert_eq!(retrieved.model.as_deref(), Some("claude-4"));
+        assert_eq!(retrieved.debounce_seconds, 5);
+        assert!(retrieved.recursive);
+    }
+
+    #[test]
+    fn test_get_nonexistent_watcher() {
+        let db = test_db();
+        assert!(db.get_watcher("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_and_delete_watchers() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("w1")).unwrap();
+        db.insert_or_update_watcher(&sample_watcher("w2")).unwrap();
+
+        assert_eq!(db.list_watchers().unwrap().len(), 2);
+
+        db.delete_watcher("w1").unwrap();
+        assert_eq!(db.list_watchers().unwrap().len(), 1);
+        assert!(db.get_watcher("w1").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_enabled_watchers() {
+        let db = test_db();
+        let mut w1 = sample_watcher("enabled-w");
+        w1.enabled = true;
+        let mut w2 = sample_watcher("disabled-w");
+        w2.enabled = false;
+
+        db.insert_or_update_watcher(&w1).unwrap();
+        db.insert_or_update_watcher(&w2).unwrap();
+
+        let enabled = db.list_enabled_watchers().unwrap();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].id, "enabled-w");
+    }
+
+    #[test]
+    fn test_update_watcher_enabled() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("toggle-w"))
+            .unwrap();
+
+        db.update_watcher_enabled("toggle-w", false).unwrap();
+        let w = db.get_watcher("toggle-w").unwrap().unwrap();
+        assert!(!w.enabled);
+    }
+
+    #[test]
+    fn test_update_watcher_triggered() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("trig-w"))
+            .unwrap();
+
+        db.update_watcher_triggered("trig-w").unwrap();
+        let w = db.get_watcher("trig-w").unwrap().unwrap();
+        assert!(w.last_triggered_at.is_some());
+        assert_eq!(w.trigger_count, 1);
+
+        db.update_watcher_triggered("trig-w").unwrap();
+        let w = db.get_watcher("trig-w").unwrap().unwrap();
+        assert_eq!(w.trigger_count, 2);
+    }
+
+    // ── Run log operations ────────────────────────────────────────
+
+    #[test]
+    fn test_insert_and_list_runs() {
+        let db = test_db();
+        // Need a task first for FK
+        db.insert_or_update_task(&sample_task("run-task")).unwrap();
+
+        let run = RunLog {
+            task_id: "run-task".to_string(),
+            started_at: Utc::now() - Duration::minutes(5),
+            finished_at: Some(Utc::now()),
+            exit_code: Some(0),
+            trigger_type: TriggerType::Scheduled,
+        };
+        db.insert_run(&run).unwrap();
+
+        let runs = db.list_runs("run-task", 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].task_id, "run-task");
+        assert_eq!(runs[0].exit_code, Some(0));
+        assert!(matches!(runs[0].trigger_type, TriggerType::Scheduled));
+    }
+
+    #[test]
+    fn test_list_runs_limit() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("many-runs")).unwrap();
+
+        for i in 0..10 {
+            let run = RunLog {
+                task_id: "many-runs".to_string(),
+                started_at: Utc::now() - Duration::minutes(i),
+                finished_at: Some(Utc::now()),
+                exit_code: Some(0),
+                trigger_type: TriggerType::Manual,
+            };
+            db.insert_run(&run).unwrap();
+        }
+
+        let runs = db.list_runs("many-runs", 3).unwrap();
+        assert_eq!(runs.len(), 3);
+    }
+
+    #[test]
+    fn test_delete_task_cascades_runs() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("cascade-task"))
+            .unwrap();
+        let run = RunLog {
+            task_id: "cascade-task".to_string(),
+            started_at: Utc::now(),
+            finished_at: None,
+            exit_code: None,
+            trigger_type: TriggerType::Watch,
+        };
+        db.insert_run(&run).unwrap();
+        assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 1);
+
+        db.delete_task("cascade-task").unwrap();
+        assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 0);
+    }
+
+    // ── Daemon state ──────────────────────────────────────────────
+
+    #[test]
+    fn test_set_and_get_state() {
+        let db = test_db();
+        db.set_state("port", "7755").unwrap();
+        assert_eq!(db.get_state("port").unwrap(), Some("7755".to_string()));
+    }
+
+    #[test]
+    fn test_get_state_missing_key() {
+        let db = test_db();
+        assert!(db.get_state("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_set_state_overwrites() {
+        let db = test_db();
+        db.set_state("version", "0.1.0").unwrap();
+        db.set_state("version", "0.2.0").unwrap();
+        assert_eq!(db.get_state("version").unwrap(), Some("0.2.0".to_string()));
+    }
+}
