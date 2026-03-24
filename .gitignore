@@ -8,3 +8,5 @@ Cargo.lock
 .vscode/
 .idea/
 *.log
+.agents/
+skills-lock.json
