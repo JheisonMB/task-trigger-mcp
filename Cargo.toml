@@ -2,41 +2,86 @@
 name = "task-trigger-mcp"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.75"
+description = "A self-contained MCP server for AI agent task scheduling and file watching"
+license = "MIT"
+repository = "https://github.com/jheison-com/task-trigger-mcp"
+homepage = "https://github.com/jheison-com/task-trigger-mcp"
+keywords = ["mcp", "scheduler", "cron", "file-watcher", "ai-agent"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
 
 [[bin]]
 name = "task-trigger-mcp"
 path = "src/main.rs"
 
 [dependencies]
-rmcp = { version = "0.8.1", features = ["server"] }
-rmcp-macros = "0.8"
+# MCP SDK
+rmcp = { version = "0.1", features = ["server", "transport-io", "transport-sse-server", "macros"] }
+
+# Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+# Error handling
 anyhow = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
+
+# Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Schema generation for MCP tools
 schemars = { version = "0.8", features = ["derive"] }
-async-trait = "0.1"
-axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["cors"] }
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+
+# SQLite persistence
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# File watching
 notify = "6.1"
+
+# Cron expression parsing (internal scheduler)
 cron = "0.12"
+
+# Date/time
 chrono = { version = "0.4", features = ["serde"] }
-which = "5.0"
-tempfile = "3.8"
-uuid = { version = "1.6", features = ["v4", "serde"] }
-regex = "1.10"
+
+# CLI binary discovery
+which = "7.0"
+
+# CLI argument parsing
 clap = { version = "4.4", features = ["derive"] }
-daemonize = "0.5"
+
+# Home directory resolution
+dirs = "6.0"
+
+# Graceful shutdown coordination
+tokio-util = { version = "0.7", features = ["rt"] }
+
+# Unix process management (kill, setsid)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3.8"
 
 [features]
 default = []
+
+[lints.clippy]
+# Production quality lints
+needless_pass_by_value = "warn"
+redundant_closure = "warn"
+redundant_clone = "warn"
+large_enum_variant = "warn"
+manual_let_else = "warn"
+semicolon_if_nothing_returned = "warn"
+inconsistent_struct_constructor = "warn"
+doc_markdown = "warn"
 
 [profile.release]
 opt-level = 3

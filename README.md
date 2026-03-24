@@ -1,90 +1,315 @@
 # task-trigger-mcp
 
-A self-contained Rust MCP server for managing scheduled and event-driven tasks.
+A self-contained MCP server that lets AI agents register, manage, and execute **scheduled** and **event-driven** tasks. Single static binary. No runtime dependencies. Cross-platform (Linux/WSL, macOS).
 
-## Status
+Your agent says *"run tests every day at 9am"* — the model converts that to a cron expression, and the binary handles scheduling, file watching, CLI invocation, log rotation, and everything else internally. The agent never writes bash scripts or touches crontab.
 
-**Current Version**: v0.1.0 (Work in Progress)
+---
 
-This project is in **early development**. The foundational architecture is in place but the MCP transport layer and many features are still being implemented.
+## How It Works
 
-### Completed ✅
+```mermaid
+graph TB
+    subgraph daemon["task-trigger-mcp daemon"]
+        MCP["MCP Server<br/>SSE/HTTP :7755"]
+        SCHED["Cron Scheduler<br/>(internal, tokio)"]
+        WE["Watcher Engine<br/>(notify crate)"]
+        DB[(SQLite<br/>tasks.db)]
+        MCP <--> DB
+        SCHED <--> DB
+        WE <--> DB
+        SCHED -- "on schedule" --> EXEC
+        WE -- "on file event" --> EXEC
+        EXEC["Executor"]
+    end
 
-- **Project Structure**: Complete Cargo setup with proper dependency management
-- **State Models**: Task, Watcher, and event types defined
-- **SQLite Database Layer**: Full CRUD operations for tasks, watchers, runs, and daemon state
-- **Parameter/Response Types**: JSON schemas for all MCP tool parameters and responses  
-- **Scheduler Utilities**: Natural language to cron conversion (e.g., "every 5 minutes" → "*/5 * * * *")
-- **Variable Substitution**: Placeholder expansion in task prompts ({{TIMESTAMP}}, {{TASK_ID}}, etc.)
+    Agent["MCP Client<br/>(OpenCode, Kiro,<br/>Claude Desktop)"] -- "SSE / stdio" --> MCP
+    EXEC --> CLI["Headless CLI<br/>(opencode run / kiro-cli)"]
 
-### In Progress 🚧
+    style daemon fill:#1a1a2e,stroke:#16213e,color:#eee
+    style Agent fill:#0f3460,stroke:#16213e,color:#eee
+    style CLI fill:#e94560,stroke:#16213e,color:#eee
+```
 
-- **MCP Tool Handlers**: Converting rmcp macros to work with the 0.8 SDK limitations
-- **HTTP/SSE Transport**: Setting up the daemon transport layer
-- **File Watcher Engine**: Integrating with `notify` crate for file monitoring
+**Key property**: the agent connects and disconnects freely. Watchers keep running. Scheduled tasks keep firing. The daemon is the source of truth.
 
-### TODO 📋
+---
 
-High Priority:
-- [ ] Implement working MCP tool handlers using rmcp 0.8 compatible patterns
-- [ ] Create HTTP/SSE transport server (daemon mode)
-- [ ] Implement file watching with debouncing
-- [ ] Integration with OS schedulers (crontab on Linux, launchd on macOS)
-- [ ] Task execution via subprocess with headless CLI support
-- [ ] Log file management with rotation
+## Installation
 
-Medium Priority:
-- [ ] Daemon CLI commands (start, stop, status, logs)
-- [ ] Tests (unit, integration)
-- [ ] Configuration file support
-- [ ] Error recovery and resilience
-
-Lower Priority:
-- [ ] Webhook trigger support
-- [ ] Metrics/observability
-- [ ] Web UI
-
-## Building
+### From source
 
 ```bash
+git clone https://github.com/jheison-com/task-trigger-mcp.git
+cd task-trigger-mcp
 cargo build --release
+# Binary at target/release/task-trigger-mcp
 ```
 
-## Project Layout
+### Via cargo
 
-```
-src/
-  ├── main.rs          - Entry point
-  ├── state/           - Core data models
-  ├── db/              - SQLite persistence layer
-  ├── tools/           - MCP tool parameter/response types
-  ├── daemon/          - MCP server handler (WIP)
-  ├── scheduler/       - Cron parsing and variable substitution
-  ├── watchers/        - File watching engine (stub)
-  └── executor/        - Task execution (stub)
+```bash
+cargo install task-trigger-mcp
 ```
 
-## Architecture
+### GitHub Releases
 
-The daemon operates in three modes:
-1. **Daemon mode** (SSE/HTTP): Long-running background process serving MCP tools
-2. **Executor mode**: Called by OS scheduler to execute individual tasks
-3. **Stdio mode** (fallback): Direct MCP server over stdin/stdout
+Precompiled static binaries for:
+- `x86_64-unknown-linux-musl`
+- `aarch64-apple-darwin`
+- `x86_64-apple-darwin`
 
-## Dependencies
+Download from the [Releases](https://github.com/jheison-com/task-trigger-mcp/releases) page.
 
-- **rmcp**: Official Rust MCP SDK v0.8
-- **tokio**: Async runtime
-- **rusqlite**: SQLite driver with bundled library
-- **notify**: Cross-platform file system monitoring
-- **chrono**: Date/time handling
-- **serde/serde_json**: Serialization
-- **schemars**: JSON schema generation
+---
 
-## Notes
+## Quick Start
 
-The MCP SDK (rmcp 0.8) has strict type requirements for tool handlers. The current implementation uses a stub handler while we determine the best approach to implement all tools within rmcp's constraints.
+```bash
+# 1. Start the daemon
+task-trigger-mcp daemon start
+
+# 2. Check it's running
+task-trigger-mcp daemon status
+
+# 3. Configure your MCP client (see below)
+# 4. Your agent now has access to 10 task management tools
+```
+
+---
+
+## Architecture — The Daemon Does Everything
+
+The daemon is a single long-running process that owns:
+
+1. **MCP Server** (SSE/HTTP on port 7755) — so agents can connect and call tools
+2. **Internal Cron Scheduler** (tokio) — checks every 30 seconds which tasks are due and executes them
+3. **File Watcher Engine** (notify crate) — monitors files/directories for changes and triggers executions
+4. **SQLite Database** — persists all task/watcher definitions, run history, and logs
+
+There is no dependency on `crontab`, `launchd`, or any OS scheduler. Everything runs inside the daemon.
+
+### What happens when the daemon stops?
+
+| Component | Behavior |
+|---|---|
+| **Scheduled tasks** | Stop executing. They resume when the daemon restarts. |
+| **File watchers** | Stop monitoring. They are reloaded from SQLite on restart. |
+| **Task definitions** | Persist in SQLite. Nothing is lost. |
+
+### How to make it survive reboots
+
+Run `task-trigger-mcp daemon start` in your shell startup file (`.bashrc`, `.zshrc`), or set up a systemd/launchd service manually. A built-in `daemon install-service` command is planned for a future release (see Roadmap).
+
+### Why not use crontab?
+
+- Zero external dependencies — the binary is fully self-contained
+- No permission issues with crontab editing
+- No state synchronization problems (SQLite is the single source of truth)
+- Works identically on Linux, WSL, and macOS
+- Simpler architecture — one process, one database, one scheduler
+
+---
+
+## MCP Client Configuration
+
+### SSE transport (recommended — requires daemon running)
+
+```json
+{
+  "mcpServers": {
+    "task-trigger": {
+      "transport": "sse",
+      "url": "http://localhost:7755/sse"
+    }
+  }
+}
+```
+
+### Stdio transport (no daemon needed — everything stops when the client disconnects)
+
+```json
+{
+  "mcpServers": {
+    "task-trigger": {
+      "command": "task-trigger-mcp",
+      "args": ["stdio"]
+    }
+  }
+}
+```
+
+Default port: `7755`. Configurable via `--port` flag or `TASK_TRIGGER_PORT` env var.
+
+---
+
+## MCP Tools
+
+The server exposes 10 tools to the agent:
+
+| Tool | Description |
+|---|---|
+| `task_add` | Register a scheduled task with a 5-field cron expression (`*/5 * * * *`, `0 9 * * 1-5`). The model converts natural language to cron. |
+| `task_watch` | Watch a file/directory for create, modify, delete, or move events |
+| `task_list` | List all scheduled tasks with status, last run, and expiry info |
+| `task_watchers` | List all file watchers with status and trigger counts |
+| `task_remove` | Remove a task or watcher completely |
+| `task_unwatch` | Pause a file watcher without deleting it |
+| `task_enable` | Re-enable a disabled task or watcher |
+| `task_disable` | Disable a task or watcher without removing it |
+| `task_run` | Execute a task immediately, outside its schedule |
+| `task_logs` | Get log output for a task or watcher with optional line/time filters |
+| `task_status` | Daemon health: uptime, transport, scheduler status, active counts |
+
+### Schedule format (cron)
+
+The `schedule` field in `task_add` expects a standard 5-field cron expression:
+
+```
+┌───────── minute (0-59)
+│ ┌─────── hour (0-23)
+│ │ ┌───── day of month (1-31)
+│ │ │ ┌─── month (1-12)
+│ │ │ │ ┌─ day of week (0-6, 0=Sun)
+│ │ │ │ │
+* * * * *
+```
+
+Common patterns:
+- `*/5 * * * *` — every 5 minutes
+- `0 9 * * *` — daily at 9am
+- `0 9 * * 1-5` — weekdays at 9am
+- `0 */2 * * *` — every 2 hours
+- `30 14 1,15 * *` — 1st and 15th at 2:30pm
+
+The model is responsible for converting natural language (e.g. "every day at 9am") into cron expressions. The tool description includes common patterns to guide the model.
+
+---
+
+## Usage Examples
+
+### Schedule a daily test run
+
+> Agent: "Run the test suite every day at 9am"
+
+The model calls `task_add`:
+```json
+{
+  "id": "daily-tests",
+  "prompt": "Run cargo test in the project and report any failures",
+  "schedule": "0 9 * * *",
+  "cli": "opencode",
+  "working_dir": "/home/user/my-project"
+}
+```
+
+### Watch for source changes
+
+> Agent: "Watch src/ for changes and run the linter"
+
+The model calls `task_watch`:
+```json
+{
+  "id": "lint-on-change",
+  "path": "/home/user/my-project/src",
+  "events": ["create", "modify"],
+  "prompt": "Run cargo clippy and fix any warnings",
+  "cli": "opencode",
+  "recursive": true,
+  "debounce_seconds": 5
+}
+```
+
+### Temporary task with auto-expiry
+
+> Agent: "Check deployment status every minute for the next hour"
+
+```json
+{
+  "id": "monitor-deploy",
+  "prompt": "Check deployment status and report",
+  "schedule": "*/1 * * * *",
+  "cli": "opencode",
+  "duration_minutes": 60
+}
+```
+
+This task auto-disables after 60 minutes.
+
+### Prompt variables
+
+Prompts support variable substitution at execution time:
+
+- `{{TIMESTAMP}}` — current ISO 8601 timestamp
+- `{{TASK_ID}}` — the task's ID
+- `{{LOG_PATH}}` — path to the task's log file
+- `{{FILE_PATH}}` — the watched file path (watchers only)
+- `{{EVENT_TYPE}}` — the event that fired (watchers only)
+
+---
+
+## Daemon Management
+
+```bash
+task-trigger-mcp daemon start     # start in background
+task-trigger-mcp daemon stop      # stop daemon
+task-trigger-mcp daemon status    # check if running
+task-trigger-mcp daemon restart   # restart
+task-trigger-mcp daemon logs      # tail daemon logs
+```
+
+---
+
+## Runtime Directory
+
+```
+~/.task-trigger/
+  tasks.db              # SQLite database
+  daemon.pid            # PID file for daemon management
+  daemon.log            # daemon-level logs
+  logs/
+    <task-id>.log       # per-task/watcher logs (5MB rotation)
+```
+
+---
+
+## Platform Support
+
+| Feature | Linux / WSL | macOS |
+|---|---|---|
+| Daemon transport | SSE/HTTP localhost | SSE/HTTP localhost |
+| Cron scheduling | Internal (tokio) | Internal (tokio) |
+| File watching | inotify | FSEvents |
+| Service install | systemd unit | launchd agent |
+| Binary format | ELF static (musl) | Mach-O |
+
+---
+
+## Tech Stack
+
+| Concern | Crate |
+|---|---|
+| MCP SDK | `rmcp` + `rmcp-macros` |
+| Async runtime | `tokio` |
+| HTTP transport | `axum` (via rmcp) |
+| Cron parsing | `cron` |
+| File watching | `notify` |
+| State | `rusqlite` (bundled) |
+| Serialization | `serde` + `serde_json` |
+| CLI detection | `which` |
+| Logging | `tracing` |
+
+---
+
+## Roadmap
+
+- `daemon install-service` — install as systemd unit (Linux/WSL) or launchd agent (macOS) for reboot persistence
+- Webhook trigger support (HTTP endpoint that fires a task)
+- Claude Code CLI support
+- Optional auth token for SSE endpoint
+
+---
 
 ## License
 
-[To be determined]
+MIT
