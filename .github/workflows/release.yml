@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 0.1.0)'
+        required: true
 
 permissions:
   contents: write
@@ -12,8 +17,54 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from tag or input
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "push" ]; then
+            TAG=${{ github.ref_name }}
+            VERSION=${TAG#v}
+          else
+            VERSION=${{ github.event.inputs.version }}
+            TAG="v${VERSION}"
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Validate tag is from main branch
+        if: github.event_name == 'push'
+        run: |
+          # Verificar que el tag existe en main
+          if ! git merge-base --is-ancestor ${{ github.ref_name }} origin/main; then
+            echo "❌ Error: Tag ${{ github.ref_name }} no se encuentra en la rama main"
+            echo "El release solo puede hacerse desde main para evitar accidentes"
+            exit 1
+          fi
+          echo "✅ Tag validado en rama main"
+
+      - name: Validate version matches Cargo.toml
+        run: |
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Versión en Cargo.toml: $CARGO_VERSION"
+          echo "Versión del tag: ${{ steps.version.outputs.version }}"
+          if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "❌ Error: La versión en Cargo.toml ($CARGO_VERSION) no coincide con el tag (${{ steps.version.outputs.version }})"
+            exit 1
+          fi
+          echo "✅ Versión validada correctamente"
   build:
     name: Build ${{ matrix.target }}
+    needs: validate
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -51,7 +102,7 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../task-trigger-mcp-${{ github.ref_name }}-${{ matrix.target }}.tar.gz task-trigger-mcp
+          tar czf ../../../task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.tar.gz task-trigger-mcp
           cd ../../..
 
       - name: Package (windows)
@@ -59,14 +110,14 @@ jobs:
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path task-trigger-mcp.exe -DestinationPath ../../../task-trigger-mcp-${{ github.ref_name }}-${{ matrix.target }}.zip
+          Compress-Archive -Path task-trigger-mcp.exe -DestinationPath ../../../task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.zip
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: task-trigger-mcp-${{ matrix.target }}
-          path: task-trigger-mcp-${{ github.ref_name }}-${{ matrix.target }}.*
+          path: task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.*
 
   release:
     name: Create GitHub Release
@@ -86,3 +137,16 @@ jobs:
         with:
           generate_release_notes: true
           files: artifacts/*
+
+  publish:
+    name: Publish to crates.io
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo publish
+        run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
