@@ -46,19 +46,56 @@ cargo build --release
 # Binary at target/release/task-trigger-mcp
 ```
 
-### Via cargo (coming soon)
-
-Once published to [crates.io](https://crates.io):
+### Via cargo
 
 ```bash
 cargo install task-trigger-mcp
 ```
 
-Currently available from GitHub source only.
+Available on [crates.io](https://crates.io/crates/task-trigger-mcp).
 
 ### GitHub Releases
 
 Check the [Releases](https://github.com/JheisonMB/task-trigger-mcp/releases) page for precompiled binaries and prerelease builds.
+
+---
+
+## MCP Client Configuration
+
+Add this to your OpenCode config file (`~/.opencode/config.json`):
+
+```json
+{
+  "mcp": {
+    "task-trigger": {
+      "type": "local",
+      "command": ["task-trigger-mcp"],
+      "args": ["stdio"],
+      "enabled": true
+    }
+  }
+}
+```
+
+**Note:** This runs task-trigger-mcp in stdio mode. Scheduled tasks will pause when OpenCode disconnects. For persistent task execution, run the daemon separately:
+
+```bash
+task-trigger-mcp daemon start
+```
+
+And reconfigure to use remote MCP:
+
+```json
+{
+  "mcp": {
+    "task-trigger": {
+      "type": "remote",
+      "url": "http://localhost:7755/sse",
+      "enabled": true
+    }
+  }
+}
+```
 
 ---
 
@@ -71,13 +108,8 @@ task-trigger-mcp daemon start
 # 2. Check it's running
 task-trigger-mcp daemon status
 
-# 3. Configure your MCP client (see below)
-# 4. Your agent now has access to 10 task management tools
+# 3. Your agent now has access to 10 task management tools
 ```
-
----
-
-## Architecture — The Daemon Does Everything
 
 The daemon is a single long-running process that owns:
 
@@ -107,38 +139,6 @@ Run `task-trigger-mcp daemon start` in your shell startup file (`.bashrc`, `.zsh
 - No state synchronization problems (SQLite is the single source of truth)
 - Works identically on Linux, WSL, and macOS
 - Simpler architecture — one process, one database, one scheduler
-
----
-
-## MCP Client Configuration
-
-### SSE transport (recommended — requires daemon running)
-
-```json
-{
-  "mcpServers": {
-    "task-trigger": {
-      "transport": "sse",
-      "url": "http://localhost:7755/sse"
-    }
-  }
-}
-```
-
-### Stdio transport (no daemon needed — everything stops when the client disconnects)
-
-```json
-{
-  "mcpServers": {
-    "task-trigger": {
-      "command": "task-trigger-mcp",
-      "args": ["stdio"]
-    }
-  }
-}
-```
-
-Default port: `7755`. Configurable via `--port` flag or `TASK_TRIGGER_PORT` env var.
 
 ---
 
