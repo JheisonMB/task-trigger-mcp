@@ -1,9 +1,13 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+    paths:
+      - Cargo.toml
 
 permissions:
   contents: write
@@ -12,48 +16,58 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  validate:
-    name: Validate Release
+  create-tag:
+    name: Create Release Tag
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      created: ${{ steps.create.outputs.created }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get version from tag
+      - name: Get version from Cargo.toml
         id: version
         run: |
-          TAG=${{ github.ref_name }}
-          VERSION=${TAG#v}
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
+          TAG="v${VERSION}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Validate tag is from main branch
+      - name: Check if tag already exists
+        id: check_tag
         run: |
-          # Verificar que el tag existe en main
-          if ! git merge-base --is-ancestor ${{ github.ref_name }} origin/main; then
-            echo "❌ Error: Tag ${{ github.ref_name }} no se encuentra en la rama main"
-            echo "El release solo puede hacerse desde main para evitar accidentes"
-            exit 1
+          TAG=${{ steps.version.outputs.tag }}
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag $TAG already exists, skipping"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
           fi
-          echo "✅ Tag validado en rama main"
 
-      - name: Validate version matches Cargo.toml
+      - name: Create and push tag
+        id: create
         run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
-          echo "Versión en Cargo.toml: $CARGO_VERSION"
-          echo "Versión del tag: ${{ steps.version.outputs.version }}"
-          if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
-            echo "❌ Error: La versión en Cargo.toml ($CARGO_VERSION) no coincide con el tag (${{ steps.version.outputs.version }})"
-            exit 1
+          if [ "${{ steps.check_tag.outputs.exists }}" = "true" ]; then
+            echo "created=false" >> $GITHUB_OUTPUT
+            echo "Tag already exists — skipping release"
+            exit 0
           fi
-          echo "✅ Versión validada correctamente"
+          TAG=${{ steps.version.outputs.tag }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "created=true" >> $GITHUB_OUTPUT
+          echo "Tag $TAG created and pushed"
+
   build:
     name: Build ${{ matrix.target }}
-    needs: validate
+    needs: create-tag
+    if: needs.create-tag.outputs.created == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -74,6 +88,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -91,7 +107,7 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.tar.gz task-trigger-mcp
+          tar czf ../../../task-trigger-mcp-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.tar.gz task-trigger-mcp
           cd ../../..
 
       - name: Package (windows)
@@ -99,18 +115,18 @@ jobs:
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path task-trigger-mcp.exe -DestinationPath ../../../task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.zip
+          Compress-Archive -Path task-trigger-mcp.exe -DestinationPath ../../../task-trigger-mcp-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.zip
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: task-trigger-mcp-${{ matrix.target }}
-          path: task-trigger-mcp-${{ needs.validate.outputs.tag }}-${{ matrix.target }}.*
+          path: task-trigger-mcp-${{ needs.create-tag.outputs.tag }}-${{ matrix.target }}.*
 
-  release:
+  github-release:
     name: Create GitHub Release
-    needs: build
+    needs: [create-tag, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -124,26 +140,28 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ needs.create-tag.outputs.tag }}
           generate_release_notes: true
           files: artifacts/*
 
   approve:
     name: Awaiting Manual Approval
-    needs: release
+    needs: github-release
     runs-on: ubuntu-latest
     environment:
       name: production
     steps:
       - name: Approval granted
-        run: |
-          echo "✅ Release approved for publishing to crates.io"
+        run: echo "Release approved for publishing to crates.io"
 
   publish:
     name: Publish to crates.io
-    needs: [release, approve]
+    needs: [create-tag, approve]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.create-tag.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
