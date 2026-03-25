@@ -106,7 +106,8 @@ jobs:
 
       - name: Require PR description
         run: |
-          if [ -z "${{ github.event.pull_request.body }}" ] || [ ${#github.event.pull_request.body} -lt 10 ]; then
+          BODY="${{ github.event.pull_request.body }}"
+          if [ -z "$BODY" ] || [ ${#BODY} -lt 10 ]; then
             echo "❌ Error: Descripción del PR es muy corta o vacía"
             echo "Por favor agregue una descripción detallada del cambio"
             exit 1
