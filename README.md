@@ -148,7 +148,22 @@ There is no dependency on `crontab`, `launchd`, or any OS scheduler. Everything 
 
 ### How to make it survive reboots
 
-Run `task-trigger-mcp daemon start` in your shell startup file (`.bashrc`, `.zshrc`), or set up a systemd/launchd service manually. A built-in `daemon install-service` command is planned for a future release (see Roadmap).
+```bash
+task-trigger-mcp daemon install-service
+```
+
+This installs the daemon as a system service that starts automatically on boot:
+
+- **Linux/WSL**: creates a systemd user unit and enables lingering (runs without active login)
+- **macOS**: creates a launchd agent that starts on login
+
+To remove the service:
+
+```bash
+task-trigger-mcp daemon uninstall-service
+```
+
+Alternatively, add `task-trigger-mcp daemon start` to your shell startup file (`.bashrc`, `.zshrc`).
 
 ### Why not use crontab?
 
@@ -269,11 +284,13 @@ Prompts support variable substitution at execution time:
 ## Daemon Management
 
 ```bash
-task-trigger-mcp daemon start     # start in background
-task-trigger-mcp daemon stop      # stop daemon
-task-trigger-mcp daemon status    # check if running
-task-trigger-mcp daemon restart   # restart
-task-trigger-mcp daemon logs      # tail daemon logs
+task-trigger-mcp daemon start              # start in background
+task-trigger-mcp daemon stop               # stop daemon
+task-trigger-mcp daemon status             # check if running
+task-trigger-mcp daemon restart            # restart
+task-trigger-mcp daemon logs               # tail daemon logs
+task-trigger-mcp daemon install-service    # install as systemd/launchd service
+task-trigger-mcp daemon uninstall-service  # remove the system service
 ```
 
 ---
@@ -298,6 +315,7 @@ task-trigger-mcp daemon logs      # tail daemon logs
 | Daemon transport | Streamable HTTP localhost | Streamable HTTP localhost |
 | Cron scheduling | Internal (tokio) | Internal (tokio) |
 | File watching | inotify | FSEvents |
+| Service install | systemd user unit | launchd agent |
 | Binary format | ELF static (musl) | Mach-O |
 
 ---
@@ -320,7 +338,6 @@ task-trigger-mcp daemon logs      # tail daemon logs
 
 ## Roadmap
 
-- `daemon install-service` — install as systemd unit (Linux/WSL) or launchd agent (macOS) for reboot persistence
 - Webhook trigger support (HTTP endpoint that fires a task)
 - Claude Code CLI support
 - Optional auth token for HTTP endpoint
