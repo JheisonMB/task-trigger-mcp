@@ -1,6 +1,6 @@
 [package]
 name = "task-trigger-mcp"
-version = "0.1.2"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A self-contained MCP server for AI agent task scheduling and file watching"
@@ -17,7 +17,10 @@ path = "src/main.rs"
 
 [dependencies]
 # MCP SDK
-rmcp = { version = "0.1", features = ["server", "transport-io", "transport-sse-server", "macros"] }
+rmcp = { version = "1.2", features = ["server", "transport-io", "transport-streamable-http-server"] }
+
+# Axum for Streamable HTTP transport
+axum = "0.7"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -11,7 +11,7 @@ Your agent says *"run tests every day at 9am"* — the model converts that to a 
 ```mermaid
 graph TB
     subgraph daemon["task-trigger-mcp daemon"]
-        MCP["MCP Server<br/>SSE/HTTP :7755"]
+        MCP["MCP Server<br/>Streamable HTTP :7755"]
         SCHED["Cron Scheduler<br/>(internal, tokio)"]
         WE["Watcher Engine<br/>(notify crate)"]
         DB[(SQLite<br/>tasks.db)]
@@ -23,7 +23,7 @@ graph TB
         EXEC["Executor"]
     end
 
-    Agent["MCP Client<br/>(OpenCode, Kiro,<br/>Claude Desktop)"] -- "SSE / stdio" --> MCP
+    Agent["MCP Client<br/>(OpenCode, Kiro,<br/>Claude Desktop)"] -- "Streamable HTTP / stdio" --> MCP
     EXEC --> CLI["Headless CLI<br/>(opencode run / kiro-cli)"]
 
     style daemon fill:#1a1a2e,stroke:#16213e,color:#eee
@@ -37,13 +37,22 @@ graph TB
 
 ## Installation
 
-### From source
+### Quick install (recommended)
 
 ```bash
-git clone https://github.com/JheisonMB/task-trigger-mcp.git
-cd task-trigger-mcp
-cargo build --release
-# Binary at target/release/task-trigger-mcp
+curl -fsSL https://raw.githubusercontent.com/JheisonMB/task-trigger-mcp/main/install.sh | sh
+```
+
+This downloads the latest prebuilt binary for your platform and installs it to `~/.local/bin`. No Rust toolchain needed.
+
+You can customize the install:
+
+```bash
+# Pin a specific version
+VERSION=1.0.0 curl -fsSL https://raw.githubusercontent.com/JheisonMB/task-trigger-mcp/main/install.sh | sh
+
+# Install to a custom directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/JheisonMB/task-trigger-mcp/main/install.sh | sh
 ```
 
 ### Via cargo
@@ -54,9 +63,18 @@ cargo install task-trigger-mcp
 
 Available on [crates.io](https://crates.io/crates/task-trigger-mcp).
 
+### From source
+
+```bash
+git clone https://github.com/JheisonMB/task-trigger-mcp.git
+cd task-trigger-mcp
+cargo build --release
+# Binary at target/release/task-trigger-mcp
+```
+
 ### GitHub Releases
 
-Check the [Releases](https://github.com/JheisonMB/task-trigger-mcp/releases) page for precompiled binaries and prerelease builds.
+Check the [Releases](https://github.com/JheisonMB/task-trigger-mcp/releases) page for precompiled binaries (Linux x86_64, macOS x86_64/ARM64, Windows x86_64).
 
 ---
 
@@ -90,7 +108,7 @@ And reconfigure to use remote MCP:
   "mcp": {
     "task-trigger": {
       "type": "remote",
-      "url": "http://localhost:7755/sse",
+      "url": "http://localhost:7755/mcp",
       "enabled": true
     }
   }
@@ -108,12 +126,12 @@ task-trigger-mcp daemon start
 # 2. Check it's running
 task-trigger-mcp daemon status
 
-# 3. Your agent now has access to 10 task management tools
+# 3. Your agent now has access to 11 task management tools
 ```
 
 The daemon is a single long-running process that owns:
 
-1. **MCP Server** (SSE/HTTP on port 7755) — so agents can connect and call tools
+1. **MCP Server** (Streamable HTTP on port 7755) — so agents can connect and call tools
 2. **Internal Cron Scheduler** (tokio) — checks every 30 seconds which tasks are due and executes them
 3. **File Watcher Engine** (notify crate) — monitors files/directories for changes and triggers executions
 4. **SQLite Database** — persists all task/watcher definitions, run history, and logs
@@ -144,12 +162,13 @@ Run `task-trigger-mcp daemon start` in your shell startup file (`.bashrc`, `.zsh
 
 ## MCP Tools
 
-The server exposes 10 tools to the agent:
+The server exposes 11 tools to the agent:
 
 | Tool | Description |
 |---|---|
 | `task_add` | Register a scheduled task with a 5-field cron expression (`*/5 * * * *`, `0 9 * * 1-5`). The model converts natural language to cron. |
 | `task_watch` | Watch a file/directory for create, modify, delete, or move events |
+| `task_update` | Modify an existing task or watcher (schedule, prompt, events, etc.) without deleting and recreating it |
 | `task_list` | List all scheduled tasks with status, last run, and expiry info |
 | `task_watchers` | List all file watchers with status and trigger counts |
 | `task_remove` | Remove a task or watcher completely |
@@ -276,10 +295,9 @@ task-trigger-mcp daemon logs      # tail daemon logs
 
 | Feature | Linux / WSL | macOS |
 |---|---|---|
-| Daemon transport | SSE/HTTP localhost | SSE/HTTP localhost |
+| Daemon transport | Streamable HTTP localhost | Streamable HTTP localhost |
 | Cron scheduling | Internal (tokio) | Internal (tokio) |
 | File watching | inotify | FSEvents |
-| Service install | systemd unit | launchd agent |
 | Binary format | ELF static (musl) | Mach-O |
 
 ---
@@ -290,7 +308,7 @@ task-trigger-mcp daemon logs      # tail daemon logs
 |---|---|
 | MCP SDK | `rmcp` + `rmcp-macros` |
 | Async runtime | `tokio` |
-| HTTP transport | `axum` (via rmcp) |
+| HTTP transport | `axum` |
 | Cron parsing | `cron` |
 | File watching | `notify` |
 | State | `rusqlite` (bundled) |
@@ -305,7 +323,7 @@ task-trigger-mcp daemon logs      # tail daemon logs
 - `daemon install-service` — install as systemd unit (Linux/WSL) or launchd agent (macOS) for reboot persistence
 - Webhook trigger support (HTTP endpoint that fires a task)
 - Claude Code CLI support
-- Optional auth token for SSE endpoint
+- Optional auth token for HTTP endpoint
 
 ---
 

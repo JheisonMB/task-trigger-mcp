@@ -1,15 +1,20 @@
 //! MCP Server handler implementing all task-trigger tools.
 //!
-//! Uses the `rmcp` SDK's `#[tool(tool_box)]` and `#[tool(param)]` / `#[tool(aggr)]`
-//! macros for proper MCP protocol compliance.
+//! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
+//! with `Parameters<T>` for proper MCP protocol compliance.
 
 use std::sync::Arc;
 
 use chrono::Utc;
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::tool;
-use rmcp::Error as McpError;
+use rmcp::tool_handler;
+use rmcp::tool_router;
+use rmcp::ErrorData as McpError;
+use rmcp::ServerHandler;
 use serde::Deserialize;
 
 use crate::db::Database;
@@ -67,6 +72,34 @@ pub struct TaskWatchParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TaskUpdateParams {
+    /// ID of the task or watcher to update.
+    pub id: String,
+    /// New prompt/instruction (applies to both tasks and watchers).
+    pub prompt: Option<String>,
+    /// New CLI: "opencode" or "kiro" (applies to both).
+    pub cli: Option<String>,
+    /// New provider/model string, or null to clear (applies to both).
+    pub model: Option<Option<String>>,
+    // ── Task-only fields ──
+    /// New 5-field cron expression (task only).
+    pub schedule: Option<String>,
+    /// New working directory, or null to clear (task only).
+    pub working_dir: Option<Option<String>>,
+    /// New duration in minutes from now, or null to clear expiration (task only).
+    pub duration_minutes: Option<Option<i64>>,
+    // ── Watcher-only fields ──
+    /// New absolute path to watch (watcher only).
+    pub path: Option<String>,
+    /// New event list: "create", "modify", "delete", "move" (watcher only).
+    pub events: Option<Vec<String>>,
+    /// New debounce window in seconds (watcher only).
+    pub debounce_seconds: Option<u64>,
+    /// Watch subdirectories (watcher only).
+    pub recursive: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TaskLogsParams {
     /// Task or watcher ID.
     pub id: String,
@@ -74,6 +107,12 @@ pub struct TaskLogsParams {
     pub lines: Option<usize>,
     /// ISO 8601 timestamp filter — only return logs after this time.
     pub since: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IdParam {
+    /// Task or watcher ID.
+    pub id: String,
 }
 
 // ── MCP Handler ──────────────────────────────────────────────────────
@@ -86,9 +125,10 @@ pub struct TaskTriggerHandler {
     pub watcher_engine: Arc<WatcherEngine>,
     pub start_time: std::time::Instant,
     pub port: u16,
+    tool_router: ToolRouter<Self>,
 }
 
-#[tool(tool_box)]
+#[tool_router]
 impl TaskTriggerHandler {
     pub fn new(
         db: Arc<Database>,
@@ -102,6 +142,7 @@ impl TaskTriggerHandler {
             watcher_engine,
             start_time: std::time::Instant::now(),
             port,
+            tool_router: Self::tool_router(),
         }
     }
 
@@ -112,7 +153,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_add(
         &self,
-        #[tool(aggr)] params: TaskAddParams,
+        Parameters(params): Parameters<TaskAddParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
         use crate::state::Cli;
@@ -188,7 +229,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_watch(
         &self,
-        #[tool(aggr)] params: TaskWatchParams,
+        Parameters(params): Parameters<TaskWatchParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::state::Cli;
 
@@ -385,9 +426,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_remove(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to remove")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Stop watcher if it exists
         let _ = self.watcher_engine.stop_watcher(&id).await;
@@ -409,9 +448,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_unwatch(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Watcher ID to pause")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Stop the runtime watcher
         let _ = self.watcher_engine.stop_watcher(&id).await;
@@ -431,9 +468,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_enable(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to enable")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Enable task if it exists
         let _ = self.db.update_task_enabled(&id, true);
@@ -456,9 +491,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_disable(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to disable")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Disable task if it exists
         let _ = self.db.update_task_enabled(&id, false);
@@ -481,9 +514,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_run(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task ID to execute")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let task = self
             .db
@@ -565,7 +596,7 @@ impl TaskTriggerHandler {
             })
             .collect();
 
-        let transport = if self.port > 0 { "SSE/HTTP" } else { "stdio" };
+        let transport = if self.port > 0 { "Streamable HTTP" } else { "stdio" };
 
         let mut status = format!(
             "task-trigger-mcp v{}\n\
@@ -602,7 +633,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_logs(
         &self,
-        #[tool(aggr)] params: TaskLogsParams,
+        Parameters(params): Parameters<TaskLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
@@ -704,25 +735,255 @@ impl TaskTriggerHandler {
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
+
+    /// Update fields of an existing task or watcher without recreating it.
+    #[tool(
+        name = "task_update",
+        description = "Modify an existing scheduled task or file watcher. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the ID belongs to a task or watcher. For tasks: schedule, prompt, cli, model, working_dir, duration_minutes. For watchers: path, events, prompt, cli, model, debounce_seconds, recursive."
+    )]
+    async fn task_update(
+        &self,
+        Parameters(params): Parameters<TaskUpdateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::scheduler::validate_cron;
+
+        // Validate ID format
+        if let Err(e) = validate_id(&params.id) {
+            return Ok(error_result(&e));
+        }
+
+        // Determine if the ID is a task or a watcher
+        let is_task = self
+            .db
+            .get_task(&params.id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .is_some();
+        let is_watcher = self
+            .db
+            .get_watcher(&params.id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .is_some();
+
+        if !is_task && !is_watcher {
+            return Ok(error_result(&format!(
+                "No task or watcher found with ID '{}'",
+                params.id
+            )));
+        }
+
+        // ── Shared validation ────────────────────────────────────
+        if let Some(ref prompt) = params.prompt {
+            if let Err(e) = validate_prompt(prompt) {
+                return Ok(error_result(&e));
+            }
+        }
+
+        let cli_str = if let Some(ref cli) = params.cli {
+            match cli.as_str() {
+                "opencode" | "kiro" => Some(cli.as_str()),
+                _ => return Ok(error_result("CLI must be 'opencode' or 'kiro'")),
+            }
+        } else {
+            None
+        };
+
+        // ── Task update path ─────────────────────────────────────
+        if is_task {
+            // Warn about watcher-only fields being ignored
+            let ignored: Vec<&str> = [
+                params.path.as_ref().map(|_| "path"),
+                params.events.as_ref().map(|_| "events"),
+                params.debounce_seconds.map(|_| "debounce_seconds"),
+                params.recursive.map(|_| "recursive"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+
+            // Validate schedule if provided
+            if let Some(ref schedule) = params.schedule {
+                let trimmed = schedule.trim();
+                if !validate_cron(trimmed) {
+                    return Ok(error_result(&format!(
+                        "Invalid cron expression '{}'. Must be a 5-field cron expression.",
+                        schedule
+                    )));
+                }
+            }
+
+            // Compute expires_at from duration_minutes
+            let expires_at: Option<Option<&str>> = match &params.duration_minutes {
+                Some(Some(mins)) => {
+                    if *mins <= 0 {
+                        return Ok(error_result("duration_minutes must be positive"));
+                    }
+                    // We'll store a formatted string — handled below via a local binding
+                    None // sentinel; handled after
+                }
+                Some(None) => Some(None), // clear expiration
+                None => None,             // no change
+            };
+
+            // Build the expires_at string if needed
+            let expires_at_string: Option<String> = match &params.duration_minutes {
+                Some(Some(mins)) => {
+                    let ts = Utc::now() + chrono::Duration::minutes(*mins);
+                    Some(ts.to_rfc3339())
+                }
+                _ => None,
+            };
+
+            let expires_at_param: Option<Option<&str>> = if expires_at_string.is_some() {
+                Some(Some(expires_at_string.as_deref().unwrap()))
+            } else {
+                expires_at
+            };
+
+            let schedule_trimmed = params.schedule.as_deref().map(|s| s.trim());
+
+            let task_fields = crate::db::TaskFieldsUpdate {
+                prompt: params.prompt.as_deref(),
+                schedule_expr: schedule_trimmed,
+                cli: cli_str,
+                model: params.model.as_ref().map(|m| m.as_deref()),
+                working_dir: params.working_dir.as_ref().map(|w| w.as_deref()),
+                expires_at: expires_at_param,
+            };
+
+            let updated = self
+                .db
+                .update_task_fields(&params.id, &task_fields)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+            if !updated {
+                return Ok(error_result("No fields to update were provided"));
+            }
+
+            let mut msg = format!("Task '{}' updated successfully.", params.id);
+            if params.schedule.is_some() {
+                msg.push_str(" Schedule change will take effect within 30 seconds.");
+            }
+            if !ignored.is_empty() {
+                msg.push_str(&format!(
+                    " Note: watcher-only fields ignored: {}",
+                    ignored.join(", ")
+                ));
+            }
+            return Ok(success_result(&msg));
+        }
+
+        // ── Watcher update path ──────────────────────────────────
+        // Warn about task-only fields being ignored
+        let ignored: Vec<&str> = [
+            params.schedule.as_ref().map(|_| "schedule"),
+            params.working_dir.as_ref().map(|_| "working_dir"),
+            params.duration_minutes.as_ref().map(|_| "duration_minutes"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        // Validate path if provided
+        if let Some(ref path) = params.path {
+            if let Err(e) = validate_watch_path(path) {
+                return Ok(error_result(&e));
+            }
+        }
+
+        // Validate and serialize events if provided
+        let events_json: Option<String> = if let Some(ref event_strs) = params.events {
+            let mut events = Vec::new();
+            for s in event_strs {
+                match WatchEvent::from_str(s) {
+                    Some(e) => events.push(e),
+                    None => {
+                        return Ok(error_result(&format!(
+                            "Invalid event type '{}'. Must be: create, modify, delete, move",
+                            s
+                        )));
+                    }
+                }
+            }
+            if events.is_empty() {
+                return Ok(error_result("At least one event type must be specified"));
+            }
+            Some(serde_json::to_string(&events).map_err(|e| {
+                McpError::internal_error(format!("Failed to serialize events: {}", e), None)
+            })?)
+        } else {
+            None
+        };
+
+        let watcher_fields = crate::db::WatcherFieldsUpdate {
+            prompt: params.prompt.as_deref(),
+            path: params.path.as_deref(),
+            events: events_json.as_deref(),
+            cli: cli_str,
+            model: params.model.as_ref().map(|m| m.as_deref()),
+            debounce_seconds: params.debounce_seconds,
+            recursive: params.recursive,
+        };
+
+        let updated = self
+            .db
+            .update_watcher_fields(&params.id, &watcher_fields)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if !updated {
+            return Ok(error_result("No fields to update were provided"));
+        }
+
+        // Restart watcher if structural fields changed
+        let needs_restart = params.path.is_some()
+            || params.events.is_some()
+            || params.debounce_seconds.is_some()
+            || params.recursive.is_some()
+            || params.cli.is_some()
+            || params.prompt.is_some()
+            || params.model.is_some();
+
+        if needs_restart {
+            let _ = self.watcher_engine.stop_watcher(&params.id).await;
+            if let Ok(Some(watcher)) = self.db.get_watcher(&params.id) {
+                if watcher.enabled {
+                    if let Err(e) = self.watcher_engine.start_watcher(watcher).await {
+                        return Ok(CallToolResult::success(vec![Content::text(format!(
+                            "Watcher '{}' updated but failed to restart: {}. It will be retried on daemon restart.",
+                            params.id, e
+                        ))]));
+                    }
+                }
+            }
+        }
+
+        let mut msg = format!("Watcher '{}' updated successfully.", params.id);
+        if needs_restart {
+            msg.push_str(" Watcher restarted with new configuration.");
+        }
+        if !ignored.is_empty() {
+            msg.push_str(&format!(
+                " Note: task-only fields ignored: {}",
+                ignored.join(", ")
+            ));
+        }
+        Ok(success_result(&msg))
+    }
 }
 
-#[tool(tool_box)]
-impl rmcp::ServerHandler for TaskTriggerHandler {
+#[tool_handler]
+impl ServerHandler for TaskTriggerHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: Implementation {
-                name: env!("CARGO_PKG_NAME").to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            },
-            instructions: Some(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
                 "MCP server for registering, managing, and executing scheduled and event-driven tasks. \
                  Use task_add to create scheduled tasks, task_watch for file watchers, \
                  task_run to test immediately, and task_status for daemon health."
                     .to_string(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+            )
     }
 }
 
