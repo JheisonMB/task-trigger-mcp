@@ -5,7 +5,7 @@
 //! - `daemon stop` — stop the running daemon
 //! - `daemon status` — check daemon health
 //! - `stdio` — run in stdio MCP transport mode (legacy/fallback)
-//! - (no args) — start in foreground with SSE transport
+//! - (no args) — start in foreground with Streamable HTTP transport
 
 mod daemon;
 mod db;
@@ -17,6 +17,7 @@ mod watchers;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use rmcp::ServiceExt;
 use std::sync::Arc;
 
 use daemon::TaskTriggerHandler;
@@ -32,7 +33,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Port for SSE/HTTP server (overrides `TASK_TRIGGER_PORT` env var).
+    /// Port for Streamable HTTP server (overrides `TASK_TRIGGER_PORT` env var).
     #[arg(long, short)]
     port: Option<u16>,
 }
@@ -70,8 +71,8 @@ async fn main() -> Result<()> {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
         Some(Commands::Stdio) => handle_stdio().await,
         None => {
-            // Default: start SSE server in foreground
-            handle_sse_server(cli.port).await
+            // Default: start Streamable HTTP server in foreground
+            handle_http_server(cli.port).await
         }
     }
 }
@@ -98,8 +99,8 @@ async fn shutdown_signal() {
     }
 }
 
-/// Start the SSE/HTTP MCP server in foreground.
-async fn handle_sse_server(port_override: Option<u16>) -> Result<()> {
+/// Start the Streamable HTTP MCP server in foreground.
+async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
     init_tracing();
 
     let port = resolve_port(port_override);
@@ -134,34 +135,46 @@ async fn handle_sse_server(port_override: Option<u16>) -> Result<()> {
     ));
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
-    // Create the MCP handler
-    let handler = TaskTriggerHandler::new(
-        Arc::clone(&db),
-        Arc::clone(&executor),
-        Arc::clone(&watcher_engine),
-        port,
+    // Create the MCP handler factory
+    let handler_db = Arc::clone(&db);
+    let handler_executor = Arc::clone(&executor);
+    let handler_watcher_engine = Arc::clone(&watcher_engine);
+
+    let ct = tokio_util::sync::CancellationToken::new();
+
+    let service = rmcp::transport::streamable_http_server::StreamableHttpService::new(
+        move || {
+            Ok(TaskTriggerHandler::new(
+                Arc::clone(&handler_db),
+                Arc::clone(&handler_executor),
+                Arc::clone(&handler_watcher_engine),
+                port,
+            ))
+        },
+        rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
+            .into(),
+        rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
+            cancellation_token: ct.child_token(),
+            ..Default::default()
+        },
     );
+
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let bind_addr = format!("127.0.0.1:{port}");
+    let tcp_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
     tracing::info!(
-        "Starting SSE MCP server on http://127.0.0.1:{}/sse",
-        port
+        "Streamable HTTP MCP server listening on http://{}/mcp",
+        bind_addr
     );
 
-    // Use rmcp's SSE server transport.
-    let bind_addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse()?;
-    let ct = rmcp::transport::sse_server::SseServer::serve(bind_addr)
-        .await?
-        .with_service(move || handler.clone());
-
-    tracing::info!(
-        "SSE server listening on http://127.0.0.1:{}/sse",
-        port
-    );
-
-    // Wait for shutdown signal (SIGTERM or Ctrl+C)
-    shutdown_signal().await;
-    tracing::info!("Shutdown signal received");
-    ct.cancel();
+    axum::serve(tcp_listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+            tracing::info!("Shutdown signal received");
+            ct.cancel();
+        })
+        .await?;
 
     // Cleanup
     scheduler_cancel.cancel();
@@ -348,11 +361,9 @@ async fn handle_stdio() -> Result<()> {
         0, // No port in stdio mode
     );
 
-    // Create stdio transport
-    let transport = rmcp::transport::io::stdio();
-
-    // Serve via stdio
-    let server = rmcp::serve_server(handler, transport).await?;
+    // Create stdio transport and serve
+    let transport = rmcp::transport::stdio();
+    let server = handler.serve(transport).await?;
     tracing::info!("MCP stdio server started");
 
     server.waiting().await?;
