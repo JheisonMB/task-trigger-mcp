@@ -1,9 +1,11 @@
 name: Auto Release
 
 on:
-  push:
+  pull_request:
     branches:
       - main
+    types:
+      - closed
     paths:
       - Cargo.toml
 
@@ -13,6 +15,7 @@ permissions:
 jobs:
   auto-tag:
     name: Create Release Tag
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
