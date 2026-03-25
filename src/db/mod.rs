@@ -11,6 +11,29 @@ use std::sync::Mutex;
 
 use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
 
+/// Fields to update on a task. Only `Some` values are written.
+#[derive(Default)]
+pub struct TaskFieldsUpdate<'a> {
+    pub prompt: Option<&'a str>,
+    pub schedule_expr: Option<&'a str>,
+    pub cli: Option<&'a str>,
+    pub model: Option<Option<&'a str>>,
+    pub working_dir: Option<Option<&'a str>>,
+    pub expires_at: Option<Option<&'a str>>,
+}
+
+/// Fields to update on a watcher. Only `Some` values are written.
+#[derive(Default)]
+pub struct WatcherFieldsUpdate<'a> {
+    pub prompt: Option<&'a str>,
+    pub path: Option<&'a str>,
+    pub events: Option<&'a str>,
+    pub cli: Option<&'a str>,
+    pub model: Option<Option<&'a str>>,
+    pub debounce_seconds: Option<u64>,
+    pub recursive: Option<bool>,
+}
+
 /// Thread-safe `SQLite` database wrapper.
 ///
 /// Uses a `Mutex<Connection>` instead of opening a new connection per operation,
@@ -215,6 +238,64 @@ impl Database {
         Ok(())
     }
 
+    /// Update specific fields of a task. Only non-None fields are updated.
+    pub fn update_task_fields(&self, id: &str, fields: &TaskFieldsUpdate<'_>) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        let mut sets = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(v) = fields.prompt {
+            sets.push("prompt = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.schedule_expr {
+            sets.push("schedule_expr = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.cli {
+            sets.push("cli = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.model {
+            sets.push("model = ?");
+            values.push(Box::new(v.map(|s| s.to_string())));
+        }
+        if let Some(v) = fields.working_dir {
+            sets.push("working_dir = ?");
+            values.push(Box::new(v.map(|s| s.to_string())));
+        }
+        if let Some(v) = fields.expires_at {
+            sets.push("expires_at = ?");
+            values.push(Box::new(v.map(|s| s.to_string())));
+        }
+
+        if sets.is_empty() {
+            return Ok(false);
+        }
+
+        let placeholders: Vec<String> = sets
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.replace('?', &format!("?{}", i + 1)))
+            .collect();
+
+        let id_param = sets.len() + 1;
+        let sql = format!(
+            "UPDATE tasks SET {} WHERE id = ?{}",
+            placeholders.join(", "),
+            id_param
+        );
+        values.push(Box::new(id.to_string()));
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn.execute(&sql, params.as_slice())?;
+        Ok(rows > 0)
+    }
+
     /// Update last run info for a task.
     pub fn update_task_last_run(&self, id: &str, success: bool) -> Result<()> {
         let conn = self
@@ -358,6 +439,72 @@ impl Database {
             params![enabled, id],
         )?;
         Ok(())
+    }
+
+    /// Update specific fields of a watcher. Only non-None fields are updated.
+    pub fn update_watcher_fields(
+        &self,
+        id: &str,
+        fields: &WatcherFieldsUpdate<'_>,
+    ) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        let mut sets = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(v) = fields.prompt {
+            sets.push("prompt = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.path {
+            sets.push("path = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.events {
+            sets.push("events = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.cli {
+            sets.push("cli = ?");
+            values.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = fields.model {
+            sets.push("model = ?");
+            values.push(Box::new(v.map(|s| s.to_string())));
+        }
+        if let Some(v) = fields.debounce_seconds {
+            sets.push("debounce_seconds = ?");
+            values.push(Box::new(v as i64));
+        }
+        if let Some(v) = fields.recursive {
+            sets.push("recursive = ?");
+            values.push(Box::new(v));
+        }
+
+        if sets.is_empty() {
+            return Ok(false);
+        }
+
+        let placeholders: Vec<String> = sets
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.replace('?', &format!("?{}", i + 1)))
+            .collect();
+
+        let id_param = sets.len() + 1;
+        let sql = format!(
+            "UPDATE watchers SET {} WHERE id = ?{}",
+            placeholders.join(", "),
+            id_param
+        );
+        values.push(Box::new(id.to_string()));
+
+        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn.execute(&sql, params.as_slice())?;
+        Ok(rows > 0)
     }
 
     /// Record that a watcher has been triggered.
@@ -867,6 +1014,151 @@ mod tests {
 
         db.delete_task("cascade-task").unwrap();
         assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 0);
+    }
+
+    // ── Task field updates ────────────────────────────────────────
+
+    #[test]
+    fn test_update_task_fields_prompt() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("upd-task")).unwrap();
+
+        let fields = TaskFieldsUpdate {
+            prompt: Some("New prompt"),
+            ..Default::default()
+        };
+        assert!(db.update_task_fields("upd-task", &fields).unwrap());
+
+        let t = db.get_task("upd-task").unwrap().unwrap();
+        assert_eq!(t.prompt, "New prompt");
+        assert_eq!(t.schedule_expr, "0 9 * * *"); // unchanged
+    }
+
+    #[test]
+    fn test_update_task_fields_multiple() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("upd-multi")).unwrap();
+
+        let fields = TaskFieldsUpdate {
+            prompt: Some("Updated prompt"),
+            schedule_expr: Some("*/10 * * * *"),
+            cli: Some("kiro"),
+            model: Some(Some("gpt-5")),
+            ..Default::default()
+        };
+        assert!(db.update_task_fields("upd-multi", &fields).unwrap());
+
+        let t = db.get_task("upd-multi").unwrap().unwrap();
+        assert_eq!(t.prompt, "Updated prompt");
+        assert_eq!(t.schedule_expr, "*/10 * * * *");
+        assert!(matches!(t.cli, Cli::Kiro));
+        assert_eq!(t.model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn test_update_task_fields_clear_optional() {
+        let db = test_db();
+        let mut task = sample_task("upd-clear");
+        task.model = Some("claude-4".to_string());
+        db.insert_or_update_task(&task).unwrap();
+
+        let fields = TaskFieldsUpdate {
+            model: Some(None), // clear model
+            ..Default::default()
+        };
+        assert!(db.update_task_fields("upd-clear", &fields).unwrap());
+
+        let t = db.get_task("upd-clear").unwrap().unwrap();
+        assert!(t.model.is_none());
+    }
+
+    #[test]
+    fn test_update_task_fields_no_fields_returns_false() {
+        let db = test_db();
+        db.insert_or_update_task(&sample_task("upd-noop")).unwrap();
+
+        let fields = TaskFieldsUpdate::default();
+        assert!(!db.update_task_fields("upd-noop", &fields).unwrap());
+    }
+
+    #[test]
+    fn test_update_task_fields_nonexistent_returns_false() {
+        let db = test_db();
+
+        let fields = TaskFieldsUpdate {
+            prompt: Some("ghost"),
+            ..Default::default()
+        };
+        assert!(!db.update_task_fields("nonexistent", &fields).unwrap());
+    }
+
+    // ── Watcher field updates ─────────────────────────────────────
+
+    #[test]
+    fn test_update_watcher_fields_prompt() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("upd-watch"))
+            .unwrap();
+
+        let fields = WatcherFieldsUpdate {
+            prompt: Some("New watcher prompt"),
+            ..Default::default()
+        };
+        assert!(db.update_watcher_fields("upd-watch", &fields).unwrap());
+
+        let w = db.get_watcher("upd-watch").unwrap().unwrap();
+        assert_eq!(w.prompt, "New watcher prompt");
+        assert_eq!(w.path, "/tmp/watched"); // unchanged
+    }
+
+    #[test]
+    fn test_update_watcher_fields_multiple() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("upd-wmulti"))
+            .unwrap();
+
+        let events_json = serde_json::to_string(&vec![WatchEvent::Delete]).unwrap();
+        let fields = WatcherFieldsUpdate {
+            path: Some("/new/path"),
+            events: Some(&events_json),
+            debounce_seconds: Some(10),
+            recursive: Some(false),
+            ..Default::default()
+        };
+        assert!(db.update_watcher_fields("upd-wmulti", &fields).unwrap());
+
+        let w = db.get_watcher("upd-wmulti").unwrap().unwrap();
+        assert_eq!(w.path, "/new/path");
+        assert_eq!(w.events, vec![WatchEvent::Delete]);
+        assert_eq!(w.debounce_seconds, 10);
+        assert!(!w.recursive);
+    }
+
+    #[test]
+    fn test_update_watcher_fields_clear_model() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("upd-wclr"))
+            .unwrap();
+        // sample_watcher has model = Some("claude-4")
+
+        let fields = WatcherFieldsUpdate {
+            model: Some(None),
+            ..Default::default()
+        };
+        assert!(db.update_watcher_fields("upd-wclr", &fields).unwrap());
+
+        let w = db.get_watcher("upd-wclr").unwrap().unwrap();
+        assert!(w.model.is_none());
+    }
+
+    #[test]
+    fn test_update_watcher_fields_no_fields_returns_false() {
+        let db = test_db();
+        db.insert_or_update_watcher(&sample_watcher("upd-wnoop"))
+            .unwrap();
+
+        let fields = WatcherFieldsUpdate::default();
+        assert!(!db.update_watcher_fields("upd-wnoop", &fields).unwrap());
     }
 
     // ── Daemon state ──────────────────────────────────────────────
