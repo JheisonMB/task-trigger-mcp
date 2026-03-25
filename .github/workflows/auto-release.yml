@@ -1,0 +1,94 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    name: Create Release Tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          TAG="v${VERSION}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "ℹ️ Tag $TAG already exists, skipping creation"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✅ Tag $TAG does not exist, will be created"
+          fi
+
+      - name: Create and push tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "✅ Tag $TAG created and pushed"
+
+      - name: Tag already exists
+        if: steps.check_tag.outputs.exists == 'true'
+        run: |
+          echo "ℹ️ Nothing to do - tag already exists"
+
+  # Espera aprobación manual antes de publicar
+  approve:
+    name: Awaiting Manual Approval
+    needs: auto-tag
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Approval granted
+        run: |
+          echo "✅ Release approved for tag: ${{ needs.auto-tag.outputs.tag }}"
+          echo "Proceeding with build and publish..."
+
+  # Se ejecuta después de aprobación manual
+  build-and-publish:
+    name: Build and Publish
+    needs: [auto-tag, approve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-tag.outputs.tag }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Cargo publish
+        run: cargo publish --token ${{ secrets.CARGO_TOKEN }}
+
+      - name: Release published
+        run: |
+          echo "✅ Version ${{ needs.auto-tag.outputs.version }} published to crates.io"
