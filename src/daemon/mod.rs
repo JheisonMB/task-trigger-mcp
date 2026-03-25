@@ -1,15 +1,20 @@
 //! MCP Server handler implementing all task-trigger tools.
 //!
-//! Uses the `rmcp` SDK's `#[tool(tool_box)]` and `#[tool(param)]` / `#[tool(aggr)]`
-//! macros for proper MCP protocol compliance.
+//! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
+//! with `Parameters<T>` for proper MCP protocol compliance.
 
 use std::sync::Arc;
 
 use chrono::Utc;
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::schemars;
 use rmcp::tool;
-use rmcp::Error as McpError;
+use rmcp::tool_handler;
+use rmcp::tool_router;
+use rmcp::ErrorData as McpError;
+use rmcp::ServerHandler;
 use serde::Deserialize;
 
 use crate::db::Database;
@@ -104,6 +109,12 @@ pub struct TaskLogsParams {
     pub since: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct IdParam {
+    /// Task or watcher ID.
+    pub id: String,
+}
+
 // ── MCP Handler ──────────────────────────────────────────────────────
 
 /// The main MCP server handler for task-trigger-mcp.
@@ -114,9 +125,10 @@ pub struct TaskTriggerHandler {
     pub watcher_engine: Arc<WatcherEngine>,
     pub start_time: std::time::Instant,
     pub port: u16,
+    tool_router: ToolRouter<Self>,
 }
 
-#[tool(tool_box)]
+#[tool_router]
 impl TaskTriggerHandler {
     pub fn new(
         db: Arc<Database>,
@@ -130,6 +142,7 @@ impl TaskTriggerHandler {
             watcher_engine,
             start_time: std::time::Instant::now(),
             port,
+            tool_router: Self::tool_router(),
         }
     }
 
@@ -140,7 +153,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_add(
         &self,
-        #[tool(aggr)] params: TaskAddParams,
+        Parameters(params): Parameters<TaskAddParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
         use crate::state::Cli;
@@ -216,7 +229,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_watch(
         &self,
-        #[tool(aggr)] params: TaskWatchParams,
+        Parameters(params): Parameters<TaskWatchParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::state::Cli;
 
@@ -413,9 +426,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_remove(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to remove")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Stop watcher if it exists
         let _ = self.watcher_engine.stop_watcher(&id).await;
@@ -437,9 +448,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_unwatch(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Watcher ID to pause")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Stop the runtime watcher
         let _ = self.watcher_engine.stop_watcher(&id).await;
@@ -459,9 +468,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_enable(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to enable")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Enable task if it exists
         let _ = self.db.update_task_enabled(&id, true);
@@ -484,9 +491,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_disable(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task or watcher ID to disable")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         // Disable task if it exists
         let _ = self.db.update_task_enabled(&id, false);
@@ -509,9 +514,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_run(
         &self,
-        #[tool(param)]
-        #[schemars(description = "Task ID to execute")]
-        id: String,
+        Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let task = self
             .db
@@ -593,7 +596,7 @@ impl TaskTriggerHandler {
             })
             .collect();
 
-        let transport = if self.port > 0 { "SSE/HTTP" } else { "stdio" };
+        let transport = if self.port > 0 { "Streamable HTTP" } else { "stdio" };
 
         let mut status = format!(
             "task-trigger-mcp v{}\n\
@@ -630,7 +633,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_logs(
         &self,
-        #[tool(aggr)] params: TaskLogsParams,
+        Parameters(params): Parameters<TaskLogsParams>,
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
@@ -740,7 +743,7 @@ impl TaskTriggerHandler {
     )]
     async fn task_update(
         &self,
-        #[tool(aggr)] params: TaskUpdateParams,
+        Parameters(params): Parameters<TaskUpdateParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
 
@@ -967,23 +970,20 @@ impl TaskTriggerHandler {
     }
 }
 
-#[tool(tool_box)]
-impl rmcp::ServerHandler for TaskTriggerHandler {
+#[tool_handler]
+impl ServerHandler for TaskTriggerHandler {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            server_info: Implementation {
-                name: env!("CARGO_PKG_NAME").to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            },
-            instructions: Some(
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
                 "MCP server for registering, managing, and executing scheduled and event-driven tasks. \
                  Use task_add to create scheduled tasks, task_watch for file watchers, \
                  task_run to test immediately, and task_status for daemon health."
                     .to_string(),
-            ),
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            ..Default::default()
-        }
+            )
     }
 }
 
