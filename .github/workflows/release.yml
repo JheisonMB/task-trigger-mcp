@@ -43,7 +43,7 @@ jobs:
 
       - name: Validate version matches Cargo.toml
         run: |
-          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          CARGO_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/' | tr -d '\r')
           echo "Versión en Cargo.toml: $CARGO_VERSION"
           echo "Versión del tag: ${{ steps.version.outputs.version }}"
           if [ "$CARGO_VERSION" != "${{ steps.version.outputs.version }}" ]; then
