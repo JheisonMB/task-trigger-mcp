@@ -4,11 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., 0.1.0)'
-        required: true
 
 permissions:
   contents: write
@@ -28,21 +23,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Get version from tag or input
+      - name: Get version from tag
         id: version
         run: |
-          if [ "${{ github.event_name }}" == "push" ]; then
-            TAG=${{ github.ref_name }}
-            VERSION=${TAG#v}
-          else
-            VERSION=${{ github.event.inputs.version }}
-            TAG="v${VERSION}"
-          fi
+          TAG=${{ github.ref_name }}
+          VERSION=${TAG#v}
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Validate tag is from main branch
-        if: github.event_name == 'push'
         run: |
           # Verificar que el tag existe en main
           if ! git merge-base --is-ancestor ${{ github.ref_name }} origin/main; then
@@ -138,9 +127,20 @@ jobs:
           generate_release_notes: true
           files: artifacts/*
 
+  approve:
+    name: Awaiting Manual Approval
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Approval granted
+        run: |
+          echo "✅ Release approved for publishing to crates.io"
+
   publish:
     name: Publish to crates.io
-    needs: release
+    needs: [release, approve]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
