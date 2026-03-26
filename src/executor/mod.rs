@@ -18,6 +18,26 @@ use crate::domain::models::{Cli, RunLog, Task, TriggerType, Watcher};
 /// Maximum log file size before rotation (5 MB).
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024;
 
+/// Inputs for a single CLI execution. Used by `run_cli_process` to
+/// decouple the common spawn-capture-log logic from caller-specific setup.
+struct CliRunParams<'a> {
+    id: &'a str,
+    cli: &'a Cli,
+    prompt: String,
+    model: Option<&'a str>,
+    working_dir: Option<&'a str>,
+    log_path: String,
+    trigger: TriggerType,
+}
+
+/// Result of a CLI execution.
+struct CliRunResult {
+    exit_code: i32,
+    success: bool,
+    started_at: chrono::DateTime<Utc>,
+    finished_at: chrono::DateTime<Utc>,
+}
+
 /// Task execution engine.
 pub struct Executor {
     db: Arc<Database>,
@@ -29,9 +49,6 @@ impl Executor {
     }
 
     /// Execute a scheduled task.
-    ///
-    /// Checks expiry, resolves CLI binary, spawns subprocess, captures output,
-    /// and records the run in the database.
     pub async fn execute_task(&self, task: &Task, trigger: TriggerType) -> Result<i32> {
         if task.is_expired() {
             tracing::info!("Task '{}' has expired, disabling", task.id);
@@ -44,8 +61,6 @@ impl Executor {
             return Ok(-1);
         }
 
-        let started_at = Utc::now();
-
         let prompt = substitute_variables(
             &task.prompt,
             &task.id,
@@ -54,79 +69,34 @@ impl Executor {
             None,
         );
 
-        let cli_path = resolve_cli_binary(&task.cli)?;
-
-        let mut cmd = build_cli_command(
-            &cli_path,
-            &task.cli,
-            &prompt,
-            task.model.as_deref(),
-            task.working_dir.as_deref(),
-        );
-
-        if let Some(ref dir) = task.working_dir {
-            cmd.current_dir(dir);
-        }
-
-        tracing::info!(
-            "Executing task '{}' with {} (trigger: {})",
-            task.id,
-            task.cli,
-            trigger
-        );
-
-        let output = cmd.output().await;
-
-        let finished_at = Utc::now();
-
-        let (exit_code, success) = match output {
-            Ok(out) => {
-                let code = out.status.code().unwrap_or(-1);
-                let success = out.status.success();
-
-                append_to_log(
-                    &task.log_path,
-                    &task.id,
-                    &trigger,
-                    &started_at,
-                    code,
-                    &out.stdout,
-                    &out.stderr,
-                )?;
-
-                (code, success)
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn CLI for task '{}': {}", task.id, e);
-                append_to_log(
-                    &task.log_path,
-                    &task.id,
-                    &trigger,
-                    &started_at,
-                    -1,
-                    &[],
-                    e.to_string().as_bytes(),
-                )?;
-                (-1, false)
-            }
+        let params = CliRunParams {
+            id: &task.id,
+            cli: &task.cli,
+            prompt,
+            model: task.model.as_deref(),
+            working_dir: task.working_dir.as_deref(),
+            log_path: task.log_path.clone(),
+            trigger,
         };
+
+        let result = self.run_cli_process(&params).await?;
 
         let run = RunLog {
             task_id: task.id.clone(),
-            started_at,
-            finished_at: Some(finished_at),
-            exit_code: Some(exit_code),
-            trigger_type: trigger,
+            started_at: result.started_at,
+            finished_at: Some(result.finished_at),
+            exit_code: Some(result.exit_code),
+            trigger_type: params.trigger,
         };
         if let Err(e) = self.db.insert_run(&run) {
             tracing::error!("Failed to record run for task '{}': {}", task.id, e);
         }
 
-        if let Err(e) = self.db.update_task_last_run(&task.id, success) {
+        if let Err(e) = self.db.update_task_last_run(&task.id, result.success) {
             tracing::error!("Failed to update last_run for task '{}': {}", task.id, e);
         }
 
-        Ok(exit_code)
+        Ok(result.exit_code)
     }
 
     /// Execute a watcher-triggered task.
@@ -140,70 +110,40 @@ impl Executor {
             return Ok(-1);
         }
 
-        let started_at = Utc::now();
-
         let log_dir = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("No home directory"))?
             .join(".task-trigger/logs");
-        let log_path = log_dir.join(&watcher.id).with_extension("log");
-        let log_path_str = log_path.to_string_lossy().to_string();
+        let log_path = log_dir
+            .join(&watcher.id)
+            .with_extension("log")
+            .to_string_lossy()
+            .to_string();
 
         let prompt = substitute_variables(
             &watcher.prompt,
             &watcher.id,
-            &log_path_str,
+            &log_path,
             Some(file_path),
             Some(event_type),
         );
 
-        let cli_path = resolve_cli_binary(&watcher.cli)?;
-        let mut cmd = build_cli_command(&cli_path, &watcher.cli, &prompt, watcher.model.as_deref(), None);
-
-        tracing::info!(
-            "Executing watcher '{}' (event: {} on {})",
-            watcher.id,
-            event_type,
-            file_path
-        );
-
-        let output = cmd.output().await;
-        let finished_at = Utc::now();
-
-        let (exit_code, success) = match output {
-            Ok(out) => {
-                let code = out.status.code().unwrap_or(-1);
-                let success = out.status.success();
-                append_to_log(
-                    &log_path_str,
-                    &watcher.id,
-                    &TriggerType::Watch,
-                    &started_at,
-                    code,
-                    &out.stdout,
-                    &out.stderr,
-                )?;
-                (code, success)
-            }
-            Err(e) => {
-                tracing::error!("Failed to spawn CLI for watcher '{}': {}", watcher.id, e);
-                append_to_log(
-                    &log_path_str,
-                    &watcher.id,
-                    &TriggerType::Watch,
-                    &started_at,
-                    -1,
-                    &[],
-                    e.to_string().as_bytes(),
-                )?;
-                (-1, false)
-            }
+        let params = CliRunParams {
+            id: &watcher.id,
+            cli: &watcher.cli,
+            prompt,
+            model: watcher.model.as_deref(),
+            working_dir: None,
+            log_path,
+            trigger: TriggerType::Watch,
         };
+
+        let result = self.run_cli_process(&params).await?;
 
         let run = RunLog {
             task_id: watcher.id.clone(),
-            started_at,
-            finished_at: Some(finished_at),
-            exit_code: Some(exit_code),
+            started_at: result.started_at,
+            finished_at: Some(result.finished_at),
+            exit_code: Some(result.exit_code),
             trigger_type: TriggerType::Watch,
         };
         if let Err(e) = self.db.insert_run(&run) {
@@ -214,8 +154,67 @@ impl Executor {
             tracing::error!("Failed to update trigger count for watcher '{}': {}", watcher.id, e);
         }
 
-        let _ = success;
-        Ok(exit_code)
+        Ok(result.exit_code)
+    }
+
+    /// Core CLI execution: resolve binary, build command, spawn, capture output, write log.
+    async fn run_cli_process(&self, params: &CliRunParams<'_>) -> Result<CliRunResult> {
+        let cli_path = resolve_cli_binary(params.cli)?;
+        let mut cmd = build_cli_command(
+            &cli_path,
+            params.cli,
+            &params.prompt,
+            params.model,
+            params.working_dir,
+        );
+
+        tracing::info!(
+            "Executing '{}' with {} (trigger: {})",
+            params.id,
+            params.cli,
+            params.trigger,
+        );
+
+        let started_at = Utc::now();
+        let output = cmd.output().await;
+        let finished_at = Utc::now();
+
+        let (exit_code, success) = match output {
+            Ok(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let success = out.status.success();
+                append_to_log(
+                    &params.log_path,
+                    params.id,
+                    &params.trigger,
+                    &started_at,
+                    code,
+                    &out.stdout,
+                    &out.stderr,
+                )?;
+                (code, success)
+            }
+            Err(e) => {
+                tracing::error!("Failed to spawn CLI for '{}': {}", params.id, e);
+                append_to_log(
+                    &params.log_path,
+                    params.id,
+                    &params.trigger,
+                    &started_at,
+                    -1,
+                    &[],
+                    e.to_string().as_bytes(),
+                )?;
+                (-1, false)
+            }
+        };
+
+        Ok(CliRunResult {
+            exit_code,
+            success,
+            started_at,
+            finished_at,
+        })
     }
 }
 
@@ -265,6 +264,10 @@ fn build_cli_command(
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
+
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
 
     cmd
 }
