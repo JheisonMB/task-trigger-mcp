@@ -67,6 +67,28 @@ impl WatchEvent {
             _ => None,
         }
     }
+
+    /// Parse a list of event strings into `WatchEvent` values.
+    ///
+    /// Returns an error if any string is invalid or if the list is empty.
+    pub fn parse_list(event_strs: &[String]) -> Result<Vec<WatchEvent>, String> {
+        let mut events = Vec::with_capacity(event_strs.len());
+        for s in event_strs {
+            match WatchEvent::from_str(s) {
+                Some(e) => events.push(e),
+                None => {
+                    return Err(format!(
+                        "Invalid event type '{}'. Must be: create, modify, delete, move",
+                        s
+                    ));
+                }
+            }
+        }
+        if events.is_empty() {
+            return Err("At least one event type must be specified".to_string());
+        }
+        Ok(events)
+    }
 }
 
 impl std::fmt::Display for WatchEvent {
@@ -135,6 +157,42 @@ impl Cli {
             Some(available[0])
         } else {
             None
+        }
+    }
+
+    /// Resolve CLI from an optional user-provided parameter.
+    ///
+    /// - `Some("opencode")` / `Some("kiro")` → returns that variant.
+    /// - `Some(other)` → error with unknown CLI message.
+    /// - `None` → auto-detects from PATH. Fails if zero or multiple CLIs found.
+    pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
+        match param {
+            Some("opencode") => Ok(Cli::OpenCode),
+            Some("kiro") => Ok(Cli::Kiro),
+            Some(other) => Err(format!(
+                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'",
+                other
+            )),
+            None => match Cli::detect_default() {
+                Some(cli) => {
+                    tracing::info!("Auto-detected CLI: {}", cli);
+                    Ok(cli)
+                }
+                None => {
+                    let available = Cli::detect_available();
+                    if available.is_empty() {
+                        Err(
+                            "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
+                                .to_string(),
+                        )
+                    } else {
+                        Err(format!(
+                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
+                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
+                        ))
+                    }
+                }
+            },
         }
     }
 }
@@ -299,6 +357,57 @@ mod tests {
     fn test_cli_display() {
         assert_eq!(format!("{}", Cli::OpenCode), "opencode");
         assert_eq!(format!("{}", Cli::Kiro), "kiro");
+    }
+
+    #[test]
+    fn test_cli_resolve_explicit_opencode() {
+        assert_eq!(Cli::resolve(Some("opencode")).unwrap(), Cli::OpenCode);
+    }
+
+    #[test]
+    fn test_cli_resolve_explicit_kiro() {
+        assert_eq!(Cli::resolve(Some("kiro")).unwrap(), Cli::Kiro);
+    }
+
+    #[test]
+    fn test_cli_resolve_unknown_returns_error() {
+        let err = Cli::resolve(Some("vim")).unwrap_err();
+        assert!(err.contains("Unknown CLI 'vim'"));
+    }
+
+    // ── WatchEvent::parse_list ────────────────────────────────────
+
+    #[test]
+    fn test_parse_list_valid_events() {
+        let input = vec!["create".to_string(), "modify".to_string()];
+        let events = WatchEvent::parse_list(&input).unwrap();
+        assert_eq!(events, vec![WatchEvent::Create, WatchEvent::Modify]);
+    }
+
+    #[test]
+    fn test_parse_list_all_events() {
+        let input = vec![
+            "create".to_string(),
+            "modify".to_string(),
+            "delete".to_string(),
+            "move".to_string(),
+        ];
+        let events = WatchEvent::parse_list(&input).unwrap();
+        assert_eq!(events.len(), 4);
+    }
+
+    #[test]
+    fn test_parse_list_invalid_event_returns_error() {
+        let input = vec!["create".to_string(), "bogus".to_string()];
+        let err = WatchEvent::parse_list(&input).unwrap_err();
+        assert!(err.contains("Invalid event type 'bogus'"));
+    }
+
+    #[test]
+    fn test_parse_list_empty_returns_error() {
+        let input: Vec<String> = vec![];
+        let err = WatchEvent::parse_list(&input).unwrap_err();
+        assert!(err.contains("At least one event type must be specified"));
     }
 
     // ── TriggerType ───────────────────────────────────────────────

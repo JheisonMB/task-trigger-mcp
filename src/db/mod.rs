@@ -9,30 +9,11 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
-
-/// Fields to update on a task. Only `Some` values are written.
-#[derive(Default)]
-pub struct TaskFieldsUpdate<'a> {
-    pub prompt: Option<&'a str>,
-    pub schedule_expr: Option<&'a str>,
-    pub cli: Option<&'a str>,
-    pub model: Option<Option<&'a str>>,
-    pub working_dir: Option<Option<&'a str>>,
-    pub expires_at: Option<Option<&'a str>>,
-}
-
-/// Fields to update on a watcher. Only `Some` values are written.
-#[derive(Default)]
-pub struct WatcherFieldsUpdate<'a> {
-    pub prompt: Option<&'a str>,
-    pub path: Option<&'a str>,
-    pub events: Option<&'a str>,
-    pub cli: Option<&'a str>,
-    pub model: Option<Option<&'a str>>,
-    pub debounce_seconds: Option<u64>,
-    pub recursive: Option<bool>,
-}
+use crate::application::ports::{
+    RunRepository, StateRepository, TaskFieldsUpdate, TaskRepository, WatcherFieldsUpdate,
+    WatcherRepository,
+};
+use crate::domain::models::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
 
 /// Thread-safe `SQLite` database wrapper.
 ///
@@ -111,11 +92,12 @@ impl Database {
 
         Ok(())
     }
+}
 
-    // ── Task operations ──────────────────────────────────────────────
+// ── Task operations ──────────────────────────────────────────────
 
-    /// Insert or update a task (upsert).
-    pub fn insert_or_update_task(&self, task: &Task) -> Result<()> {
+impl TaskRepository for Database {
+    fn insert_or_update_task(&self, task: &Task) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -140,8 +122,7 @@ impl Database {
         Ok(())
     }
 
-    /// Get a single task by ID.
-    pub fn get_task(&self, id: &str) -> Result<Option<Task>> {
+    fn get_task(&self, id: &str) -> Result<Option<Task>> {
         let conn = self
             .conn
             .lock()
@@ -177,8 +158,7 @@ impl Database {
         }
     }
 
-    /// Retrieve all tasks ordered by creation date (newest first).
-    pub fn list_tasks(&self) -> Result<Vec<Task>> {
+    fn list_tasks(&self) -> Result<Vec<Task>> {
         let conn = self
             .conn
             .lock()
@@ -213,8 +193,7 @@ impl Database {
         Ok(tasks)
     }
 
-    /// Delete a task by ID.
-    pub fn delete_task(&self, id: &str) -> Result<()> {
+    fn delete_task(&self, id: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -225,8 +204,7 @@ impl Database {
         Ok(())
     }
 
-    /// Update task enabled status.
-    pub fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -238,8 +216,7 @@ impl Database {
         Ok(())
     }
 
-    /// Update specific fields of a task. Only non-None fields are updated.
-    pub fn update_task_fields(&self, id: &str, fields: &TaskFieldsUpdate<'_>) -> Result<bool> {
+    fn update_task_fields(&self, id: &str, fields: &TaskFieldsUpdate<'_>) -> Result<bool> {
         let conn = self
             .conn
             .lock()
@@ -296,8 +273,7 @@ impl Database {
         Ok(rows > 0)
     }
 
-    /// Update last run info for a task.
-    pub fn update_task_last_run(&self, id: &str, success: bool) -> Result<()> {
+    fn update_task_last_run(&self, id: &str, success: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -308,11 +284,12 @@ impl Database {
         )?;
         Ok(())
     }
+}
 
-    // ── Watcher operations ───────────────────────────────────────────
+// ── Watcher operations ───────────────────────────────────────────
 
-    /// Insert or update a watcher (upsert).
-    pub fn insert_or_update_watcher(&self, watcher: &Watcher) -> Result<()> {
+impl WatcherRepository for Database {
+    fn insert_or_update_watcher(&self, watcher: &Watcher) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -339,8 +316,7 @@ impl Database {
         Ok(())
     }
 
-    /// Get a single watcher by ID.
-    pub fn get_watcher(&self, id: &str) -> Result<Option<Watcher>> {
+    fn get_watcher(&self, id: &str) -> Result<Option<Watcher>> {
         let conn = self
             .conn
             .lock()
@@ -376,8 +352,7 @@ impl Database {
         }
     }
 
-    /// Retrieve all watchers ordered by creation date (newest first).
-    pub fn list_watchers(&self) -> Result<Vec<Watcher>> {
+    fn list_watchers(&self) -> Result<Vec<Watcher>> {
         let conn = self
             .conn
             .lock()
@@ -412,14 +387,12 @@ impl Database {
         Ok(watchers)
     }
 
-    /// List only enabled watchers (for reload on startup).
-    pub fn list_enabled_watchers(&self) -> Result<Vec<Watcher>> {
+    fn list_enabled_watchers(&self) -> Result<Vec<Watcher>> {
         let all = self.list_watchers()?;
         Ok(all.into_iter().filter(|w| w.enabled).collect())
     }
 
-    /// Delete a watcher by ID.
-    pub fn delete_watcher(&self, id: &str) -> Result<()> {
+    fn delete_watcher(&self, id: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -428,8 +401,7 @@ impl Database {
         Ok(())
     }
 
-    /// Update watcher enabled status.
-    pub fn update_watcher_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    fn update_watcher_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -441,12 +413,7 @@ impl Database {
         Ok(())
     }
 
-    /// Update specific fields of a watcher. Only non-None fields are updated.
-    pub fn update_watcher_fields(
-        &self,
-        id: &str,
-        fields: &WatcherFieldsUpdate<'_>,
-    ) -> Result<bool> {
+    fn update_watcher_fields(&self, id: &str, fields: &WatcherFieldsUpdate<'_>) -> Result<bool> {
         let conn = self
             .conn
             .lock()
@@ -507,8 +474,7 @@ impl Database {
         Ok(rows > 0)
     }
 
-    /// Record that a watcher has been triggered.
-    pub fn update_watcher_triggered(&self, id: &str) -> Result<()> {
+    fn update_watcher_triggered(&self, id: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -519,11 +485,12 @@ impl Database {
         )?;
         Ok(())
     }
+}
 
-    // ── Run log operations ───────────────────────────────────────────
+// ── Run log operations ───────────────────────────────────────────
 
-    /// Insert a task execution log entry.
-    pub fn insert_run(&self, run: &RunLog) -> Result<()> {
+impl RunRepository for Database {
+    fn insert_run(&self, run: &RunLog) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -542,8 +509,7 @@ impl Database {
         Ok(())
     }
 
-    /// Get recent runs for a task.
-    pub fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>> {
+    fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>> {
         let conn = self
             .conn
             .lock()
@@ -584,11 +550,12 @@ impl Database {
         }
         Ok(runs)
     }
+}
 
-    // ── Daemon state operations ──────────────────────────────────────
+// ── Daemon state operations ──────────────────────────────────────
 
-    /// Store a key-value pair in daemon state.
-    pub fn set_state(&self, key: &str, value: &str) -> Result<()> {
+impl StateRepository for Database {
+    fn set_state(&self, key: &str, value: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
@@ -600,8 +567,7 @@ impl Database {
         Ok(())
     }
 
-    /// Retrieve a value from daemon state by key.
-    pub fn get_state(&self, key: &str) -> Result<Option<String>> {
+    fn get_state(&self, key: &str) -> Result<Option<String>> {
         let conn = self
             .conn
             .lock()
@@ -709,7 +675,7 @@ impl WatcherRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
+    use crate::domain::models::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
     use chrono::{Duration, Utc};
     use tempfile::NamedTempFile;
 
