@@ -41,9 +41,9 @@ pub struct TaskAddParams {
     pub prompt: String,
     /// Standard 5-field cron expression: minute hour day month weekday. Example: "0 9 * * *" for daily at 9am.
     pub schedule: String,
-    /// CLI to use: "opencode" or "kiro".
-    pub cli: String,
-    /// Optional provider/model string.
+    /// CLI to use: "opencode" or "kiro". If omitted, auto-detects from PATH.
+    pub cli: Option<String>,
+    /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
     /// Auto-expire after N minutes from registration.
     pub duration_minutes: Option<i64>,
@@ -61,9 +61,9 @@ pub struct TaskWatchParams {
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,
-    /// CLI to use: "opencode" or "kiro".
-    pub cli: String,
-    /// Optional provider/model string.
+    /// CLI to use: "opencode" or "kiro". If omitted, auto-detects from PATH.
+    pub cli: Option<String>,
+    /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
     /// Debounce window in seconds (default: 2).
     pub debounce_seconds: Option<u64>,
@@ -149,7 +149,7 @@ impl TaskTriggerHandler {
     /// Register a new scheduled task. The daemon's internal scheduler handles execution.
     #[tool(
         name = "task_add",
-        description = "Register a new scheduled task. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary tasks that auto-expire."
+        description = "Register a new scheduled task. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary tasks that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_add(
         &self,
@@ -166,11 +166,34 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        // Parse CLI type
-        let cli = match params.cli.as_str() {
-            "opencode" => Cli::OpenCode,
-            "kiro" => Cli::Kiro,
-            _ => return Ok(error_result("CLI must be 'opencode' or 'kiro'")),
+        // Parse CLI type — auto-detect if not provided
+        let cli = match params.cli.as_deref() {
+            Some("opencode") => Cli::OpenCode,
+            Some("kiro") => Cli::Kiro,
+            Some(other) => return Ok(error_result(&format!(
+                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
+            ))),
+            None => {
+                // Auto-detect from PATH
+                match Cli::detect_default() {
+                    Some(cli) => {
+                        tracing::info!("Auto-detected CLI: {}", cli);
+                        cli
+                    }
+                    None => {
+                        let available = Cli::detect_available();
+                        if available.is_empty() {
+                            return Ok(error_result(
+                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
+                            ));
+                        }
+                        return Ok(error_result(&format!(
+                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
+                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                }
+            }
         };
 
         // Validate cron expression
@@ -225,7 +248,7 @@ impl TaskTriggerHandler {
     /// Register a file or directory watcher.
     #[tool(
         name = "task_watch",
-        description = "Watch a file or directory for changes and execute a prompt when events occur"
+        description = "Watch a file or directory for changes and execute a prompt when events occur. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_watch(
         &self,
@@ -244,11 +267,30 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        // Parse CLI
-        let cli = match params.cli.as_str() {
-            "opencode" => Cli::OpenCode,
-            "kiro" => Cli::Kiro,
-            _ => return Ok(error_result("CLI must be 'opencode' or 'kiro'")),
+        // Parse CLI — auto-detect if not provided
+        let cli = match params.cli.as_deref() {
+            Some("opencode") => Cli::OpenCode,
+            Some("kiro") => Cli::Kiro,
+            Some(other) => return Ok(error_result(&format!(
+                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
+            ))),
+            None => {
+                match Cli::detect_default() {
+                    Some(cli) => cli,
+                    None => {
+                        let available = Cli::detect_available();
+                        if available.is_empty() {
+                            return Ok(error_result(
+                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
+                            ));
+                        }
+                        return Ok(error_result(&format!(
+                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
+                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
+                        )));
+                    }
+                }
+            }
         };
 
         // Parse events

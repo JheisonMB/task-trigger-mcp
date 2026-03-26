@@ -107,11 +107,34 @@ impl Cli {
         }
     }
 
-    /// Return the CLI command name.
+    /// Return the CLI command name (the actual binary name in PATH).
     pub fn command_name(&self) -> &'static str {
         match self {
             Self::OpenCode => "opencode",
             Self::Kiro => "kiro-cli",
+        }
+    }
+
+    /// Detect which CLIs are available in PATH.
+    pub fn detect_available() -> Vec<Cli> {
+        let mut available = Vec::new();
+        if which::which("opencode").is_ok() {
+            available.push(Cli::OpenCode);
+        }
+        if which::which("kiro-cli").is_ok() {
+            available.push(Cli::Kiro);
+        }
+        available
+    }
+
+    /// Auto-detect a default CLI. Returns the single available CLI,
+    /// or `None` if zero or multiple CLIs are found.
+    pub fn detect_default() -> Option<Cli> {
+        let available = Self::detect_available();
+        if available.len() == 1 {
+            Some(available[0])
+        } else {
+            None
         }
     }
 }
