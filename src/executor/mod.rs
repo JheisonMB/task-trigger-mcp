@@ -58,10 +58,16 @@ impl Executor {
         // Resolve CLI binary path
         let cli_path = resolve_cli_binary(&task.cli)?;
 
-        // Build command
-        let mut cmd = build_cli_command(&cli_path, &task.cli, &prompt, task.model.as_deref());
+        // Build command (pass working_dir so opencode can use --dir)
+        let mut cmd = build_cli_command(
+            &cli_path,
+            &task.cli,
+            &prompt,
+            task.model.as_deref(),
+            task.working_dir.as_deref(),
+        );
 
-        // Set working directory if specified
+        // Set working directory for the subprocess (affects all CLIs)
         if let Some(ref dir) = task.working_dir {
             cmd.current_dir(dir);
         }
@@ -162,7 +168,7 @@ impl Executor {
 
         // Resolve CLI binary
         let cli_path = resolve_cli_binary(&watcher.cli)?;
-        let mut cmd = build_cli_command(&cli_path, &watcher.cli, &prompt, watcher.model.as_deref());
+        let mut cmd = build_cli_command(&cli_path, &watcher.cli, &prompt, watcher.model.as_deref(), None);
 
         tracing::info!(
             "Executing watcher '{}' (event: {} on {})",
@@ -239,17 +245,29 @@ fn resolve_cli_binary(cli: &Cli) -> Result<PathBuf> {
 }
 
 /// Build the CLI command with appropriate flags.
-fn build_cli_command(cli_path: &Path, cli: &Cli, prompt: &str, model: Option<&str>) -> Command {
+fn build_cli_command(
+    cli_path: &Path,
+    cli: &Cli,
+    prompt: &str,
+    model: Option<&str>,
+    working_dir: Option<&str>,
+) -> Command {
     let mut cmd = Command::new(cli_path);
 
     match cli {
         Cli::OpenCode => {
-            cmd.arg("run").arg("--prompt").arg(prompt);
+            // opencode run [message..] — prompt is a positional argument
+            cmd.arg("run").arg(prompt);
             if let Some(m) = model {
                 cmd.arg("-m").arg(m);
             }
+            // opencode supports --dir natively
+            if let Some(dir) = working_dir {
+                cmd.arg("--dir").arg(dir);
+            }
         }
         Cli::Kiro => {
+            // kiro-cli chat [INPUT] --no-interactive --trust-all-tools
             cmd.arg("chat")
                 .arg("--no-interactive")
                 .arg("--trust-all-tools")
