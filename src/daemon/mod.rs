@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
-use crate::domain::models::{Task, WatchEvent, Watcher};
+use crate::domain::models::{Cli, Task, WatchEvent, Watcher};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
 use crate::watchers::WatcherEngine;
@@ -149,8 +149,6 @@ impl TaskTriggerHandler {
         Parameters(params): Parameters<TaskAddParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
-        use crate::domain::models::Cli;
-
         if let Err(e) = validate_id(&params.id) {
             return Ok(error_result(&e));
         }
@@ -158,32 +156,9 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        let cli = match params.cli.as_deref() {
-            Some("opencode") => Cli::OpenCode,
-            Some("kiro") => Cli::Kiro,
-            Some(other) => return Ok(error_result(&format!(
-                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
-            ))),
-            None => {
-                match Cli::detect_default() {
-                    Some(cli) => {
-                        tracing::info!("Auto-detected CLI: {}", cli);
-                        cli
-                    }
-                    None => {
-                        let available = Cli::detect_available();
-                        if available.is_empty() {
-                            return Ok(error_result(
-                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
-                            ));
-                        }
-                        return Ok(error_result(&format!(
-                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
-                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
-                        )));
-                    }
-                }
-            }
+        let cli = match Cli::resolve(params.cli.as_deref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(error_result(&e)),
         };
 
         let schedule_expr = params.schedule.trim().to_string();
@@ -241,8 +216,6 @@ impl TaskTriggerHandler {
         &self,
         Parameters(params): Parameters<TaskWatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::domain::models::Cli;
-
         if let Err(e) = validate_id(&params.id) {
             return Ok(error_result(&e));
         }
@@ -253,47 +226,15 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        let cli = match params.cli.as_deref() {
-            Some("opencode") => Cli::OpenCode,
-            Some("kiro") => Cli::Kiro,
-            Some(other) => return Ok(error_result(&format!(
-                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
-            ))),
-            None => {
-                match Cli::detect_default() {
-                    Some(cli) => cli,
-                    None => {
-                        let available = Cli::detect_available();
-                        if available.is_empty() {
-                            return Ok(error_result(
-                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
-                            ));
-                        }
-                        return Ok(error_result(&format!(
-                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
-                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
-                        )));
-                    }
-                }
-            }
+        let cli = match Cli::resolve(params.cli.as_deref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(error_result(&e)),
         };
 
-        let mut events = Vec::new();
-        for event_str in &params.events {
-            match WatchEvent::from_str(event_str) {
-                Some(e) => events.push(e),
-                None => {
-                    return Ok(error_result(&format!(
-                        "Invalid event type '{}'. Must be: create, modify, delete, move",
-                        event_str
-                    )))
-                }
-            }
-        }
-
-        if events.is_empty() {
-            return Ok(error_result("At least one event type must be specified"));
-        }
+        let events = match WatchEvent::parse_list(&params.events) {
+            Ok(e) => e,
+            Err(e) => return Ok(error_result(&e)),
+        };
 
         let watcher = Watcher {
             id: params.id.clone(),
@@ -890,21 +831,10 @@ impl TaskTriggerHandler {
         }
 
         let events_json: Option<String> = if let Some(ref event_strs) = params.events {
-            let mut events = Vec::new();
-            for s in event_strs {
-                match WatchEvent::from_str(s) {
-                    Some(e) => events.push(e),
-                    None => {
-                        return Ok(error_result(&format!(
-                            "Invalid event type '{}'. Must be: create, modify, delete, move",
-                            s
-                        )));
-                    }
-                }
-            }
-            if events.is_empty() {
-                return Ok(error_result("At least one event type must be specified"));
-            }
+            let events = match WatchEvent::parse_list(event_strs) {
+                Ok(e) => e,
+                Err(e) => return Ok(error_result(&e)),
+            };
             Some(serde_json::to_string(&events).map_err(|e| {
                 McpError::internal_error(format!("Failed to serialize events: {}", e), None)
             })?)
