@@ -7,12 +7,13 @@
 //! - `stdio` — run in stdio MCP transport mode (legacy/fallback)
 //! - (no args) — start in foreground with Streamable HTTP transport
 
+mod application;
 mod daemon;
 mod db;
-mod error;
+mod domain;
 mod executor;
 mod scheduler;
-mod state;
+mod service_install;
 mod watchers;
 
 use anyhow::Result;
@@ -20,6 +21,7 @@ use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
 use std::sync::Arc;
 
+use application::ports::{StateRepository, TaskRepository, WatcherRepository};
 use daemon::TaskTriggerHandler;
 use db::Database;
 use executor::Executor;
@@ -74,10 +76,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
         Some(Commands::Stdio) => handle_stdio().await,
-        None => {
-            // Default: start Streamable HTTP server in foreground
-            handle_http_server(cli.port).await
-        }
+        None => handle_http_server(cli.port).await,
     }
 }
 
@@ -119,27 +118,22 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         port
     );
 
-    // Write PID file
     write_pid_file(&data_dir)?;
 
-    // Store daemon state
     db.set_state("port", &port.to_string())?;
     db.set_state("version", env!("CARGO_PKG_VERSION"))?;
     db.set_state("last_start", &chrono::Utc::now().to_rfc3339())?;
 
-    // Reload watchers from database
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    // Start internal cron scheduler
     let cron_scheduler = Arc::new(CronScheduler::new(
         Arc::clone(&db),
         Arc::clone(&executor),
     ));
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
-    // Create the MCP handler factory
     let handler_db = Arc::clone(&db);
     let handler_executor = Arc::clone(&executor);
     let handler_watcher_engine = Arc::clone(&watcher_engine);
@@ -157,9 +151,16 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         },
         rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
             .into(),
-        rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
-            cancellation_token: ct.child_token(),
-            ..Default::default()
+        {
+            // StreamableHttpServerConfig is non-exhaustive; construct via
+            // Default and set the allowed field. Silence clippy's
+            // `field_reassign_with_default` for this small helper block.
+            #[allow(clippy::field_reassign_with_default)]
+            {
+                let mut cfg = rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
+                cfg.cancellation_token = ct.child_token();
+                cfg
+            }
         },
     );
 
@@ -181,8 +182,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         .await?;
 
     // Cleanup
-    scheduler_cancel.cancel();
-    watcher_engine.stop_all().await;
+    scheduler_cancel.cancel();    watcher_engine.stop_all().await;
     remove_pid_file(&data_dir);
     tracing::info!("Daemon stopped");
 
@@ -195,24 +195,20 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
     match action {
         DaemonAction::Start => {
-            // Check if already running
             if let Some(pid) = read_pid(&data_dir) {
                 if is_process_running(pid) {
                     println!("Daemon is already running (PID: {pid})");
                     return Ok(());
                 }
-                // Stale PID file — clean it up
                 remove_pid_file(&data_dir);
             }
 
-            // Start the server in a background process
             let exe = std::env::current_exe()?;
             let mut cmd = std::process::Command::new(&exe);
             if let Some(port) = port_override {
                 cmd.arg("--port").arg(port.to_string());
             }
 
-            // Redirect stdout/stderr to daemon log
             let log_path = data_dir.join("daemon.log");
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
@@ -224,7 +220,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 .stderr(log_file_err)
                 .stdin(std::process::Stdio::null());
 
-            // Detach the process on unix
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
@@ -241,7 +236,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             let child = cmd.spawn()?;
             let child_pid = child.id();
 
-            // Wait briefly to verify the child didn't exit immediately
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             if is_process_running(child_pid) {
                 println!("Daemon started (PID: {child_pid})");
@@ -257,7 +251,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 if is_process_running(pid) {
                     send_signal(pid);
                     println!("Sent stop signal to daemon (PID: {pid})");
-                    // Wait for the process to actually stop
                     for _ in 0..20 {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         if !is_process_running(pid) {
@@ -287,7 +280,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
             if running {
                 let pid = pid_info.expect("pid checked above");
-                // Try to read daemon state from DB
                 if let Ok(db) = Database::new(&data_dir.join("tasks.db")) {
                     let port = db
                         .get_state("port")?
@@ -335,11 +327,11 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
         DaemonAction::InstallService => {
             let exe = std::env::current_exe()?;
             let port = resolve_port(port_override);
-            install_service(&exe, port)?;
+            service_install::install_service(&exe, port)?;
         }
 
         DaemonAction::UninstallService => {
-            uninstall_service()?;
+            service_install::uninstall_service()?;
         }
     }
 
@@ -356,12 +348,10 @@ async fn handle_stdio() -> Result<()> {
     let executor = Arc::new(Executor::new(Arc::clone(&db)));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
-    // Reload watchers (these will stop when the process exits)
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    // Start internal cron scheduler (also stops when process exits)
     let cron_scheduler = Arc::new(CronScheduler::new(
         Arc::clone(&db),
         Arc::clone(&executor),
@@ -375,7 +365,6 @@ async fn handle_stdio() -> Result<()> {
         0, // No port in stdio mode
     );
 
-    // Create stdio transport and serve
     let transport = rmcp::transport::stdio();
     let server = handler.serve(transport).await?;
     tracing::info!("MCP stdio server started");
@@ -479,251 +468,5 @@ fn print_last_n_lines(path: &std::path::Path, n: usize) -> Result<()> {
     for line in &lines[start..] {
         println!("{line}");
     }
-    Ok(())
-}
-
-// -- Service install/uninstall ------------------------------------------------
-
-/// Install the daemon as a system service that starts on boot.
-///
-/// - **Linux/WSL**: systemd user unit at `~/.config/systemd/user/task-trigger-mcp.service`
-/// - **macOS**: launchd agent at `~/Library/LaunchAgents/com.task-trigger-mcp.plist`
-fn install_service(exe_path: &std::path::Path, port: u16) -> Result<()> {
-    let exe = exe_path
-        .canonicalize()
-        .unwrap_or_else(|_| exe_path.to_path_buf());
-
-    if cfg!(target_os = "macos") {
-        install_launchd_service(&exe, port)
-    } else if cfg!(target_os = "linux") {
-        install_systemd_service(&exe, port)
-    } else {
-        anyhow::bail!("Service installation is not supported on this platform (only Linux and macOS)")
-    }
-}
-
-/// Uninstall the system service.
-fn uninstall_service() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        uninstall_launchd_service()
-    } else if cfg!(target_os = "linux") {
-        uninstall_systemd_service()
-    } else {
-        anyhow::bail!("Service uninstallation is not supported on this platform")
-    }
-}
-
-// -- systemd (Linux/WSL) ------------------------------------------------------
-
-const SYSTEMD_SERVICE_NAME: &str = "task-trigger-mcp.service";
-
-fn systemd_unit_dir() -> Result<std::path::PathBuf> {
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    Ok(home.join(".config/systemd/user"))
-}
-
-fn install_systemd_service(exe: &std::path::Path, port: u16) -> Result<()> {
-    let unit_dir = systemd_unit_dir()?;
-    std::fs::create_dir_all(&unit_dir)?;
-
-    let unit_path = unit_dir.join(SYSTEMD_SERVICE_NAME);
-    let exe_str = exe.display();
-
-    let unit_content = format!(
-        r#"[Unit]
-Description=task-trigger-mcp daemon
-After=network.target
-
-[Service]
-Type=simple
-ExecStart={exe_str} --port {port}
-Restart=on-failure
-RestartSec=5
-Environment=RUST_LOG=info
-
-[Install]
-WantedBy=default.target
-"#
-    );
-
-    std::fs::write(&unit_path, unit_content)?;
-    println!("Created {}", unit_path.display());
-
-    // Enable and start the service
-    let status = std::process::Command::new("systemctl")
-        .args(["--user", "daemon-reload"])
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {}
-        _ => {
-            println!("Warning: systemctl daemon-reload failed (systemd may not be available)");
-            println!("The unit file has been written — you can enable it manually:");
-            println!("  systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
-            return Ok(());
-        }
-    }
-
-    let enable = std::process::Command::new("systemctl")
-        .args(["--user", "enable", "--now", SYSTEMD_SERVICE_NAME])
-        .status()?;
-
-    if enable.success() {
-        println!("Service enabled and started");
-        println!("  Check status: systemctl --user status {SYSTEMD_SERVICE_NAME}");
-        println!("  View logs:    journalctl --user -u {SYSTEMD_SERVICE_NAME} -f");
-    } else {
-        println!("Warning: failed to enable service");
-        println!("  Try manually: systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
-    }
-
-    // Enable lingering so the user service runs without an active login session
-    if let Ok(user) = std::env::var("USER") {
-        let linger = std::process::Command::new("loginctl")
-            .args(["enable-linger", &user])
-            .status();
-        match linger {
-            Ok(s) if s.success() => {
-                println!("Lingering enabled (service will run after logout)");
-            }
-            _ => {
-                println!("Note: could not enable lingering. The service may stop when you log out.");
-                println!("  Run manually: loginctl enable-linger {user}");
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn uninstall_systemd_service() -> Result<()> {
-    let unit_dir = systemd_unit_dir()?;
-    let unit_path = unit_dir.join(SYSTEMD_SERVICE_NAME);
-
-    if !unit_path.exists() {
-        println!("Service is not installed (no unit file found)");
-        return Ok(());
-    }
-
-    // Stop and disable
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "stop", SYSTEMD_SERVICE_NAME])
-        .status();
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "disable", SYSTEMD_SERVICE_NAME])
-        .status();
-
-    std::fs::remove_file(&unit_path)?;
-    println!("Removed {}", unit_path.display());
-
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "daemon-reload"])
-        .status();
-
-    println!("Service stopped and uninstalled");
-    Ok(())
-}
-
-// -- launchd (macOS) ----------------------------------------------------------
-
-const LAUNCHD_LABEL: &str = "com.task-trigger-mcp";
-
-fn launchd_plist_path() -> Result<std::path::PathBuf> {
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    Ok(home.join(format!("Library/LaunchAgents/{LAUNCHD_LABEL}.plist")))
-}
-
-fn install_launchd_service(exe: &std::path::Path, port: u16) -> Result<()> {
-    let plist_path = launchd_plist_path()?;
-    if let Some(parent) = plist_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let home =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    let log_dir = home.join(".task-trigger");
-    std::fs::create_dir_all(&log_dir)?;
-
-    let exe_str = exe.display();
-    let stdout_log = log_dir.join("daemon.log").display().to_string();
-    let stderr_log = log_dir.join("daemon.err.log").display().to_string();
-
-    let plist_content = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{exe_str}</string>
-        <string>--port</string>
-        <string>{port}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>StandardOutPath</key>
-    <string>{stdout_log}</string>
-    <key>StandardErrorPath</key>
-    <string>{stderr_log}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>RUST_LOG</key>
-        <string>info</string>
-    </dict>
-</dict>
-</plist>
-"#
-    );
-
-    // Unload first if already installed (ignore errors)
-    if plist_path.exists() {
-        let _ = std::process::Command::new("launchctl")
-            .args(["unload", &plist_path.display().to_string()])
-            .status();
-    }
-
-    std::fs::write(&plist_path, plist_content)?;
-    println!("Created {}", plist_path.display());
-
-    let load = std::process::Command::new("launchctl")
-        .args(["load", &plist_path.display().to_string()])
-        .status()?;
-
-    if load.success() {
-        println!("Service loaded and started");
-        println!("  Check status: launchctl list | grep {LAUNCHD_LABEL}");
-        println!("  View logs:    tail -f {stdout_log}");
-    } else {
-        println!("Warning: launchctl load failed");
-        println!("  Try manually: launchctl load {}", plist_path.display());
-    }
-
-    Ok(())
-}
-
-fn uninstall_launchd_service() -> Result<()> {
-    let plist_path = launchd_plist_path()?;
-
-    if !plist_path.exists() {
-        println!("Service is not installed (no plist found)");
-        return Ok(());
-    }
-
-    let _ = std::process::Command::new("launchctl")
-        .args(["unload", &plist_path.display().to_string()])
-        .status();
-
-    std::fs::remove_file(&plist_path)?;
-    println!("Removed {}", plist_path.display());
-    println!("Service stopped and uninstalled");
     Ok(())
 }

@@ -17,19 +17,12 @@ use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use serde::Deserialize;
 
+use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
+use crate::domain::models::{Cli, Task, WatchEvent, Watcher};
+use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
-use crate::state::{Task, WatchEvent, Watcher};
 use crate::watchers::WatcherEngine;
-
-// -- Constants ----------------------------------------------------------------
-
-/// Maximum length for task/watcher IDs.
-const MAX_ID_LENGTH: usize = 64;
-/// Maximum length for prompt strings.
-const MAX_PROMPT_LENGTH: usize = 50_000;
-/// Maximum length for path strings.
-const MAX_PATH_LENGTH: usize = 4096;
 
 // ── Aggregate parameter types ────────────────────────────────────────
 
@@ -156,9 +149,6 @@ impl TaskTriggerHandler {
         Parameters(params): Parameters<TaskAddParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
-        use crate::state::Cli;
-
-        // Validate inputs
         if let Err(e) = validate_id(&params.id) {
             return Ok(error_result(&e));
         }
@@ -166,37 +156,11 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        // Parse CLI type — auto-detect if not provided
-        let cli = match params.cli.as_deref() {
-            Some("opencode") => Cli::OpenCode,
-            Some("kiro") => Cli::Kiro,
-            Some(other) => return Ok(error_result(&format!(
-                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
-            ))),
-            None => {
-                // Auto-detect from PATH
-                match Cli::detect_default() {
-                    Some(cli) => {
-                        tracing::info!("Auto-detected CLI: {}", cli);
-                        cli
-                    }
-                    None => {
-                        let available = Cli::detect_available();
-                        if available.is_empty() {
-                            return Ok(error_result(
-                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
-                            ));
-                        }
-                        return Ok(error_result(&format!(
-                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
-                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
-                        )));
-                    }
-                }
-            }
+        let cli = match Cli::resolve(params.cli.as_deref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(error_result(&e)),
         };
 
-        // Validate cron expression
         let schedule_expr = params.schedule.trim().to_string();
         if !validate_cron(&schedule_expr) {
             return Ok(error_result(&format!(
@@ -205,13 +169,11 @@ impl TaskTriggerHandler {
             )));
         }
 
-        // Setup log directory and path
         let log_dir = data_dir()?.join("logs");
         std::fs::create_dir_all(&log_dir)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let log_path = log_dir.join(&params.id).with_extension("log");
 
-        // Calculate expiration
         let expires_at = params
             .duration_minutes
             .map(|mins| Utc::now() + chrono::Duration::minutes(mins));
@@ -254,9 +216,6 @@ impl TaskTriggerHandler {
         &self,
         Parameters(params): Parameters<TaskWatchParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::state::Cli;
-
-        // Validate inputs
         if let Err(e) = validate_id(&params.id) {
             return Ok(error_result(&e));
         }
@@ -267,49 +226,15 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        // Parse CLI — auto-detect if not provided
-        let cli = match params.cli.as_deref() {
-            Some("opencode") => Cli::OpenCode,
-            Some("kiro") => Cli::Kiro,
-            Some(other) => return Ok(error_result(&format!(
-                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'", other
-            ))),
-            None => {
-                match Cli::detect_default() {
-                    Some(cli) => cli,
-                    None => {
-                        let available = Cli::detect_available();
-                        if available.is_empty() {
-                            return Ok(error_result(
-                                "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
-                            ));
-                        }
-                        return Ok(error_result(&format!(
-                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
-                            available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
-                        )));
-                    }
-                }
-            }
+        let cli = match Cli::resolve(params.cli.as_deref()) {
+            Ok(c) => c,
+            Err(e) => return Ok(error_result(&e)),
         };
 
-        // Parse events
-        let mut events = Vec::new();
-        for event_str in &params.events {
-            match WatchEvent::from_str(event_str) {
-                Some(e) => events.push(e),
-                None => {
-                    return Ok(error_result(&format!(
-                        "Invalid event type '{}'. Must be: create, modify, delete, move",
-                        event_str
-                    )))
-                }
-            }
-        }
-
-        if events.is_empty() {
-            return Ok(error_result("At least one event type must be specified"));
-        }
+        let events = match WatchEvent::parse_list(&params.events) {
+            Ok(e) => e,
+            Err(e) => return Ok(error_result(&e)),
+        };
 
         let watcher = Watcher {
             id: params.id.clone(),
@@ -330,7 +255,6 @@ impl TaskTriggerHandler {
             .insert_or_update_watcher(&watcher)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        // Start the actual filesystem watcher
         if let Err(e) = self.watcher_engine.start_watcher(watcher.clone()).await {
             tracing::warn!("Watcher '{}' saved but failed to start: {}", watcher.id, e);
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -470,14 +394,11 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // Stop watcher if it exists
         let _ = self.watcher_engine.stop_watcher(&id).await;
 
-        // Delete from database
         self.db
             .delete_task(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        // Also try to delete as watcher
         let _ = self.db.delete_watcher(&id);
 
         Ok(success_result(&format!("'{}' removed", id)))
@@ -492,10 +413,8 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // Stop the runtime watcher
         let _ = self.watcher_engine.stop_watcher(&id).await;
 
-        // Disable in DB
         self.db
             .update_watcher_enabled(&id, false)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -512,10 +431,8 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // Enable task if it exists
         let _ = self.db.update_task_enabled(&id, true);
 
-        // Re-enable and restart watcher if it exists
         if let Ok(Some(watcher)) = self.db.get_watcher(&id) {
             self.db
                 .update_watcher_enabled(&id, true)
@@ -535,10 +452,8 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // Disable task if it exists
         let _ = self.db.update_task_enabled(&id, false);
 
-        // Stop watcher if it exists
         if self.db.get_watcher(&id).ok().flatten().is_some() {
             self.db
                 .update_watcher_enabled(&id, false)
@@ -566,7 +481,7 @@ impl TaskTriggerHandler {
 
         match self
             .executor
-            .execute_task(&task, crate::state::TriggerType::Manual)
+            .execute_task(&task, crate::domain::models::TriggerType::Manual)
             .await
         {
             Ok(exit_code) => {
@@ -624,7 +539,6 @@ impl TaskTriggerHandler {
             .map(|d| d.join("logs").to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        // Temporal tasks with time remaining
         let temporal: Vec<String> = tasks
             .iter()
             .filter(|t| t.expires_at.is_some() && t.enabled)
@@ -679,11 +593,9 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
-        // Try to find as task first, then as watcher
         let log_path = if let Ok(Some(task)) = self.db.get_task(&params.id) {
             task.log_path
         } else {
-            // Watcher logs are at ~/.task-trigger/logs/<id>.log
             let dir = data_dir().map_err(|e| McpError::internal_error(e.to_string(), None))?;
             dir.join("logs")
                 .join(&params.id)
@@ -700,13 +612,11 @@ impl TaskTriggerHandler {
             )));
         }
 
-        // Read the log file
         let content = std::fs::read_to_string(path)
             .map_err(|e| McpError::internal_error(format!("Failed to read log: {}", e), None))?;
 
         let mut lines: Vec<&str> = content.lines().collect();
 
-        // Filter by 'since' timestamp if provided
         if let Some(ref since) = params.since {
             if let Ok(since_dt) = chrono::DateTime::parse_from_rfc3339(since) {
                 lines.retain(|line| {
@@ -722,12 +632,11 @@ impl TaskTriggerHandler {
                             }
                         }
                     }
-                    true // Keep non-timestamp lines
+                    true
                 });
             }
         }
 
-        // Take last N lines
         let total = lines.len();
         if lines.len() > max_lines {
             lines = lines[lines.len() - max_lines..].to_vec();
@@ -748,7 +657,6 @@ impl TaskTriggerHandler {
             )
         };
 
-        // Also include recent runs from DB
         if let Ok(runs) = self.db.list_runs(&params.id, 5) {
             if !runs.is_empty() {
                 let mut run_info = String::from("\n\nRecent executions:\n");
@@ -789,12 +697,10 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         use crate::scheduler::validate_cron;
 
-        // Validate ID format
         if let Err(e) = validate_id(&params.id) {
             return Ok(error_result(&e));
         }
 
-        // Determine if the ID is a task or a watcher
         let is_task = self
             .db
             .get_task(&params.id)
@@ -814,8 +720,7 @@ impl TaskTriggerHandler {
         }
 
         // ── Shared validation ────────────────────────────────────
-        if let Some(ref prompt) = params.prompt {
-            if let Err(e) = validate_prompt(prompt) {
+        if let Some(ref prompt) = params.prompt {            if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
             }
         }
@@ -831,7 +736,6 @@ impl TaskTriggerHandler {
 
         // ── Task update path ─────────────────────────────────────
         if is_task {
-            // Warn about watcher-only fields being ignored
             let ignored: Vec<&str> = [
                 params.path.as_ref().map(|_| "path"),
                 params.events.as_ref().map(|_| "events"),
@@ -842,7 +746,6 @@ impl TaskTriggerHandler {
             .flatten()
             .collect();
 
-            // Validate schedule if provided
             if let Some(ref schedule) = params.schedule {
                 let trimmed = schedule.trim();
                 if !validate_cron(trimmed) {
@@ -853,20 +756,17 @@ impl TaskTriggerHandler {
                 }
             }
 
-            // Compute expires_at from duration_minutes
             let expires_at: Option<Option<&str>> = match &params.duration_minutes {
                 Some(Some(mins)) => {
                     if *mins <= 0 {
                         return Ok(error_result("duration_minutes must be positive"));
                     }
-                    // We'll store a formatted string — handled below via a local binding
-                    None // sentinel; handled after
+                    None
                 }
-                Some(None) => Some(None), // clear expiration
-                None => None,             // no change
+                Some(None) => Some(None),
+                None => None,
             };
 
-            // Build the expires_at string if needed
             let expires_at_string: Option<String> = match &params.duration_minutes {
                 Some(Some(mins)) => {
                     let ts = Utc::now() + chrono::Duration::minutes(*mins);
@@ -883,7 +783,7 @@ impl TaskTriggerHandler {
 
             let schedule_trimmed = params.schedule.as_deref().map(|s| s.trim());
 
-            let task_fields = crate::db::TaskFieldsUpdate {
+            let task_fields = crate::application::ports::TaskFieldsUpdate {
                 prompt: params.prompt.as_deref(),
                 schedule_expr: schedule_trimmed,
                 cli: cli_str,
@@ -915,7 +815,6 @@ impl TaskTriggerHandler {
         }
 
         // ── Watcher update path ──────────────────────────────────
-        // Warn about task-only fields being ignored
         let ignored: Vec<&str> = [
             params.schedule.as_ref().map(|_| "schedule"),
             params.working_dir.as_ref().map(|_| "working_dir"),
@@ -925,30 +824,17 @@ impl TaskTriggerHandler {
         .flatten()
         .collect();
 
-        // Validate path if provided
         if let Some(ref path) = params.path {
             if let Err(e) = validate_watch_path(path) {
                 return Ok(error_result(&e));
             }
         }
 
-        // Validate and serialize events if provided
         let events_json: Option<String> = if let Some(ref event_strs) = params.events {
-            let mut events = Vec::new();
-            for s in event_strs {
-                match WatchEvent::from_str(s) {
-                    Some(e) => events.push(e),
-                    None => {
-                        return Ok(error_result(&format!(
-                            "Invalid event type '{}'. Must be: create, modify, delete, move",
-                            s
-                        )));
-                    }
-                }
-            }
-            if events.is_empty() {
-                return Ok(error_result("At least one event type must be specified"));
-            }
+            let events = match WatchEvent::parse_list(event_strs) {
+                Ok(e) => e,
+                Err(e) => return Ok(error_result(&e)),
+            };
             Some(serde_json::to_string(&events).map_err(|e| {
                 McpError::internal_error(format!("Failed to serialize events: {}", e), None)
             })?)
@@ -956,7 +842,7 @@ impl TaskTriggerHandler {
             None
         };
 
-        let watcher_fields = crate::db::WatcherFieldsUpdate {
+        let watcher_fields = crate::application::ports::WatcherFieldsUpdate {
             prompt: params.prompt.as_deref(),
             path: params.path.as_deref(),
             events: events_json.as_deref(),
@@ -976,8 +862,7 @@ impl TaskTriggerHandler {
         }
 
         // Restart watcher if structural fields changed
-        let needs_restart = params.path.is_some()
-            || params.events.is_some()
+        let needs_restart = params.path.is_some()            || params.events.is_some()
             || params.debounce_seconds.is_some()
             || params.recursive.is_some()
             || params.cli.is_some()
@@ -1043,141 +928,4 @@ fn success_result(message: &str) -> CallToolResult {
 
 fn error_result(message: &str) -> CallToolResult {
     CallToolResult::error(vec![Content::text(message.to_string())])
-}
-
-/// Validate an ID: non-empty, max length, alphanumeric + hyphens + underscores.
-fn validate_id(id: &str) -> Result<(), String> {
-    if id.is_empty() {
-        return Err("ID cannot be empty".to_string());
-    }
-    if id.len() > MAX_ID_LENGTH {
-        return Err(format!(
-            "ID exceeds maximum length of {MAX_ID_LENGTH} characters"
-        ));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(
-            "ID must contain only alphanumeric characters, hyphens, and underscores".to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// Validate a prompt string: non-empty, max length.
-fn validate_prompt(prompt: &str) -> Result<(), String> {
-    if prompt.trim().is_empty() {
-        return Err("Prompt cannot be empty".to_string());
-    }
-    if prompt.len() > MAX_PROMPT_LENGTH {
-        return Err(format!(
-            "Prompt exceeds maximum length of {MAX_PROMPT_LENGTH} characters"
-        ));
-    }
-    Ok(())
-}
-
-/// Validate a path string: non-empty, max length, absolute.
-fn validate_watch_path(path: &str) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err("Path cannot be empty".to_string());
-    }
-    if path.len() > MAX_PATH_LENGTH {
-        return Err(format!(
-            "Path exceeds maximum length of {MAX_PATH_LENGTH} characters"
-        ));
-    }
-    if !std::path::Path::new(path).is_absolute() {
-        return Err("Path must be absolute".to_string());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── validate_id ───────────────────────────────────────────────
-
-    #[test]
-    fn test_validate_id_valid() {
-        assert!(validate_id("my-task").is_ok());
-        assert!(validate_id("task_123").is_ok());
-        assert!(validate_id("a").is_ok());
-        assert!(validate_id("ABC-def_456").is_ok());
-    }
-
-    #[test]
-    fn test_validate_id_empty() {
-        assert!(validate_id("").is_err());
-    }
-
-    #[test]
-    fn test_validate_id_too_long() {
-        let long_id = "a".repeat(MAX_ID_LENGTH + 1);
-        assert!(validate_id(&long_id).is_err());
-        // Exactly at limit should pass
-        let exact_id = "a".repeat(MAX_ID_LENGTH);
-        assert!(validate_id(&exact_id).is_ok());
-    }
-
-    #[test]
-    fn test_validate_id_invalid_chars() {
-        assert!(validate_id("has space").is_err());
-        assert!(validate_id("has.dot").is_err());
-        assert!(validate_id("has/slash").is_err());
-        assert!(validate_id("has@at").is_err());
-        assert!(validate_id("has\nnewline").is_err());
-    }
-
-    // ── validate_prompt ───────────────────────────────────────────
-
-    #[test]
-    fn test_validate_prompt_valid() {
-        assert!(validate_prompt("Run the tests").is_ok());
-        assert!(validate_prompt("a").is_ok());
-    }
-
-    #[test]
-    fn test_validate_prompt_empty() {
-        assert!(validate_prompt("").is_err());
-        assert!(validate_prompt("   ").is_err());
-        assert!(validate_prompt("\t\n").is_err());
-    }
-
-    #[test]
-    fn test_validate_prompt_too_long() {
-        let long = "x".repeat(MAX_PROMPT_LENGTH + 1);
-        assert!(validate_prompt(&long).is_err());
-        let exact = "x".repeat(MAX_PROMPT_LENGTH);
-        assert!(validate_prompt(&exact).is_ok());
-    }
-
-    // ── validate_watch_path ───────────────────────────────────────
-
-    #[test]
-    fn test_validate_watch_path_valid() {
-        assert!(validate_watch_path("/tmp/project").is_ok());
-        assert!(validate_watch_path("/home/user/src").is_ok());
-    }
-
-    #[test]
-    fn test_validate_watch_path_empty() {
-        assert!(validate_watch_path("").is_err());
-        assert!(validate_watch_path("   ").is_err());
-    }
-
-    #[test]
-    fn test_validate_watch_path_relative() {
-        assert!(validate_watch_path("relative/path").is_err());
-        assert!(validate_watch_path("./here").is_err());
-    }
-
-    #[test]
-    fn test_validate_watch_path_too_long() {
-        let long = format!("/{}", "a".repeat(MAX_PATH_LENGTH));
-        assert!(validate_watch_path(&long).is_err());
-    }
 }
