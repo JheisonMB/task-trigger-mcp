@@ -12,9 +12,10 @@ use cron::Schedule;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
+use crate::application::ports::TaskRepository;
 use crate::db::Database;
 use crate::executor::Executor;
-use crate::state::TriggerType;
+use crate::domain::models::TriggerType;
 
 /// The internal cron scheduler that runs as a tokio task.
 pub struct CronScheduler {

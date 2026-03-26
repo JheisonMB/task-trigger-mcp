@@ -14,9 +14,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+use crate::application::ports::WatcherRepository;
 use crate::db::Database;
 use crate::executor::Executor;
-use crate::state::{WatchEvent, Watcher};
+use crate::domain::models::{WatchEvent, Watcher};
 
 /// Manages all active file system watchers.
 pub struct WatcherEngine {

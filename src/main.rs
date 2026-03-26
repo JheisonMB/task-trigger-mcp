@@ -7,12 +7,13 @@
 //! - `stdio` — run in stdio MCP transport mode (legacy/fallback)
 //! - (no args) — start in foreground with Streamable HTTP transport
 
+mod application;
 mod daemon;
 mod db;
+mod domain;
 mod error;
 mod executor;
 mod scheduler;
-mod state;
 mod watchers;
 
 use anyhow::Result;
@@ -20,6 +21,7 @@ use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
 use std::sync::Arc;
 
+use application::ports::{StateRepository, TaskRepository, WatcherRepository};
 use daemon::TaskTriggerHandler;
 use db::Database;
 use executor::Executor;
@@ -74,10 +76,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
         Some(Commands::Stdio) => handle_stdio().await,
-        None => {
-            // Default: start Streamable HTTP server in foreground
-            handle_http_server(cli.port).await
-        }
+        None => handle_http_server(cli.port).await,
     }
 }
 
@@ -119,27 +118,22 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         port
     );
 
-    // Write PID file
     write_pid_file(&data_dir)?;
 
-    // Store daemon state
     db.set_state("port", &port.to_string())?;
     db.set_state("version", env!("CARGO_PKG_VERSION"))?;
     db.set_state("last_start", &chrono::Utc::now().to_rfc3339())?;
 
-    // Reload watchers from database
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    // Start internal cron scheduler
     let cron_scheduler = Arc::new(CronScheduler::new(
         Arc::clone(&db),
         Arc::clone(&executor),
     ));
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
-    // Create the MCP handler factory
     let handler_db = Arc::clone(&db);
     let handler_executor = Arc::clone(&executor);
     let handler_watcher_engine = Arc::clone(&watcher_engine);
@@ -181,8 +175,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         .await?;
 
     // Cleanup
-    scheduler_cancel.cancel();
-    watcher_engine.stop_all().await;
+    scheduler_cancel.cancel();    watcher_engine.stop_all().await;
     remove_pid_file(&data_dir);
     tracing::info!("Daemon stopped");
 
@@ -195,24 +188,20 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
     match action {
         DaemonAction::Start => {
-            // Check if already running
             if let Some(pid) = read_pid(&data_dir) {
                 if is_process_running(pid) {
                     println!("Daemon is already running (PID: {pid})");
                     return Ok(());
                 }
-                // Stale PID file — clean it up
                 remove_pid_file(&data_dir);
             }
 
-            // Start the server in a background process
             let exe = std::env::current_exe()?;
             let mut cmd = std::process::Command::new(&exe);
             if let Some(port) = port_override {
                 cmd.arg("--port").arg(port.to_string());
             }
 
-            // Redirect stdout/stderr to daemon log
             let log_path = data_dir.join("daemon.log");
             let log_file = std::fs::OpenOptions::new()
                 .create(true)
@@ -224,7 +213,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 .stderr(log_file_err)
                 .stdin(std::process::Stdio::null());
 
-            // Detach the process on unix
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
@@ -241,7 +229,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             let child = cmd.spawn()?;
             let child_pid = child.id();
 
-            // Wait briefly to verify the child didn't exit immediately
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             if is_process_running(child_pid) {
                 println!("Daemon started (PID: {child_pid})");
@@ -257,7 +244,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 if is_process_running(pid) {
                     send_signal(pid);
                     println!("Sent stop signal to daemon (PID: {pid})");
-                    // Wait for the process to actually stop
                     for _ in 0..20 {
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         if !is_process_running(pid) {
@@ -287,7 +273,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
             if running {
                 let pid = pid_info.expect("pid checked above");
-                // Try to read daemon state from DB
                 if let Ok(db) = Database::new(&data_dir.join("tasks.db")) {
                     let port = db
                         .get_state("port")?
@@ -356,12 +341,10 @@ async fn handle_stdio() -> Result<()> {
     let executor = Arc::new(Executor::new(Arc::clone(&db)));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
-    // Reload watchers (these will stop when the process exits)
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    // Start internal cron scheduler (also stops when process exits)
     let cron_scheduler = Arc::new(CronScheduler::new(
         Arc::clone(&db),
         Arc::clone(&executor),
@@ -375,7 +358,6 @@ async fn handle_stdio() -> Result<()> {
         0, // No port in stdio mode
     );
 
-    // Create stdio transport and serve
     let transport = rmcp::transport::stdio();
     let server = handler.serve(transport).await?;
     tracing::info!("MCP stdio server started");
@@ -550,7 +532,6 @@ WantedBy=default.target
     std::fs::write(&unit_path, unit_content)?;
     println!("Created {}", unit_path.display());
 
-    // Enable and start the service
     let status = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status();
@@ -578,7 +559,6 @@ WantedBy=default.target
         println!("  Try manually: systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
     }
 
-    // Enable lingering so the user service runs without an active login session
     if let Ok(user) = std::env::var("USER") {
         let linger = std::process::Command::new("loginctl")
             .args(["enable-linger", &user])
@@ -607,8 +587,7 @@ fn uninstall_systemd_service() -> Result<()> {
     }
 
     // Stop and disable
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "stop", SYSTEMD_SERVICE_NAME])
+    let _ = std::process::Command::new("systemctl")        .args(["--user", "stop", SYSTEMD_SERVICE_NAME])
         .status();
     let _ = std::process::Command::new("systemctl")
         .args(["--user", "disable", SYSTEMD_SERVICE_NAME])
@@ -684,7 +663,6 @@ fn install_launchd_service(exe: &std::path::Path, port: u16) -> Result<()> {
 "#
     );
 
-    // Unload first if already installed (ignore errors)
     if plist_path.exists() {
         let _ = std::process::Command::new("launchctl")
             .args(["unload", &plist_path.display().to_string()])
