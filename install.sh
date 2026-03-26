@@ -68,12 +68,29 @@ info "installed" "$INSTALL_DIR/$BINARY"
 
 # --- verify PATH ---
 case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
+  *":$INSTALL_DIR:"*) 
+    PATH_OK=true
+    ;;
   *)
-    info "note" "$INSTALL_DIR is not in your PATH"
-    info "" "Add this to your shell profile:"
-    info "" "  export PATH=\"$INSTALL_DIR:\$PATH\""
+    PATH_OK=false
     ;;
 esac
+
+# --- add to PATH if needed ---
+if [ "$PATH_OK" = "false" ]; then
+  export PATH="$INSTALL_DIR:$PATH"
+  
+  # Try to update shell profile files
+  for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    if [ -f "$profile" ]; then
+      if ! grep -q "export PATH=\"$INSTALL_DIR:\$PATH\"" "$profile" 2>/dev/null; then
+        printf '\n# Added by task-trigger-mcp installer\nexport PATH="%s:$PATH"\n' "$INSTALL_DIR" >> "$profile"
+        info "updated" "$profile"
+      fi
+    fi
+  done
+  
+  info "note" "$INSTALL_DIR added to PATH for this session"
+fi
 
 info "done" "$($INSTALL_DIR/$BINARY --version 2>/dev/null || echo "$BINARY installed")"
