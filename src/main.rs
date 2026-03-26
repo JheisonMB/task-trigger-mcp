@@ -151,9 +151,16 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         },
         rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
             .into(),
-        rmcp::transport::streamable_http_server::StreamableHttpServerConfig {
-            cancellation_token: ct.child_token(),
-            ..Default::default()
+        {
+            // StreamableHttpServerConfig is non-exhaustive; construct via
+            // Default and set the allowed field. Silence clippy's
+            // `field_reassign_with_default` for this small helper block.
+            #[allow(clippy::field_reassign_with_default)]
+            {
+                let mut cfg = rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
+                cfg.cancellation_token = ct.child_token();
+                cfg
+            }
         },
     );
 
