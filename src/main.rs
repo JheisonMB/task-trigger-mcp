@@ -11,7 +11,6 @@ mod application;
 mod daemon;
 mod db;
 mod domain;
-mod error;
 mod executor;
 mod scheduler;
 mod service_install;
