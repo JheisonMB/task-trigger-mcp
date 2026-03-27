@@ -123,9 +123,7 @@ impl Database {
         }
 
         // Migrate runs table from INTEGER id to TEXT id with new columns
-        let has_status = conn
-            .prepare("SELECT status FROM runs LIMIT 0")
-            .is_ok();
+        let has_status = conn.prepare("SELECT status FROM runs LIMIT 0").is_ok();
         if !has_status {
             conn.execute_batch(
                 "ALTER TABLE runs RENAME TO runs_old;

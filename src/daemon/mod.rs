@@ -333,11 +333,7 @@ impl TaskTriggerHandler {
                     .last_run_ok
                     .map(|ok| if ok { "success" } else { "failed" })
                     .unwrap_or("unknown");
-                info.push_str(&format!(
-                    "  Last run: {} ({})\n",
-                    last.to_rfc3339(),
-                    ok_str
-                ));
+                info.push_str(&format!("  Last run: {} ({})\n", last.to_rfc3339(), ok_str));
             }
 
             if let Some(exp) = t.expires_at {
@@ -576,7 +572,10 @@ impl TaskTriggerHandler {
             .list_watchers()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let active_tasks = tasks.iter().filter(|t| t.enabled && !t.is_expired()).count();
+        let active_tasks = tasks
+            .iter()
+            .filter(|t| t.enabled && !t.is_expired())
+            .count();
         let active_watchers = self.watcher_engine.active_count().await;
 
         let uptime = self.start_time.elapsed();
@@ -609,7 +608,11 @@ impl TaskTriggerHandler {
             })
             .collect();
 
-        let transport = if self.port > 0 { "Streamable HTTP" } else { "stdio" };
+        let transport = if self.port > 0 {
+            "Streamable HTTP"
+        } else {
+            "stdio"
+        };
 
         let mut status = format!(
             "task-trigger-mcp v{}\n\
@@ -623,7 +626,11 @@ impl TaskTriggerHandler {
             env!("CARGO_PKG_VERSION"),
             uptime_str,
             transport,
-            if self.port > 0 { self.port.to_string() } else { "N/A".to_string() },
+            if self.port > 0 {
+                self.port.to_string()
+            } else {
+                "N/A".to_string()
+            },
             active_tasks,
             tasks.len(),
             active_watchers,
@@ -681,9 +688,7 @@ impl TaskTriggerHandler {
                         if let Some(at_pos) = line.find(" at ") {
                             let rest = &line[at_pos + 4..];
                             if let Some(end) = rest.find(" ---") {
-                                if let Ok(dt) =
-                                    chrono::DateTime::parse_from_rfc3339(&rest[..end])
-                                {
+                                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&rest[..end]) {
                                     return dt >= since_dt;
                                 }
                             }
@@ -700,10 +705,7 @@ impl TaskTriggerHandler {
         }
 
         let output = if lines.is_empty() {
-            format!(
-                "No log entries for '{}' matching the filter.",
-                params.id
-            )
+            format!("No log entries for '{}' matching the filter.", params.id)
         } else {
             format!(
                 "Logs for '{}' (showing {} of {} lines):\n\n{}",
@@ -784,7 +786,8 @@ impl TaskTriggerHandler {
         }
 
         // ── Shared validation ────────────────────────────────────
-        if let Some(ref prompt) = params.prompt {            if let Err(e) = validate_prompt(prompt) {
+        if let Some(ref prompt) = params.prompt {
+            if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
             }
         }
@@ -928,7 +931,8 @@ impl TaskTriggerHandler {
         }
 
         // Restart watcher if structural fields changed
-        let needs_restart = params.path.is_some()            || params.events.is_some()
+        let needs_restart = params.path.is_some()
+            || params.events.is_some()
             || params.debounce_seconds.is_some()
             || params.recursive.is_some()
             || params.cli.is_some()
@@ -1082,8 +1086,8 @@ impl ServerHandler for TaskTriggerHandler {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn data_dir() -> Result<std::path::PathBuf, McpError> {
-    let home =
-        dirs::home_dir().ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
     Ok(home.join(".task-trigger"))
 }
 

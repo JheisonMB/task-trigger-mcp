@@ -189,11 +189,7 @@ impl CronScheduler {
                                 );
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Scheduled task '{}' failed: {}",
-                                    task.id,
-                                    e
-                                );
+                                tracing::error!("Scheduled task '{}' failed: {}", task.id, e);
                             }
                         }
                     });
@@ -233,9 +229,9 @@ mod tests {
     #[test]
     fn test_cron_parse_after_conversion() {
         let cases = vec![
-            "*/5 * * * *",   // every 5 min
-            "0 9 * * *",     // daily at 9am
-            "0 9 * * 1-5",   // weekdays at 9am
+            "*/5 * * * *",    // every 5 min
+            "0 9 * * *",      // daily at 9am
+            "0 9 * * 1-5",    // weekdays at 9am
             "30 14 1,15 * *", // 1st and 15th at 2:30pm
         ];
 

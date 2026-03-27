@@ -87,8 +87,8 @@ async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
 
         tokio::select! {
             _ = ctrl_c => {},
@@ -128,10 +128,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    let cron_scheduler = Arc::new(CronScheduler::new(
-        Arc::clone(&db),
-        Arc::clone(&executor),
-    ));
+    let cron_scheduler = Arc::new(CronScheduler::new(Arc::clone(&db), Arc::clone(&executor)));
     let scheduler_notify = cron_scheduler.notifier();
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
@@ -160,7 +157,8 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
             // `field_reassign_with_default` for this small helper block.
             #[allow(clippy::field_reassign_with_default)]
             {
-                let mut cfg = rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
+                let mut cfg =
+                    rmcp::transport::streamable_http_server::StreamableHttpServerConfig::default();
                 cfg.cancellation_token = ct.child_token();
                 cfg
             }
@@ -245,7 +243,10 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 println!("Daemon started (PID: {child_pid})");
                 println!("Logs: {}", log_path.display());
             } else {
-                eprintln!("Daemon failed to start — check logs at {}", log_path.display());
+                eprintln!(
+                    "Daemon failed to start — check logs at {}",
+                    log_path.display()
+                );
                 return Err(anyhow::anyhow!("Daemon process exited immediately"));
             }
         }
@@ -278,16 +279,12 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
         DaemonAction::Status => {
             let pid_info = read_pid(&data_dir);
-            let running = pid_info
-                .map(is_process_running)
-                .unwrap_or(false);
+            let running = pid_info.map(is_process_running).unwrap_or(false);
 
             if running {
                 let pid = pid_info.expect("pid checked above");
                 if let Ok(db) = Database::new(&data_dir.join("tasks.db")) {
-                    let port = db
-                        .get_state("port")?
-                        .unwrap_or_else(|| "7755".to_string());
+                    let port = db.get_state("port")?.unwrap_or_else(|| "7755".to_string());
                     let version = db
                         .get_state("version")?
                         .unwrap_or_else(|| "unknown".to_string());
@@ -356,10 +353,7 @@ async fn handle_stdio() -> Result<()> {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
-    let cron_scheduler = Arc::new(CronScheduler::new(
-        Arc::clone(&db),
-        Arc::clone(&executor),
-    ));
+    let cron_scheduler = Arc::new(CronScheduler::new(Arc::clone(&db), Arc::clone(&executor)));
     let scheduler_notify = cron_scheduler.notifier();
     let _scheduler_cancel = Arc::clone(&cron_scheduler).start();
 

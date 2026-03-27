@@ -15,8 +15,8 @@ use tokio::sync::Mutex;
 
 use crate::application::ports::WatcherRepository;
 use crate::db::Database;
-use crate::executor::Executor;
 use crate::domain::models::{WatchEvent, Watcher};
+use crate::executor::Executor;
 
 /// Manages all active file system watchers.
 pub struct WatcherEngine {
@@ -46,7 +46,10 @@ impl WatcherEngine {
     /// Load and start all enabled watchers from the database.
     pub async fn reload_from_db(&self) -> Result<()> {
         let watchers = self.db.list_enabled_watchers()?;
-        tracing::info!("Reloading {} enabled watchers from database", watchers.len());
+        tracing::info!(
+            "Reloading {} enabled watchers from database",
+            watchers.len()
+        );
 
         for w in watchers {
             if let Err(e) = self.start_watcher(w).await {
@@ -71,10 +74,7 @@ impl WatcherEngine {
         let (actual_watch_path, file_filter) = if watch_path_buf.is_file()
             || (!watch_path_buf.exists()
                 && watch_path_buf.extension().is_some()
-                && watch_path_buf
-                    .parent()
-                    .map(|p| p.is_dir())
-                    .unwrap_or(false))
+                && watch_path_buf.parent().map(|p| p.is_dir()).unwrap_or(false))
         {
             let parent = watch_path_buf
                 .parent()
@@ -125,7 +125,9 @@ impl WatcherEngine {
                             // Map notify event kind to our WatchEvent type
                             let our_event = match event.kind {
                                 EventKind::Create(_) => Some(WatchEvent::Create),
-                                EventKind::Modify(notify::event::ModifyKind::Name(_)) => Some(WatchEvent::Move),
+                                EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                                    Some(WatchEvent::Move)
+                                }
                                 EventKind::Modify(_) => Some(WatchEvent::Modify),
                                 EventKind::Remove(_) => Some(WatchEvent::Delete),
                                 _ => {
@@ -146,7 +148,8 @@ impl WatcherEngine {
                             // user watches for "create", also accept modify events.
                             if let Some(evt) = our_event {
                                 let matched = events.contains(&evt)
-                                    || (evt == WatchEvent::Modify && events.contains(&WatchEvent::Create));
+                                    || (evt == WatchEvent::Modify
+                                        && events.contains(&WatchEvent::Create));
                                 if !matched {
                                     return;
                                 }
@@ -184,11 +187,7 @@ impl WatcherEngine {
                                     );
 
                                     if let Err(e) = executor
-                                        .execute_watcher_task(
-                                            &watcher_config,
-                                            &file_path,
-                                            &evt_str,
-                                        )
+                                        .execute_watcher_task(&watcher_config, &file_path, &evt_str)
                                         .await
                                     {
                                         tracing::error!(
