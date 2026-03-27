@@ -21,6 +21,8 @@ pub struct Task {
     pub last_run_at: Option<DateTime<Utc>>,
     pub last_run_ok: Option<bool>,
     pub log_path: String,
+    /// Timeout in minutes for execution locking (default: 15).
+    pub timeout_minutes: u32,
 }
 
 impl Task {
@@ -45,6 +47,8 @@ pub struct Watcher {
     pub created_at: DateTime<Utc>,
     pub last_triggered_at: Option<DateTime<Utc>>,
     pub trigger_count: u64,
+    /// Timeout in minutes for execution locking (default: 15).
+    pub timeout_minutes: u32,
 }
 
 /// File system event types that watchers can respond to.
@@ -203,14 +207,65 @@ impl std::fmt::Display for Cli {
     }
 }
 
+/// Status of an execution run.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RunStatus {
+    Pending,
+    InProgress,
+    Success,
+    Error,
+    Timeout,
+    Missed,
+}
+
+impl RunStatus {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "in_progress" => Self::InProgress,
+            "success" => Self::Success,
+            "error" => Self::Error,
+            "timeout" => Self::Timeout,
+            "missed" => Self::Missed,
+            _ => Self::Pending,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Success => "success",
+            Self::Error => "error",
+            Self::Timeout => "timeout",
+            Self::Missed => "missed",
+        }
+    }
+
+    /// Whether this status represents an active (locked) run.
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Pending | Self::InProgress)
+    }
+}
+
+impl std::fmt::Display for RunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Record of a single task execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
+    pub id: String,
     pub task_id: String,
+    pub status: RunStatus,
+    pub trigger_type: TriggerType,
+    pub summary: Option<String>,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
-    pub trigger_type: TriggerType,
+    pub timeout_at: Option<DateTime<Utc>>,
 }
 
 /// How a task was triggered.
@@ -268,6 +323,7 @@ mod tests {
             last_run_at: None,
             last_run_ok: None,
             log_path: "/tmp/t.log".to_string(),
+            timeout_minutes: 15,
         };
         assert!(!task.is_expired());
     }
@@ -287,6 +343,7 @@ mod tests {
             last_run_at: None,
             last_run_ok: None,
             log_path: "/tmp/t.log".to_string(),
+            timeout_minutes: 15,
         };
         assert!(!task.is_expired());
     }
@@ -306,6 +363,7 @@ mod tests {
             last_run_at: None,
             last_run_ok: None,
             log_path: "/tmp/t.log".to_string(),
+            timeout_minutes: 15,
         };
         assert!(task.is_expired());
     }

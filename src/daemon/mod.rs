@@ -43,6 +43,8 @@ pub struct TaskAddParams {
     pub duration_minutes: Option<i64>,
     /// Working directory for the CLI.
     pub working_dir: Option<String>,
+    /// Timeout in minutes for execution locking. If the agent doesn't report back within this time, the task is unlocked. Default: 15.
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -63,6 +65,8 @@ pub struct TaskWatchParams {
     pub debounce_seconds: Option<u64>,
     /// Watch subdirectories (default: false).
     pub recursive: Option<bool>,
+    /// Timeout in minutes for execution locking. Default: 15.
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -107,6 +111,16 @@ pub struct TaskLogsParams {
 pub struct IdParam {
     /// Task or watcher ID.
     pub id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TaskReportParams {
+    /// The run ID (UUID) provided in the task execution prompt.
+    pub run_id: String,
+    /// Execution status: `in_progress`, `success`, or `error`.
+    pub status: String,
+    /// Brief summary of what happened (required for success/error).
+    pub summary: Option<String>,
 }
 
 // ── MCP Handler ──────────────────────────────────────────────────────
@@ -195,6 +209,7 @@ impl TaskTriggerHandler {
             last_run_at: None,
             last_run_ok: None,
             log_path: log_path.to_string_lossy().to_string(),
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
         };
 
         self.db
@@ -255,6 +270,7 @@ impl TaskTriggerHandler {
             created_at: Utc::now(),
             last_triggered_at: None,
             trigger_count: 0,
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
         };
 
         self.db
@@ -915,6 +931,101 @@ impl TaskTriggerHandler {
             ));
         }
         Ok(success_result(&msg))
+    }
+
+    /// Report execution status from within a running task.
+    #[tool(
+        name = "task_report",
+        description = "Report execution status for a running task. The run_id is provided in the task execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
+    )]
+    async fn task_report(
+        &self,
+        Parameters(params): Parameters<TaskReportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::application::ports::RunRepository;
+        use crate::domain::models::RunStatus;
+
+        let status = match params.status.as_str() {
+            "in_progress" => RunStatus::InProgress,
+            "success" => RunStatus::Success,
+            "error" => RunStatus::Error,
+            _ => {
+                return Ok(error_result(
+                    "Invalid status. Must be 'in_progress', 'success', or 'error'.",
+                ));
+            }
+        };
+
+        // Require summary for terminal states
+        if matches!(status, RunStatus::Success | RunStatus::Error) && params.summary.is_none() {
+            return Ok(error_result(
+                "A summary is required when reporting 'success' or 'error'.",
+            ));
+        }
+
+        // Verify run exists and is in a valid state for this transition
+        let run = self
+            .db
+            .get_run(&params.run_id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .ok_or_else(|| {
+                McpError::internal_error(format!("Run '{}' not found.", params.run_id), None)
+            })?;
+
+        // Check if run has timed out
+        if run.status.is_active() {
+            if let Some(timeout_at) = run.timeout_at {
+                if chrono::Utc::now() > timeout_at {
+                    let _ = self.db.update_run_status(
+                        &params.run_id,
+                        RunStatus::Timeout,
+                        Some("Execution timed out"),
+                    );
+                    return Ok(error_result(&format!(
+                        "Run '{}' has timed out and can no longer be updated.",
+                        params.run_id
+                    )));
+                }
+            }
+        }
+
+        // Validate state transitions
+        let valid = match (&run.status, &status) {
+            (RunStatus::Pending, RunStatus::InProgress) => true,
+            (RunStatus::InProgress, RunStatus::Success | RunStatus::Error) => true,
+            // Allow pending -> success/error for agents that skip in_progress
+            (RunStatus::Pending, RunStatus::Success | RunStatus::Error) => true,
+            _ => false,
+        };
+        if !valid {
+            return Ok(error_result(&format!(
+                "Invalid transition: {} -> {}",
+                run.status, status
+            )));
+        }
+
+        let updated = self
+            .db
+            .update_run_status(&params.run_id, status, params.summary.as_deref())
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if !updated {
+            return Ok(error_result(&format!(
+                "Failed to update run '{}'.",
+                params.run_id
+            )));
+        }
+
+        // On terminal status, update the parent task/watcher's last_run info
+        if matches!(status, RunStatus::Success | RunStatus::Error) {
+            let success = status == RunStatus::Success;
+            let _ = self.db.update_task_last_run(&run.task_id, success);
+        }
+
+        Ok(success_result(&format!(
+            "Run '{}' status updated to '{}'.",
+            params.run_id, status
+        )))
     }
 }
 

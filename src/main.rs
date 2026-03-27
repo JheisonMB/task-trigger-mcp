@@ -185,7 +185,8 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         .await?;
 
     // Cleanup
-    scheduler_cancel.cancel();    watcher_engine.stop_all().await;
+    scheduler_cancel.cancel();
+    watcher_engine.stop_all().await;
     remove_pid_file(&data_dir);
     tracing::info!("Daemon stopped");
 

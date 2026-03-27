@@ -1,5 +1,10 @@
 # task-trigger-mcp
 
+[![CI](https://github.com/JheisonMB/task-trigger-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/JheisonMB/task-trigger-mcp/actions/workflows/ci.yml)
+[![Release](https://github.com/JheisonMB/task-trigger-mcp/actions/workflows/release.yml/badge.svg)](https://github.com/JheisonMB/task-trigger-mcp/actions/workflows/release.yml)
+[![Crates.io](https://img.shields.io/crates/v/task-trigger-mcp)](https://crates.io/crates/task-trigger-mcp)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A self-contained MCP server that lets AI agents register, manage, and execute **scheduled** and **event-driven** tasks. Single static binary. No runtime dependencies. Cross-platform (Linux/WSL, macOS).
 
 Your agent says *"run tests every day at 9am"* — the model converts that to a cron expression, and the binary handles scheduling, file watching, CLI invocation, log rotation, and everything else internally. The agent never writes bash scripts or touches crontab.
@@ -126,13 +131,13 @@ task-trigger-mcp daemon start
 # 2. Check it's running
 task-trigger-mcp daemon status
 
-# 3. Your agent now has access to 11 task management tools
+# 3. Your agent now has access to 12 task management tools
 ```
 
 The daemon is a single long-running process that owns:
 
 1. **MCP Server** (Streamable HTTP on port 7755) — so agents can connect and call tools
-2. **Internal Cron Scheduler** (tokio) — checks every 30 seconds which tasks are due and executes them
+2. **Internal Cron Scheduler** (tokio) — event-driven, sleeps until the next task is due and executes it
 3. **File Watcher Engine** (notify crate) — monitors files/directories for changes and triggers executions
 4. **SQLite Database** — persists all task/watcher definitions, run history, and logs
 
@@ -165,24 +170,17 @@ task-trigger-mcp daemon uninstall-service
 
 Alternatively, add `task-trigger-mcp daemon start` to your shell startup file (`.bashrc`, `.zshrc`).
 
-### Why not use crontab?
-
-- Zero external dependencies — the binary is fully self-contained
-- No permission issues with crontab editing
-- No state synchronization problems (SQLite is the single source of truth)
-- Works identically on Linux, WSL, and macOS
-- Simpler architecture — one process, one database, one scheduler
-
 ---
 
 ## MCP Tools
 
-The server exposes 11 tools to the agent:
+The server exposes 12 tools to the agent:
 
 | Tool | Description |
 |---|---|
-| `task_add` | Register a scheduled task with a 5-field cron expression (`*/5 * * * *`, `0 9 * * 1-5`). The model converts natural language to cron. |
-| `task_watch` | Watch a file/directory for create, modify, delete, or move events |
+| `task_add` | Register a scheduled task with a 5-field cron expression (`*/5 * * * *`, `0 9 * * 1-5`). Supports `timeout_minutes` for execution locking. |
+| `task_watch` | Watch a file/directory for create, modify, delete, or move events. Supports `timeout_minutes` for execution locking. |
+| `task_report` | Report execution status from a running task. Called by the agent with `run_id`, `status` (`in_progress`, `success`, `error`), and `summary`. |
 | `task_update` | Modify an existing task or watcher (schedule, prompt, events, etc.) without deleting and recreating it |
 | `task_list` | List all scheduled tasks with status, last run, and expiry info |
 | `task_watchers` | List all file watchers with status and trigger counts |
@@ -217,6 +215,27 @@ Common patterns:
 
 The model is responsible for converting natural language (e.g. "every day at 9am") into cron expressions. The tool description includes common patterns to guide the model.
 
+### Execution runs & locking
+
+Every task execution generates a unique run (UUID) with a lifecycle:
+
+```
+pending → in_progress → success / error
+                      → timeout (if agent doesn't report back)
+```
+
+**How it works:**
+
+1. When the daemon launches a task, it creates a run with status `pending` and locks the task
+2. The prompt sent to the agent includes instructions to call `task_report` with the `run_id`
+3. The agent calls `task_report(run_id, "in_progress")` immediately, then does its work
+4. When finished, the agent calls `task_report(run_id, "success", summary)` or `task_report(run_id, "error", summary)`
+5. If a new trigger arrives while the task is locked, it's recorded as `missed` and skipped
+
+**Timeout:** Each task has a configurable `timeout_minutes` (default: 15). If the agent doesn't report back within this window, the run is marked as `timeout` and the task is unlocked on the next trigger. This prevents tasks from being permanently locked.
+
+**Anti-recursion for watchers:** The locking mechanism naturally prevents recursive loops — if a watcher triggers a CLI that modifies the watched file, the second trigger is skipped because the task is still locked.
+
 ---
 
 ## Usage Examples
@@ -232,7 +251,8 @@ The model calls `task_add`:
   "prompt": "Run cargo test in the project and report any failures",
   "schedule": "0 9 * * *",
   "cli": "opencode",
-  "working_dir": "/home/user/my-project"
+  "working_dir": "/home/user/my-project",
+  "timeout_minutes": 30
 }
 ```
 
@@ -332,15 +352,8 @@ task-trigger-mcp daemon uninstall-service  # remove the system service
 | State | `rusqlite` (bundled) |
 | Serialization | `serde` + `serde_json` |
 | CLI detection | `which` |
+| UUID generation | `uuid` |
 | Logging | `tracing` |
-
----
-
-## Roadmap
-
-- Webhook trigger support (HTTP endpoint that fires a task)
-- Claude Code CLI support
-- Optional auth token for HTTP endpoint
 
 ---
 
