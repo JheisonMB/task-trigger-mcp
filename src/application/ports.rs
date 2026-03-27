@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-use crate::domain::models::{RunLog, Task, Watcher};
+use crate::domain::models::{RunLog, RunStatus, Task, Watcher};
 
 // ── Partial-update DTOs ──────────────────────────────────────────────
 
@@ -61,6 +61,15 @@ pub trait WatcherRepository {
 pub trait RunRepository {
     fn insert_run(&self, run: &RunLog) -> Result<()>;
     fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>>;
+    fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>>;
+    fn update_run_status(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        summary: Option<&str>,
+    ) -> Result<bool>;
+    fn update_run_exit_code(&self, run_id: &str, exit_code: i32) -> Result<bool>;
+    fn get_run(&self, run_id: &str) -> Result<Option<RunLog>>;
 }
 
 /// Key-value store for daemon state (e.g., PID, version).
