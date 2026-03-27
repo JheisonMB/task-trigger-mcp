@@ -508,35 +508,57 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let task = self
+        // Support both tasks and watchers
+        let is_task = self
             .db
             .get_task(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .ok_or_else(|| McpError::internal_error(format!("Task '{}' not found", id), None))?;
+            .is_some();
+        let is_watcher = self
+            .db
+            .get_watcher(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .is_some();
 
-        match self
-            .executor
-            .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
-            .await
-        {
-            Ok(exit_code) => {
-                if exit_code == 0 {
-                    Ok(success_result(&format!(
-                        "Task '{}' executed successfully (exit code: 0)",
-                        id
-                    )))
-                } else {
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Task '{}' executed with exit code: {}. Check logs with task_logs.",
-                        id, exit_code
-                    ))]))
-                }
-            }
-            Err(e) => Ok(error_result(&format!(
-                "Failed to execute task '{}': {}",
-                id, e
-            ))),
+        if !is_task && !is_watcher {
+            return Ok(error_result(&format!(
+                "No task or watcher found with ID '{}'",
+                id
+            )));
         }
+
+        // Fire-and-forget: spawn execution in background
+        let executor = Arc::clone(&self.executor);
+        let task_id = id.clone();
+
+        if is_task {
+            let task = self.db.get_task(&id).unwrap().unwrap();
+            tokio::spawn(async move {
+                match executor
+                    .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
+                    .await
+                {
+                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                }
+            });
+        } else {
+            let watcher = self.db.get_watcher(&id).unwrap().unwrap();
+            tokio::spawn(async move {
+                match executor
+                    .execute_watcher_task(&watcher, "manual", "manual")
+                    .await
+                {
+                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                }
+            });
+        }
+
+        Ok(success_result(&format!(
+            "Task '{}' launched in background. Use task_logs to check progress.",
+            id
+        )))
     }
 
     /// Get daemon status and statistics.

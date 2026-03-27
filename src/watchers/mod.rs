@@ -9,7 +9,6 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
 };
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -65,6 +64,22 @@ impl WatcherEngine {
         let debounce_secs = watcher_config.debounce_seconds;
         let recursive = watcher_config.recursive;
 
+        // On macOS, FSEvents works at directory level. If watching a single file,
+        // watch the parent directory and filter events by filename.
+        let watch_path_buf = std::path::PathBuf::from(&path);
+        let (actual_watch_path, file_filter) = if watch_path_buf.is_file() {
+            let parent = watch_path_buf
+                .parent()
+                .unwrap_or(&watch_path_buf)
+                .to_path_buf();
+            let filename = watch_path_buf
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string());
+            (parent, filename)
+        } else {
+            (watch_path_buf.clone(), None)
+        };
+
         // Clone what we need for the event handler closure
         let db = Arc::clone(&self.db);
         let executor = Arc::clone(&self.executor);
@@ -79,6 +94,7 @@ impl WatcherEngine {
             let db = Arc::clone(&db);
             let executor = Arc::clone(&executor);
             let watcher_config = watcher_config_for_handler.clone();
+            let file_filter = file_filter.clone();
 
             let rt = tokio::runtime::Handle::current();
 
@@ -86,6 +102,18 @@ impl WatcherEngine {
                 move |res: Result<Event, notify::Error>| {
                     match res {
                         Ok(event) => {
+                            // If watching a single file, filter by filename
+                            if let Some(ref filter) = file_filter {
+                                let matches = event.paths.iter().any(|p| {
+                                    p.file_name()
+                                        .map(|f| f.to_string_lossy() == *filter)
+                                        .unwrap_or(false)
+                                });
+                                if !matches {
+                                    return;
+                                }
+                            }
+
                             // Map notify event kind to our WatchEvent type
                             let our_event = match event.kind {
                                 EventKind::Create(_) => Some(WatchEvent::Create),
@@ -160,13 +188,17 @@ impl WatcherEngine {
 
         // Register the path with the watcher
         let mut watcher = notify_watcher;
-        let mode = if recursive {
+
+        let watch_path = &actual_watch_path;
+        // When watching a single file, always use NonRecursive on the parent dir
+        let mode = if file_filter.is_some() {
+            RecursiveMode::NonRecursive
+        } else if recursive {
             RecursiveMode::Recursive
         } else {
             RecursiveMode::NonRecursive
         };
 
-        let watch_path = Path::new(&path);
         if !watch_path.exists() {
             tracing::warn!(
                 "Watcher '{}': path '{}' does not exist, watcher will activate when it's created",
@@ -177,13 +209,23 @@ impl WatcherEngine {
 
         watcher.watch(watch_path, mode)?;
 
-        tracing::info!(
-            "Started watcher '{}' on '{}' (events: {:?}, recursive: {})",
-            id,
-            path,
-            events,
-            recursive
-        );
+        if file_filter.is_some() {
+            tracing::info!(
+                "Started watcher '{}' on file '{}' (via parent dir '{}', events: {:?})",
+                id,
+                path,
+                watch_path.display(),
+                events
+            );
+        } else {
+            tracing::info!(
+                "Started watcher '{}' on '{}' (events: {:?}, recursive: {})",
+                id,
+                path,
+                events,
+                recursive
+            );
+        }
 
         // Store the active watcher
         let mut active = self.active.lock().await;
