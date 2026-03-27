@@ -53,7 +53,7 @@ pub struct TaskWatchParams {
     pub id: String,
     /// Absolute path to file or directory to watch.
     pub path: String,
-    /// Events to watch: "create", "modify", "delete", "move".
+    /// Events to watch: "create", "modify", "delete", "move", or "all".
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,

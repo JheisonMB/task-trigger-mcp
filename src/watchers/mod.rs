@@ -66,8 +66,16 @@ impl WatcherEngine {
 
         // On macOS, FSEvents works at directory level. If watching a single file,
         // watch the parent directory and filter events by filename.
+        // Also handles non-existent files by watching the parent directory.
         let watch_path_buf = std::path::PathBuf::from(&path);
-        let (actual_watch_path, file_filter) = if watch_path_buf.is_file() {
+        let (actual_watch_path, file_filter) = if watch_path_buf.is_file()
+            || (!watch_path_buf.exists()
+                && watch_path_buf.extension().is_some()
+                && watch_path_buf
+                    .parent()
+                    .map(|p| p.is_dir())
+                    .unwrap_or(false))
+        {
             let parent = watch_path_buf
                 .parent()
                 .unwrap_or(&watch_path_buf)
@@ -215,11 +223,19 @@ impl WatcherEngine {
         };
 
         if !watch_path.exists() {
-            tracing::warn!(
-                "Watcher '{}': path '{}' does not exist, watcher will activate when it's created",
-                id,
-                path
-            );
+            if file_filter.is_some() {
+                tracing::info!(
+                    "Watcher '{}': file '{}' does not exist yet, watching parent dir for creation",
+                    id,
+                    path
+                );
+            } else {
+                tracing::warn!(
+                    "Watcher '{}': path '{}' does not exist, watcher will activate when it's created",
+                    id,
+                    path
+                );
+            }
         }
 
         watcher.watch(watch_path, mode)?;
