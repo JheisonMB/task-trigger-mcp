@@ -85,8 +85,7 @@ impl Database {
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
                 exit_code INTEGER,
-                timeout_at TEXT,
-                FOREIGN KEY(task_id) REFERENCES tasks(id)
+                timeout_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS daemon_state (
@@ -124,9 +123,7 @@ impl Database {
         }
 
         // Migrate runs table from INTEGER id to TEXT id with new columns
-        let has_status = conn
-            .prepare("SELECT status FROM runs LIMIT 0")
-            .is_ok();
+        let has_status = conn.prepare("SELECT status FROM runs LIMIT 0").is_ok();
         if !has_status {
             conn.execute_batch(
                 "ALTER TABLE runs RENAME TO runs_old;
@@ -139,12 +136,39 @@ impl Database {
                      started_at TEXT NOT NULL,
                      finished_at TEXT,
                      exit_code INTEGER,
-                     timeout_at TEXT,
-                     FOREIGN KEY(task_id) REFERENCES tasks(id)
+                     timeout_at TEXT
                  );
                  INSERT INTO runs (id, task_id, status, trigger_type, started_at, finished_at, exit_code)
                      SELECT CAST(id AS TEXT), task_id, 'success', trigger_type, started_at, finished_at, exit_code
                      FROM runs_old;
+                 DROP TABLE runs_old;",
+            )?;
+        }
+
+        // Remove FK constraint from runs table so watchers can have runs too
+        let has_fk: bool = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|sql| sql.contains("FOREIGN KEY"))
+            .unwrap_or(false);
+        if has_fk {
+            conn.execute_batch(
+                "ALTER TABLE runs RENAME TO runs_old;
+                 CREATE TABLE runs (
+                     id TEXT PRIMARY KEY,
+                     task_id TEXT NOT NULL,
+                     status TEXT NOT NULL DEFAULT 'pending',
+                     trigger_type TEXT NOT NULL,
+                     summary TEXT,
+                     started_at TEXT NOT NULL,
+                     finished_at TEXT,
+                     exit_code INTEGER,
+                     timeout_at TEXT
+                 );
+                 INSERT INTO runs SELECT * FROM runs_old;
                  DROP TABLE runs_old;",
             )?;
         }
@@ -462,6 +486,7 @@ impl WatcherRepository for Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        conn.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
         conn.execute("DELETE FROM watchers WHERE id = ?1", params![id])?;
         Ok(())
     }

@@ -53,7 +53,7 @@ pub struct TaskWatchParams {
     pub id: String,
     /// Absolute path to file or directory to watch.
     pub path: String,
-    /// Events to watch: "create", "modify", "delete", "move".
+    /// Events to watch: "create", "modify", "delete", "move", or "all".
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,
@@ -333,11 +333,7 @@ impl TaskTriggerHandler {
                     .last_run_ok
                     .map(|ok| if ok { "success" } else { "failed" })
                     .unwrap_or("unknown");
-                info.push_str(&format!(
-                    "  Last run: {} ({})\n",
-                    last.to_rfc3339(),
-                    ok_str
-                ));
+                info.push_str(&format!("  Last run: {} ({})\n", last.to_rfc3339(), ok_str));
             }
 
             if let Some(exp) = t.expires_at {
@@ -508,35 +504,57 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let task = self
+        // Support both tasks and watchers
+        let is_task = self
             .db
             .get_task(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .ok_or_else(|| McpError::internal_error(format!("Task '{}' not found", id), None))?;
+            .is_some();
+        let is_watcher = self
+            .db
+            .get_watcher(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .is_some();
 
-        match self
-            .executor
-            .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
-            .await
-        {
-            Ok(exit_code) => {
-                if exit_code == 0 {
-                    Ok(success_result(&format!(
-                        "Task '{}' executed successfully (exit code: 0)",
-                        id
-                    )))
-                } else {
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Task '{}' executed with exit code: {}. Check logs with task_logs.",
-                        id, exit_code
-                    ))]))
-                }
-            }
-            Err(e) => Ok(error_result(&format!(
-                "Failed to execute task '{}': {}",
-                id, e
-            ))),
+        if !is_task && !is_watcher {
+            return Ok(error_result(&format!(
+                "No task or watcher found with ID '{}'",
+                id
+            )));
         }
+
+        // Fire-and-forget: spawn execution in background
+        let executor = Arc::clone(&self.executor);
+        let task_id = id.clone();
+
+        if is_task {
+            let task = self.db.get_task(&id).unwrap().unwrap();
+            tokio::spawn(async move {
+                match executor
+                    .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
+                    .await
+                {
+                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                }
+            });
+        } else {
+            let watcher = self.db.get_watcher(&id).unwrap().unwrap();
+            tokio::spawn(async move {
+                match executor
+                    .execute_watcher_task(&watcher, "manual", "manual")
+                    .await
+                {
+                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                }
+            });
+        }
+
+        Ok(success_result(&format!(
+            "Task '{}' launched in background. Use task_logs to check progress.",
+            id
+        )))
     }
 
     /// Get daemon status and statistics.
@@ -554,7 +572,10 @@ impl TaskTriggerHandler {
             .list_watchers()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let active_tasks = tasks.iter().filter(|t| t.enabled && !t.is_expired()).count();
+        let active_tasks = tasks
+            .iter()
+            .filter(|t| t.enabled && !t.is_expired())
+            .count();
         let active_watchers = self.watcher_engine.active_count().await;
 
         let uptime = self.start_time.elapsed();
@@ -587,7 +608,11 @@ impl TaskTriggerHandler {
             })
             .collect();
 
-        let transport = if self.port > 0 { "Streamable HTTP" } else { "stdio" };
+        let transport = if self.port > 0 {
+            "Streamable HTTP"
+        } else {
+            "stdio"
+        };
 
         let mut status = format!(
             "task-trigger-mcp v{}\n\
@@ -601,7 +626,11 @@ impl TaskTriggerHandler {
             env!("CARGO_PKG_VERSION"),
             uptime_str,
             transport,
-            if self.port > 0 { self.port.to_string() } else { "N/A".to_string() },
+            if self.port > 0 {
+                self.port.to_string()
+            } else {
+                "N/A".to_string()
+            },
             active_tasks,
             tasks.len(),
             active_watchers,
@@ -659,9 +688,7 @@ impl TaskTriggerHandler {
                         if let Some(at_pos) = line.find(" at ") {
                             let rest = &line[at_pos + 4..];
                             if let Some(end) = rest.find(" ---") {
-                                if let Ok(dt) =
-                                    chrono::DateTime::parse_from_rfc3339(&rest[..end])
-                                {
+                                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&rest[..end]) {
                                     return dt >= since_dt;
                                 }
                             }
@@ -678,10 +705,7 @@ impl TaskTriggerHandler {
         }
 
         let output = if lines.is_empty() {
-            format!(
-                "No log entries for '{}' matching the filter.",
-                params.id
-            )
+            format!("No log entries for '{}' matching the filter.", params.id)
         } else {
             format!(
                 "Logs for '{}' (showing {} of {} lines):\n\n{}",
@@ -696,19 +720,26 @@ impl TaskTriggerHandler {
             if !runs.is_empty() {
                 let mut run_info = String::from("\n\nRecent executions:\n");
                 for r in &runs {
+                    let status_str = r.status.as_str();
+                    let duration = r
+                        .finished_at
+                        .map(|f| {
+                            let dur = f.signed_duration_since(r.started_at);
+                            format!("{}s", dur.num_seconds())
+                        })
+                        .unwrap_or_else(|| "in progress".to_string());
+                    let summary_str = r
+                        .summary
+                        .as_deref()
+                        .map(|s| format!(" — {}", s))
+                        .unwrap_or_default();
                     run_info.push_str(&format!(
-                        "  - {} | {} | exit: {} | {}\n",
+                        "  - {} | {} | {} | {}{}\n",
                         r.started_at.to_rfc3339(),
                         r.trigger_type,
-                        r.exit_code
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "running".to_string()),
-                        r.finished_at
-                            .map(|f| {
-                                let dur = f.signed_duration_since(r.started_at);
-                                format!("{}s", dur.num_seconds())
-                            })
-                            .unwrap_or_else(|| "in progress".to_string())
+                        status_str,
+                        duration,
+                        summary_str,
                     ));
                 }
                 return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -755,7 +786,8 @@ impl TaskTriggerHandler {
         }
 
         // ── Shared validation ────────────────────────────────────
-        if let Some(ref prompt) = params.prompt {            if let Err(e) = validate_prompt(prompt) {
+        if let Some(ref prompt) = params.prompt {
+            if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
             }
         }
@@ -899,13 +931,15 @@ impl TaskTriggerHandler {
         }
 
         // Restart watcher if structural fields changed
-        let needs_restart = params.path.is_some()            || params.events.is_some()
+        let needs_restart = params.path.is_some()
+            || params.events.is_some()
             || params.debounce_seconds.is_some()
             || params.recursive.is_some()
             || params.cli.is_some()
             || params.prompt.is_some()
             || params.model.is_some();
 
+        let mut restarted = false;
         if needs_restart {
             let _ = self.watcher_engine.stop_watcher(&params.id).await;
             if let Ok(Some(watcher)) = self.db.get_watcher(&params.id) {
@@ -916,13 +950,16 @@ impl TaskTriggerHandler {
                             params.id, e
                         ))]));
                     }
+                    restarted = true;
                 }
             }
         }
 
         let mut msg = format!("Watcher '{}' updated successfully.", params.id);
-        if needs_restart {
+        if restarted {
             msg.push_str(" Watcher restarted with new configuration.");
+        } else if needs_restart {
+            msg.push_str(" Watcher is paused — changes will apply when re-enabled.");
         }
         if !ignored.is_empty() {
             msg.push_str(&format!(
@@ -1049,8 +1086,8 @@ impl ServerHandler for TaskTriggerHandler {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 fn data_dir() -> Result<std::path::PathBuf, McpError> {
-    let home =
-        dirs::home_dir().ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
     Ok(home.join(".task-trigger"))
 }
 

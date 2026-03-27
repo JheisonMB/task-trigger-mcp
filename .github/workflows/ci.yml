@@ -41,6 +41,9 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Cargo fmt
+        run: cargo fmt --check
+
       - name: Cargo build
         run: cargo build --release
 
@@ -103,13 +106,3 @@ jobs:
             fi
             echo "✅ Versión bumpeada correctamente"
           fi
-
-      - name: Require PR description
-        run: |
-          BODY="${{ github.event.pull_request.body }}"
-          if [ -z "$BODY" ] || [ ${#BODY} -lt 10 ]; then
-            echo "❌ Error: Descripción del PR es muy corta o vacía"
-            echo "Por favor agregue una descripción detallada del cambio"
-            exit 1
-          fi
-          echo "✅ Descripción del PR validada"

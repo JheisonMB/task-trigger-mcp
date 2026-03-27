@@ -12,8 +12,8 @@ use tokio::process::Command;
 
 use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
-use crate::scheduler::substitute_variables;
 use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, Watcher};
+use crate::scheduler::substitute_variables;
 
 /// Maximum log file size before rotation (5 MB).
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024;
@@ -68,7 +68,12 @@ impl Executor {
     ///
     /// When `force` is true (manual runs), expiry and enabled checks are skipped.
     /// Returns the `run_id` if execution started, or None if skipped.
-    pub async fn execute_task(&self, task: &Task, trigger: TriggerType, force: bool) -> Result<i32> {
+    pub async fn execute_task(
+        &self,
+        task: &Task,
+        trigger: TriggerType,
+        force: bool,
+    ) -> Result<i32> {
         if !force {
             if task.is_expired() {
                 tracing::info!("Task '{}' has expired, disabling", task.id);
@@ -123,13 +128,7 @@ impl Executor {
         };
         self.db.insert_run(&run)?;
 
-        let user_prompt = substitute_variables(
-            &task.prompt,
-            &task.id,
-            &task.log_path,
-            None,
-            None,
-        );
+        let user_prompt = substitute_variables(&task.prompt, &task.id, &task.log_path, None, None);
         let wrapped = wrap_prompt(&user_prompt, &task.id, &run_id);
 
         let params = CliRunParams {
@@ -144,7 +143,25 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
-        // Update run with exit code (status remains pending/in_progress until agent reports)
+        // If the agent didn't report via task_report, auto-close the run
+        // based on the process exit code.
+        if let Ok(Some(run)) = self.db.get_run(&run_id) {
+            if run.status.is_active() {
+                let status = if result.success {
+                    RunStatus::Success
+                } else {
+                    RunStatus::Error
+                };
+                let _ = self.db.update_run_status(
+                    &run_id,
+                    status,
+                    Some(&format!(
+                        "Auto-closed: process exited with code {}",
+                        result.exit_code
+                    )),
+                );
+            }
+        }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_task_last_run(&task.id, result.success) {
@@ -236,10 +253,31 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
+        if let Ok(Some(run)) = self.db.get_run(&run_id) {
+            if run.status.is_active() {
+                let status = if result.success {
+                    RunStatus::Success
+                } else {
+                    RunStatus::Error
+                };
+                let _ = self.db.update_run_status(
+                    &run_id,
+                    status,
+                    Some(&format!(
+                        "Auto-closed: process exited with code {}",
+                        result.exit_code
+                    )),
+                );
+            }
+        }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_watcher_triggered(&watcher.id) {
-            tracing::error!("Failed to update trigger count for watcher '{}': {}", watcher.id, e);
+            tracing::error!(
+                "Failed to update trigger count for watcher '{}': {}",
+                watcher.id,
+                e
+            );
         }
 
         Ok(result.exit_code)
@@ -296,10 +334,7 @@ impl Executor {
             }
         };
 
-        Ok(CliRunResult {
-            exit_code,
-            success,
-        })
+        Ok(CliRunResult { exit_code, success })
     }
 }
 

@@ -76,13 +76,18 @@ impl WatchEvent {
     ///
     /// Returns an error if any string is invalid or if the list is empty.
     pub fn parse_list(event_strs: &[String]) -> Result<Vec<WatchEvent>, String> {
+        // "all" expands to every event type
+        if event_strs.len() == 1 && event_strs[0].eq_ignore_ascii_case("all") {
+            return Ok(vec![Self::Create, Self::Modify, Self::Delete, Self::Move]);
+        }
+
         let mut events = Vec::with_capacity(event_strs.len());
         for s in event_strs {
             match WatchEvent::from_str(s) {
                 Some(e) => events.push(e),
                 None => {
                     return Err(format!(
-                        "Invalid event type '{}'. Must be: create, modify, delete, move",
+                        "Invalid event type '{}'. Must be: create, modify, delete, move, or all",
                         s
                     ));
                 }

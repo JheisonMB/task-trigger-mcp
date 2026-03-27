@@ -9,15 +9,14 @@ use notify::{
     Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as NotifyWatcher,
 };
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::application::ports::WatcherRepository;
 use crate::db::Database;
-use crate::executor::Executor;
 use crate::domain::models::{WatchEvent, Watcher};
+use crate::executor::Executor;
 
 /// Manages all active file system watchers.
 pub struct WatcherEngine {
@@ -47,7 +46,10 @@ impl WatcherEngine {
     /// Load and start all enabled watchers from the database.
     pub async fn reload_from_db(&self) -> Result<()> {
         let watchers = self.db.list_enabled_watchers()?;
-        tracing::info!("Reloading {} enabled watchers from database", watchers.len());
+        tracing::info!(
+            "Reloading {} enabled watchers from database",
+            watchers.len()
+        );
 
         for w in watchers {
             if let Err(e) = self.start_watcher(w).await {
@@ -65,6 +67,27 @@ impl WatcherEngine {
         let debounce_secs = watcher_config.debounce_seconds;
         let recursive = watcher_config.recursive;
 
+        // On macOS, FSEvents works at directory level. If watching a single file,
+        // watch the parent directory and filter events by filename.
+        // Also handles non-existent files by watching the parent directory.
+        let watch_path_buf = std::path::PathBuf::from(&path);
+        let (actual_watch_path, file_filter) = if watch_path_buf.is_file()
+            || (!watch_path_buf.exists()
+                && watch_path_buf.extension().is_some()
+                && watch_path_buf.parent().map(|p| p.is_dir()).unwrap_or(false))
+        {
+            let parent = watch_path_buf
+                .parent()
+                .unwrap_or(&watch_path_buf)
+                .to_path_buf();
+            let filename = watch_path_buf
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string());
+            (parent, filename)
+        } else {
+            (watch_path_buf.clone(), None)
+        };
+
         // Clone what we need for the event handler closure
         let db = Arc::clone(&self.db);
         let executor = Arc::clone(&self.executor);
@@ -79,6 +102,7 @@ impl WatcherEngine {
             let db = Arc::clone(&db);
             let executor = Arc::clone(&executor);
             let watcher_config = watcher_config_for_handler.clone();
+            let file_filter = file_filter.clone();
 
             let rt = tokio::runtime::Handle::current();
 
@@ -86,17 +110,47 @@ impl WatcherEngine {
                 move |res: Result<Event, notify::Error>| {
                     match res {
                         Ok(event) => {
+                            // If watching a single file, filter by filename
+                            if let Some(ref filter) = file_filter {
+                                let matches = event.paths.iter().any(|p| {
+                                    p.file_name()
+                                        .map(|f| f.to_string_lossy() == *filter)
+                                        .unwrap_or(false)
+                                });
+                                if !matches {
+                                    return;
+                                }
+                            }
+
                             // Map notify event kind to our WatchEvent type
                             let our_event = match event.kind {
                                 EventKind::Create(_) => Some(WatchEvent::Create),
+                                EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                                    Some(WatchEvent::Move)
+                                }
                                 EventKind::Modify(_) => Some(WatchEvent::Modify),
                                 EventKind::Remove(_) => Some(WatchEvent::Delete),
-                                _ => None,
+                                _ => {
+                                    tracing::debug!(
+                                        "Watcher '{}' ignoring event kind: {:?}",
+                                        id,
+                                        event.kind
+                                    );
+                                    None
+                                }
                             };
 
-                            // Check if this event type is in our watched events
+                            // On macOS, FSEvents may report file creation as Modify.
+                            // Also try matching Access events that some platforms emit.
+
+                            // Check if this event type is in our watched events.
+                            // On macOS, create events often arrive as modify — if the
+                            // user watches for "create", also accept modify events.
                             if let Some(evt) = our_event {
-                                if !events.contains(&evt) {
+                                let matched = events.contains(&evt)
+                                    || (evt == WatchEvent::Modify
+                                        && events.contains(&WatchEvent::Create));
+                                if !matched {
                                     return;
                                 }
 
@@ -133,11 +187,7 @@ impl WatcherEngine {
                                     );
 
                                     if let Err(e) = executor
-                                        .execute_watcher_task(
-                                            &watcher_config,
-                                            &file_path,
-                                            &evt_str,
-                                        )
+                                        .execute_watcher_task(&watcher_config, &file_path, &evt_str)
                                         .await
                                     {
                                         tracing::error!(
@@ -160,30 +210,52 @@ impl WatcherEngine {
 
         // Register the path with the watcher
         let mut watcher = notify_watcher;
-        let mode = if recursive {
+
+        let watch_path = &actual_watch_path;
+        // When watching a single file, always use NonRecursive on the parent dir
+        let mode = if file_filter.is_some() {
+            RecursiveMode::NonRecursive
+        } else if recursive {
             RecursiveMode::Recursive
         } else {
             RecursiveMode::NonRecursive
         };
 
-        let watch_path = Path::new(&path);
         if !watch_path.exists() {
-            tracing::warn!(
-                "Watcher '{}': path '{}' does not exist, watcher will activate when it's created",
-                id,
-                path
-            );
+            if file_filter.is_some() {
+                tracing::info!(
+                    "Watcher '{}': file '{}' does not exist yet, watching parent dir for creation",
+                    id,
+                    path
+                );
+            } else {
+                tracing::warn!(
+                    "Watcher '{}': path '{}' does not exist, watcher will activate when it's created",
+                    id,
+                    path
+                );
+            }
         }
 
         watcher.watch(watch_path, mode)?;
 
-        tracing::info!(
-            "Started watcher '{}' on '{}' (events: {:?}, recursive: {})",
-            id,
-            path,
-            events,
-            recursive
-        );
+        if file_filter.is_some() {
+            tracing::info!(
+                "Started watcher '{}' on file '{}' (via parent dir '{}', events: {:?})",
+                id,
+                path,
+                watch_path.display(),
+                events
+            );
+        } else {
+            tracing::info!(
+                "Started watcher '{}' on '{}' (events: {:?}, recursive: {})",
+                id,
+                path,
+                events,
+                recursive
+            );
+        }
 
         // Store the active watcher
         let mut active = self.active.lock().await;
