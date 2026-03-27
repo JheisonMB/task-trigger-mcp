@@ -117,14 +117,29 @@ impl WatcherEngine {
                             // Map notify event kind to our WatchEvent type
                             let our_event = match event.kind {
                                 EventKind::Create(_) => Some(WatchEvent::Create),
+                                EventKind::Modify(notify::event::ModifyKind::Name(_)) => Some(WatchEvent::Move),
                                 EventKind::Modify(_) => Some(WatchEvent::Modify),
                                 EventKind::Remove(_) => Some(WatchEvent::Delete),
-                                _ => None,
+                                _ => {
+                                    tracing::debug!(
+                                        "Watcher '{}' ignoring event kind: {:?}",
+                                        id,
+                                        event.kind
+                                    );
+                                    None
+                                }
                             };
 
-                            // Check if this event type is in our watched events
+                            // On macOS, FSEvents may report file creation as Modify.
+                            // Also try matching Access events that some platforms emit.
+
+                            // Check if this event type is in our watched events.
+                            // On macOS, create events often arrive as modify — if the
+                            // user watches for "create", also accept modify events.
                             if let Some(evt) = our_event {
-                                if !events.contains(&evt) {
+                                let matched = events.contains(&evt)
+                                    || (evt == WatchEvent::Modify && events.contains(&WatchEvent::Create));
+                                if !matched {
                                     return;
                                 }
 

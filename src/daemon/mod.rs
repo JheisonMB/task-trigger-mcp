@@ -718,19 +718,26 @@ impl TaskTriggerHandler {
             if !runs.is_empty() {
                 let mut run_info = String::from("\n\nRecent executions:\n");
                 for r in &runs {
+                    let status_str = r.status.as_str();
+                    let duration = r
+                        .finished_at
+                        .map(|f| {
+                            let dur = f.signed_duration_since(r.started_at);
+                            format!("{}s", dur.num_seconds())
+                        })
+                        .unwrap_or_else(|| "in progress".to_string());
+                    let summary_str = r
+                        .summary
+                        .as_deref()
+                        .map(|s| format!(" — {}", s))
+                        .unwrap_or_default();
                     run_info.push_str(&format!(
-                        "  - {} | {} | exit: {} | {}\n",
+                        "  - {} | {} | {} | {}{}\n",
                         r.started_at.to_rfc3339(),
                         r.trigger_type,
-                        r.exit_code
-                            .map(|c| c.to_string())
-                            .unwrap_or_else(|| "running".to_string()),
-                        r.finished_at
-                            .map(|f| {
-                                let dur = f.signed_duration_since(r.started_at);
-                                format!("{}s", dur.num_seconds())
-                            })
-                            .unwrap_or_else(|| "in progress".to_string())
+                        status_str,
+                        duration,
+                        summary_str,
                     ));
                 }
                 return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -928,6 +935,7 @@ impl TaskTriggerHandler {
             || params.prompt.is_some()
             || params.model.is_some();
 
+        let mut restarted = false;
         if needs_restart {
             let _ = self.watcher_engine.stop_watcher(&params.id).await;
             if let Ok(Some(watcher)) = self.db.get_watcher(&params.id) {
@@ -938,13 +946,16 @@ impl TaskTriggerHandler {
                             params.id, e
                         ))]));
                     }
+                    restarted = true;
                 }
             }
         }
 
         let mut msg = format!("Watcher '{}' updated successfully.", params.id);
-        if needs_restart {
+        if restarted {
             msg.push_str(" Watcher restarted with new configuration.");
+        } else if needs_restart {
+            msg.push_str(" Watcher is paused — changes will apply when re-enabled.");
         }
         if !ignored.is_empty() {
             msg.push_str(&format!(
