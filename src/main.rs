@@ -132,11 +132,13 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         Arc::clone(&db),
         Arc::clone(&executor),
     ));
+    let scheduler_notify = cron_scheduler.notifier();
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
     let handler_db = Arc::clone(&db);
     let handler_executor = Arc::clone(&executor);
     let handler_watcher_engine = Arc::clone(&watcher_engine);
+    let handler_scheduler_notify = Arc::clone(&scheduler_notify);
 
     let ct = tokio_util::sync::CancellationToken::new();
 
@@ -146,6 +148,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
                 Arc::clone(&handler_db),
                 Arc::clone(&handler_executor),
                 Arc::clone(&handler_watcher_engine),
+                Arc::clone(&handler_scheduler_notify),
                 port,
             ))
         },
@@ -356,12 +359,14 @@ async fn handle_stdio() -> Result<()> {
         Arc::clone(&db),
         Arc::clone(&executor),
     ));
+    let scheduler_notify = cron_scheduler.notifier();
     let _scheduler_cancel = Arc::clone(&cron_scheduler).start();
 
     let handler = TaskTriggerHandler::new(
         Arc::clone(&db),
         Arc::clone(&executor),
         Arc::clone(&watcher_engine),
+        scheduler_notify,
         0, // No port in stdio mode
     );
 

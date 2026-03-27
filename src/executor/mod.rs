@@ -49,16 +49,20 @@ impl Executor {
     }
 
     /// Execute a scheduled task.
-    pub async fn execute_task(&self, task: &Task, trigger: TriggerType) -> Result<i32> {
-        if task.is_expired() {
-            tracing::info!("Task '{}' has expired, disabling", task.id);
-            self.db.update_task_enabled(&task.id, false)?;
-            return Ok(-1);
-        }
+    ///
+    /// When `force` is true (manual runs), expiry and enabled checks are skipped.
+    pub async fn execute_task(&self, task: &Task, trigger: TriggerType, force: bool) -> Result<i32> {
+        if !force {
+            if task.is_expired() {
+                tracing::info!("Task '{}' has expired, disabling", task.id);
+                self.db.update_task_enabled(&task.id, false)?;
+                return Ok(-1);
+            }
 
-        if !task.enabled {
-            tracing::info!("Task '{}' is disabled, skipping", task.id);
-            return Ok(-1);
+            if !task.enabled {
+                tracing::info!("Task '{}' is disabled, skipping", task.id);
+                return Ok(-1);
+            }
         }
 
         let prompt = substitute_variables(

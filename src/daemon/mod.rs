@@ -16,6 +16,7 @@ use rmcp::tool_router;
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use serde::Deserialize;
+use tokio::sync::Notify;
 
 use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
@@ -116,6 +117,7 @@ pub struct TaskTriggerHandler {
     pub db: Arc<Database>,
     pub executor: Arc<Executor>,
     pub watcher_engine: Arc<WatcherEngine>,
+    pub scheduler_notify: Arc<Notify>,
     pub start_time: std::time::Instant,
     pub port: u16,
     tool_router: ToolRouter<Self>,
@@ -127,12 +129,14 @@ impl TaskTriggerHandler {
         db: Arc<Database>,
         executor: Arc<Executor>,
         watcher_engine: Arc<WatcherEngine>,
+        scheduler_notify: Arc<Notify>,
         port: u16,
     ) -> Self {
         Self {
             db,
             executor,
             watcher_engine,
+            scheduler_notify,
             start_time: std::time::Instant::now(),
             port,
             tool_router: Self::tool_router(),
@@ -196,6 +200,8 @@ impl TaskTriggerHandler {
         self.db
             .insert_or_update_task(&task)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        self.scheduler_notify.notify_one();
 
         Ok(success_result(&format!(
             "Task '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this task automatically.",
@@ -431,7 +437,20 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
+        // If the task has expired, clear expires_at so the scheduler picks it up
+        if let Ok(Some(task)) = self.db.get_task(&id) {
+            if task.is_expired() {
+                let clear_expiry = crate::application::ports::TaskFieldsUpdate {
+                    expires_at: Some(None),
+                    ..Default::default()
+                };
+                let _ = self.db.update_task_fields(&id, &clear_expiry);
+            }
+        }
+
         let _ = self.db.update_task_enabled(&id, true);
+
+        self.scheduler_notify.notify_one();
 
         if let Ok(Some(watcher)) = self.db.get_watcher(&id) {
             self.db
@@ -481,7 +500,7 @@ impl TaskTriggerHandler {
 
         match self
             .executor
-            .execute_task(&task, crate::domain::models::TriggerType::Manual)
+            .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
             .await
         {
             Ok(exit_code) => {
@@ -801,9 +820,11 @@ impl TaskTriggerHandler {
                 return Ok(error_result("No fields to update were provided"));
             }
 
+            self.scheduler_notify.notify_one();
+
             let mut msg = format!("Task '{}' updated successfully.", params.id);
             if params.schedule.is_some() {
-                msg.push_str(" Schedule change will take effect within 30 seconds.");
+                msg.push_str(" Schedule change will take effect immediately.");
             }
             if !ignored.is_empty() {
                 msg.push_str(&format!(
