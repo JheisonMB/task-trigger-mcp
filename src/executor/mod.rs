@@ -144,7 +144,22 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
-        // Update run with exit code (status remains pending/in_progress until agent reports)
+        // If the agent didn't report via task_report, auto-close the run
+        // based on the process exit code.
+        if let Ok(Some(run)) = self.db.get_run(&run_id) {
+            if run.status.is_active() {
+                let status = if result.success {
+                    RunStatus::Success
+                } else {
+                    RunStatus::Error
+                };
+                let _ = self.db.update_run_status(
+                    &run_id,
+                    status,
+                    Some(&format!("Auto-closed: process exited with code {}", result.exit_code)),
+                );
+            }
+        }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_task_last_run(&task.id, result.success) {
@@ -236,6 +251,20 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
+        if let Ok(Some(run)) = self.db.get_run(&run_id) {
+            if run.status.is_active() {
+                let status = if result.success {
+                    RunStatus::Success
+                } else {
+                    RunStatus::Error
+                };
+                let _ = self.db.update_run_status(
+                    &run_id,
+                    status,
+                    Some(&format!("Auto-closed: process exited with code {}", result.exit_code)),
+                );
+            }
+        }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_watcher_triggered(&watcher.id) {
