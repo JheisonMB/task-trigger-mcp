@@ -16,6 +16,7 @@ use rmcp::tool_router;
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
 use serde::Deserialize;
+use tokio::sync::Notify;
 
 use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
@@ -42,6 +43,8 @@ pub struct TaskAddParams {
     pub duration_minutes: Option<i64>,
     /// Working directory for the CLI.
     pub working_dir: Option<String>,
+    /// Timeout in minutes for execution locking. If the agent doesn't report back within this time, the task is unlocked. Default: 15.
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -62,6 +65,8 @@ pub struct TaskWatchParams {
     pub debounce_seconds: Option<u64>,
     /// Watch subdirectories (default: false).
     pub recursive: Option<bool>,
+    /// Timeout in minutes for execution locking. Default: 15.
+    pub timeout_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -108,6 +113,16 @@ pub struct IdParam {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TaskReportParams {
+    /// The run ID (UUID) provided in the task execution prompt.
+    pub run_id: String,
+    /// Execution status: `in_progress`, `success`, or `error`.
+    pub status: String,
+    /// Brief summary of what happened (required for success/error).
+    pub summary: Option<String>,
+}
+
 // ── MCP Handler ──────────────────────────────────────────────────────
 
 /// The main MCP server handler for task-trigger-mcp.
@@ -116,6 +131,7 @@ pub struct TaskTriggerHandler {
     pub db: Arc<Database>,
     pub executor: Arc<Executor>,
     pub watcher_engine: Arc<WatcherEngine>,
+    pub scheduler_notify: Arc<Notify>,
     pub start_time: std::time::Instant,
     pub port: u16,
     tool_router: ToolRouter<Self>,
@@ -127,12 +143,14 @@ impl TaskTriggerHandler {
         db: Arc<Database>,
         executor: Arc<Executor>,
         watcher_engine: Arc<WatcherEngine>,
+        scheduler_notify: Arc<Notify>,
         port: u16,
     ) -> Self {
         Self {
             db,
             executor,
             watcher_engine,
+            scheduler_notify,
             start_time: std::time::Instant::now(),
             port,
             tool_router: Self::tool_router(),
@@ -191,11 +209,14 @@ impl TaskTriggerHandler {
             last_run_at: None,
             last_run_ok: None,
             log_path: log_path.to_string_lossy().to_string(),
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
         };
 
         self.db
             .insert_or_update_task(&task)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        self.scheduler_notify.notify_one();
 
         Ok(success_result(&format!(
             "Task '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this task automatically.",
@@ -249,6 +270,7 @@ impl TaskTriggerHandler {
             created_at: Utc::now(),
             last_triggered_at: None,
             trigger_count: 0,
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
         };
 
         self.db
@@ -431,7 +453,20 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
+        // If the task has expired, clear expires_at so the scheduler picks it up
+        if let Ok(Some(task)) = self.db.get_task(&id) {
+            if task.is_expired() {
+                let clear_expiry = crate::application::ports::TaskFieldsUpdate {
+                    expires_at: Some(None),
+                    ..Default::default()
+                };
+                let _ = self.db.update_task_fields(&id, &clear_expiry);
+            }
+        }
+
         let _ = self.db.update_task_enabled(&id, true);
+
+        self.scheduler_notify.notify_one();
 
         if let Ok(Some(watcher)) = self.db.get_watcher(&id) {
             self.db
@@ -481,7 +516,7 @@ impl TaskTriggerHandler {
 
         match self
             .executor
-            .execute_task(&task, crate::domain::models::TriggerType::Manual)
+            .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
             .await
         {
             Ok(exit_code) => {
@@ -801,9 +836,11 @@ impl TaskTriggerHandler {
                 return Ok(error_result("No fields to update were provided"));
             }
 
+            self.scheduler_notify.notify_one();
+
             let mut msg = format!("Task '{}' updated successfully.", params.id);
             if params.schedule.is_some() {
-                msg.push_str(" Schedule change will take effect within 30 seconds.");
+                msg.push_str(" Schedule change will take effect immediately.");
             }
             if !ignored.is_empty() {
                 msg.push_str(&format!(
@@ -894,6 +931,101 @@ impl TaskTriggerHandler {
             ));
         }
         Ok(success_result(&msg))
+    }
+
+    /// Report execution status from within a running task.
+    #[tool(
+        name = "task_report",
+        description = "Report execution status for a running task. The run_id is provided in the task execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
+    )]
+    async fn task_report(
+        &self,
+        Parameters(params): Parameters<TaskReportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::application::ports::RunRepository;
+        use crate::domain::models::RunStatus;
+
+        let status = match params.status.as_str() {
+            "in_progress" => RunStatus::InProgress,
+            "success" => RunStatus::Success,
+            "error" => RunStatus::Error,
+            _ => {
+                return Ok(error_result(
+                    "Invalid status. Must be 'in_progress', 'success', or 'error'.",
+                ));
+            }
+        };
+
+        // Require summary for terminal states
+        if matches!(status, RunStatus::Success | RunStatus::Error) && params.summary.is_none() {
+            return Ok(error_result(
+                "A summary is required when reporting 'success' or 'error'.",
+            ));
+        }
+
+        // Verify run exists and is in a valid state for this transition
+        let run = self
+            .db
+            .get_run(&params.run_id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .ok_or_else(|| {
+                McpError::internal_error(format!("Run '{}' not found.", params.run_id), None)
+            })?;
+
+        // Check if run has timed out
+        if run.status.is_active() {
+            if let Some(timeout_at) = run.timeout_at {
+                if chrono::Utc::now() > timeout_at {
+                    let _ = self.db.update_run_status(
+                        &params.run_id,
+                        RunStatus::Timeout,
+                        Some("Execution timed out"),
+                    );
+                    return Ok(error_result(&format!(
+                        "Run '{}' has timed out and can no longer be updated.",
+                        params.run_id
+                    )));
+                }
+            }
+        }
+
+        // Validate state transitions
+        let valid = match (&run.status, &status) {
+            (RunStatus::Pending, RunStatus::InProgress) => true,
+            (RunStatus::InProgress, RunStatus::Success | RunStatus::Error) => true,
+            // Allow pending -> success/error for agents that skip in_progress
+            (RunStatus::Pending, RunStatus::Success | RunStatus::Error) => true,
+            _ => false,
+        };
+        if !valid {
+            return Ok(error_result(&format!(
+                "Invalid transition: {} -> {}",
+                run.status, status
+            )));
+        }
+
+        let updated = self
+            .db
+            .update_run_status(&params.run_id, status, params.summary.as_deref())
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if !updated {
+            return Ok(error_result(&format!(
+                "Failed to update run '{}'.",
+                params.run_id
+            )));
+        }
+
+        // On terminal status, update the parent task/watcher's last_run info
+        if matches!(status, RunStatus::Success | RunStatus::Error) {
+            let success = status == RunStatus::Success;
+            let _ = self.db.update_task_last_run(&run.task_id, success);
+        }
+
+        Ok(success_result(&format!(
+            "Run '{}' status updated to '{}'.",
+            params.run_id, status
+        )))
     }
 }
 

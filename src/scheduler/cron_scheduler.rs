@@ -1,27 +1,30 @@
 //! Internal cron scheduler — runs inside the daemon process.
 //!
-//! Replaces the OS scheduler (crontab/launchd) approach. The daemon
-//! owns a tokio task that wakes up every 30 seconds, checks which
-//! tasks are due, and executes them via the Executor.
+//! Instead of polling on a fixed interval, the scheduler computes the
+//! nearest `next_fire_time` across all active tasks and sleeps exactly
+//! until that instant.  A `Notify` handle lets the daemon wake the
+//! scheduler early when tasks are added, updated, or re-enabled.
 
 use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Utc;
 use cron::Schedule;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::application::ports::TaskRepository;
 use crate::db::Database;
-use crate::executor::Executor;
 use crate::domain::models::TriggerType;
+use crate::executor::Executor;
 
 /// The internal cron scheduler that runs as a tokio task.
 pub struct CronScheduler {
     db: Arc<Database>,
     executor: Arc<Executor>,
     cancel: CancellationToken,
+    /// Wakes the scheduler to recalculate the next fire time.
+    notify: Arc<Notify>,
     /// Track last execution time per task to avoid double-firing.
     last_fired: Arc<Mutex<std::collections::HashMap<String, chrono::DateTime<Utc>>>>,
 }
@@ -32,8 +35,14 @@ impl CronScheduler {
             db,
             executor,
             cancel: CancellationToken::new(),
+            notify: Arc::new(Notify::new()),
             last_fired: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Get a handle to wake the scheduler when tasks change.
+    pub fn notifier(&self) -> Arc<Notify> {
+        Arc::clone(&self.notify)
     }
 
     /// Start the scheduler loop as a background tokio task.
@@ -52,26 +61,74 @@ impl CronScheduler {
         cancel
     }
 
-    /// The main scheduler loop. Checks every 30 seconds for tasks that are due.
+    /// The main scheduler loop. Sleeps until the next task is due,
+    /// or wakes early on cancel/notify.
     async fn run_loop(&self) {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-
         loop {
+            let sleep_dur = self.next_sleep_duration();
+
             tokio::select! {
-                _ = self.cancel.cancelled() => {
-                    break;
+                _ = self.cancel.cancelled() => break,
+                _ = self.notify.notified() => {
+                    // Tasks changed — recalculate immediately
+                    continue;
                 }
-                _ = interval.tick() => {
-                    if let Err(e) = self.check_and_execute().await {
-                        tracing::error!("Scheduler check failed: {}", e);
+                _ = tokio::time::sleep(sleep_dur) => {
+                    if let Err(e) = self.fire_due_tasks().await {
+                        tracing::error!("Scheduler fire failed: {}", e);
                     }
                 }
             }
         }
     }
 
-    /// Check all enabled tasks and execute any that are due.
-    async fn check_and_execute(&self) -> anyhow::Result<()> {
+    /// Compute how long to sleep until the nearest task fires.
+    /// Falls back to 60 s if there are no active tasks or on parse errors.
+    fn next_sleep_duration(&self) -> std::time::Duration {
+        const FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
+
+        let Ok(tasks) = self.db.list_tasks() else {
+            return FALLBACK;
+        };
+
+        let now = Utc::now();
+        let mut earliest: Option<chrono::DateTime<Utc>> = None;
+
+        for task in &tasks {
+            if !task.enabled || task.is_expired() {
+                continue;
+            }
+
+            let cron_7field = to_7field_cron(&task.schedule_expr);
+            let Ok(schedule) = Schedule::from_str(&cron_7field) else {
+                continue;
+            };
+
+            if let Some(next) = schedule.after(&now).next() {
+                earliest = Some(match earliest {
+                    Some(e) if next < e => next,
+                    Some(e) => e,
+                    None => next,
+                });
+            }
+        }
+
+        match earliest {
+            Some(t) => {
+                let delta = t.signed_duration_since(now);
+                if delta.num_milliseconds() <= 0 {
+                    // Already due — fire immediately
+                    std::time::Duration::ZERO
+                } else {
+                    std::time::Duration::from_millis(delta.num_milliseconds() as u64)
+                }
+            }
+            None => FALLBACK,
+        }
+    }
+
+    /// Fire all tasks whose next cron time is now (within a 1-second tolerance).
+    async fn fire_due_tasks(&self) -> anyhow::Result<()> {
         let tasks = self.db.list_tasks()?;
         let now = Utc::now();
 
@@ -80,14 +137,12 @@ impl CronScheduler {
                 continue;
             }
 
-            // Check expiry
             if task.is_expired() {
                 tracing::info!("Task '{}' has expired, disabling", task.id);
                 self.db.update_task_enabled(&task.id, false)?;
                 continue;
             }
 
-            // Parse the cron expression (convert 5-field to 7-field for the cron crate)
             let cron_7field = to_7field_cron(&task.schedule_expr);
             let schedule = match Schedule::from_str(&cron_7field) {
                 Ok(s) => s,
@@ -102,32 +157,28 @@ impl CronScheduler {
                 }
             };
 
-            // Find the most recent time this schedule should have fired
-            // We look for any fire time between now-30s and now
-            let window_start = now - chrono::Duration::seconds(30);
-
+            // Check if the task should have fired between now-60s and now.
+            // The 60 s window covers minor scheduling jitter.
+            let window_start = now - chrono::Duration::seconds(60);
             let mut upcoming = schedule.after(&window_start);
+
             if let Some(next_fire) = upcoming.next() {
                 if next_fire <= now {
-                    // This task is due — check we haven't already fired it
                     let mut last_fired = self.last_fired.lock().await;
                     if let Some(last) = last_fired.get(&task.id) {
                         if *last >= window_start {
-                            // Already fired within this window
                             continue;
                         }
                     }
 
-                    // Mark as fired
                     last_fired.insert(task.id.clone(), now);
                     drop(last_fired);
 
-                    // Execute in a spawned task to not block the scheduler
                     let executor = Arc::clone(&self.executor);
                     let task = task.clone();
                     tokio::spawn(async move {
                         match executor
-                            .execute_task(&task, TriggerType::Scheduled)
+                            .execute_task(&task, TriggerType::Scheduled, false)
                             .await
                         {
                             Ok(code) => {

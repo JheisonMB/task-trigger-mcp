@@ -1,6 +1,6 @@
 [package]
 name = "task-trigger-mcp"
-version = "1.1.2"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A self-contained MCP server for AI agent task scheduling and file watching"
@@ -60,6 +60,9 @@ clap = { version = "4.4", features = ["derive"] }
 
 # Home directory resolution
 dirs = "6.0"
+
+# UUID generation for execution runs
+uuid = { version = "1", features = ["v4"] }
 
 # Graceful shutdown coordination
 tokio-util = { version = "0.7", features = ["rt"] }

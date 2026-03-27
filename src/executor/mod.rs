@@ -13,7 +13,7 @@ use tokio::process::Command;
 use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
 use crate::db::Database;
 use crate::scheduler::substitute_variables;
-use crate::domain::models::{Cli, RunLog, Task, TriggerType, Watcher};
+use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, Watcher};
 
 /// Maximum log file size before rotation (5 MB).
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024;
@@ -34,8 +34,6 @@ struct CliRunParams<'a> {
 struct CliRunResult {
     exit_code: i32,
     success: bool,
-    started_at: chrono::DateTime<Utc>,
-    finished_at: chrono::DateTime<Utc>,
 }
 
 /// Task execution engine.
@@ -48,31 +46,96 @@ impl Executor {
         Self { db }
     }
 
+    /// Resolve a timed-out active run by marking it as timeout.
+    /// Called lazily before checking the lock.
+    fn resolve_timeout(&self, task_id: &str) {
+        if let Ok(Some(run)) = self.db.get_active_run(task_id) {
+            if let Some(timeout_at) = run.timeout_at {
+                if Utc::now() > timeout_at {
+                    tracing::info!("Run '{}' for '{}' timed out, unlocking", run.id, task_id);
+                    let _ = self.db.update_run_status(
+                        &run.id,
+                        RunStatus::Timeout,
+                        Some("Execution timed out"),
+                    );
+                    let _ = self.db.update_task_last_run(task_id, false);
+                }
+            }
+        }
+    }
+
     /// Execute a scheduled task.
-    pub async fn execute_task(&self, task: &Task, trigger: TriggerType) -> Result<i32> {
-        if task.is_expired() {
-            tracing::info!("Task '{}' has expired, disabling", task.id);
-            self.db.update_task_enabled(&task.id, false)?;
+    ///
+    /// When `force` is true (manual runs), expiry and enabled checks are skipped.
+    /// Returns the `run_id` if execution started, or None if skipped.
+    pub async fn execute_task(&self, task: &Task, trigger: TriggerType, force: bool) -> Result<i32> {
+        if !force {
+            if task.is_expired() {
+                tracing::info!("Task '{}' has expired, disabling", task.id);
+                self.db.update_task_enabled(&task.id, false)?;
+                return Ok(-1);
+            }
+
+            if !task.enabled {
+                tracing::info!("Task '{}' is disabled, skipping", task.id);
+                return Ok(-1);
+            }
+        }
+
+        // Check lock: if there's an active run, record as missed
+        self.resolve_timeout(&task.id);
+        if let Ok(Some(active)) = self.db.get_active_run(&task.id) {
+            tracing::info!(
+                "Task '{}' is locked (run {}), recording as missed",
+                task.id,
+                active.id
+            );
+            let missed = RunLog {
+                id: uuid::Uuid::new_v4().to_string(),
+                task_id: task.id.clone(),
+                status: RunStatus::Missed,
+                trigger_type: trigger,
+                summary: Some(format!("Skipped: task locked by run {}", active.id)),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                exit_code: None,
+                timeout_at: None,
+            };
+            let _ = self.db.insert_run(&missed);
             return Ok(-1);
         }
 
-        if !task.enabled {
-            tracing::info!("Task '{}' is disabled, skipping", task.id);
-            return Ok(-1);
-        }
+        // Create run and lock the task
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let timeout_at = now + chrono::Duration::minutes(i64::from(task.timeout_minutes));
 
-        let prompt = substitute_variables(
+        let run = RunLog {
+            id: run_id.clone(),
+            task_id: task.id.clone(),
+            status: RunStatus::Pending,
+            trigger_type: trigger,
+            summary: None,
+            started_at: now,
+            finished_at: None,
+            exit_code: None,
+            timeout_at: Some(timeout_at),
+        };
+        self.db.insert_run(&run)?;
+
+        let user_prompt = substitute_variables(
             &task.prompt,
             &task.id,
             &task.log_path,
             None,
             None,
         );
+        let wrapped = wrap_prompt(&user_prompt, &task.id, &run_id);
 
         let params = CliRunParams {
             id: &task.id,
             cli: &task.cli,
-            prompt,
+            prompt: wrapped,
             model: task.model.as_deref(),
             working_dir: task.working_dir.as_deref(),
             log_path: task.log_path.clone(),
@@ -81,16 +144,8 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
-        let run = RunLog {
-            task_id: task.id.clone(),
-            started_at: result.started_at,
-            finished_at: Some(result.finished_at),
-            exit_code: Some(result.exit_code),
-            trigger_type: params.trigger,
-        };
-        if let Err(e) = self.db.insert_run(&run) {
-            tracing::error!("Failed to record run for task '{}': {}", task.id, e);
-        }
+        // Update run with exit code (status remains pending/in_progress until agent reports)
+        let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_task_last_run(&task.id, result.success) {
             tracing::error!("Failed to update last_run for task '{}': {}", task.id, e);
@@ -110,6 +165,29 @@ impl Executor {
             return Ok(-1);
         }
 
+        // Check lock
+        self.resolve_timeout(&watcher.id);
+        if let Ok(Some(active)) = self.db.get_active_run(&watcher.id) {
+            tracing::info!(
+                "Watcher '{}' is locked (run {}), recording as missed",
+                watcher.id,
+                active.id
+            );
+            let missed = RunLog {
+                id: uuid::Uuid::new_v4().to_string(),
+                task_id: watcher.id.clone(),
+                status: RunStatus::Missed,
+                trigger_type: TriggerType::Watch,
+                summary: Some(format!("Skipped: locked by run {}", active.id)),
+                started_at: Utc::now(),
+                finished_at: Some(Utc::now()),
+                exit_code: None,
+                timeout_at: None,
+            };
+            let _ = self.db.insert_run(&missed);
+            return Ok(-1);
+        }
+
         let log_dir = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("No home directory"))?
             .join(".task-trigger/logs");
@@ -119,18 +197,37 @@ impl Executor {
             .to_string_lossy()
             .to_string();
 
-        let prompt = substitute_variables(
+        // Create run and lock
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now();
+        let timeout_at = now + chrono::Duration::minutes(i64::from(watcher.timeout_minutes));
+
+        let run = RunLog {
+            id: run_id.clone(),
+            task_id: watcher.id.clone(),
+            status: RunStatus::Pending,
+            trigger_type: TriggerType::Watch,
+            summary: None,
+            started_at: now,
+            finished_at: None,
+            exit_code: None,
+            timeout_at: Some(timeout_at),
+        };
+        self.db.insert_run(&run)?;
+
+        let user_prompt = substitute_variables(
             &watcher.prompt,
             &watcher.id,
             &log_path,
             Some(file_path),
             Some(event_type),
         );
+        let wrapped = wrap_prompt(&user_prompt, &watcher.id, &run_id);
 
         let params = CliRunParams {
             id: &watcher.id,
             cli: &watcher.cli,
-            prompt,
+            prompt: wrapped,
             model: watcher.model.as_deref(),
             working_dir: None,
             log_path,
@@ -139,16 +236,7 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
-        let run = RunLog {
-            task_id: watcher.id.clone(),
-            started_at: result.started_at,
-            finished_at: Some(result.finished_at),
-            exit_code: Some(result.exit_code),
-            trigger_type: TriggerType::Watch,
-        };
-        if let Err(e) = self.db.insert_run(&run) {
-            tracing::error!("Failed to record run for watcher '{}': {}", watcher.id, e);
-        }
+        let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
         if let Err(e) = self.db.update_watcher_triggered(&watcher.id) {
             tracing::error!("Failed to update trigger count for watcher '{}': {}", watcher.id, e);
@@ -177,7 +265,6 @@ impl Executor {
 
         let started_at = Utc::now();
         let output = cmd.output().await;
-        let finished_at = Utc::now();
 
         let (exit_code, success) = match output {
             Ok(out) => {
@@ -212,8 +299,6 @@ impl Executor {
         Ok(CliRunResult {
             exit_code,
             success,
-            started_at,
-            finished_at,
         })
     }
 }
@@ -331,4 +416,24 @@ fn rotate_log_if_needed(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Wrap the user's prompt with structured `task_report` instructions.
+fn wrap_prompt(user_prompt: &str, task_id: &str, run_id: &str) -> String {
+    format!(
+        "[SYSTEM INSTRUCTIONS]\n\
+         You are executing a managed task. You MUST follow these steps:\n\
+         1. IMMEDIATELY call the task_report tool: task_report(run_id=\"{run_id}\", status=\"in_progress\")\n\
+         2. Execute the user's task below\n\
+         3. When finished, call: task_report(run_id=\"{run_id}\", status=\"success\", summary=\"<brief summary of what happened>\")\n\
+            If the task failed: task_report(run_id=\"{run_id}\", status=\"error\", summary=\"<what went wrong>\")\n\
+         \n\
+         Task ID: {task_id}\n\
+         Run ID: {run_id}\n\
+         [/SYSTEM INSTRUCTIONS]\n\
+         \n\
+         [USER TASK]\n\
+         {user_prompt}\n\
+         [/USER TASK]"
+    )
 }

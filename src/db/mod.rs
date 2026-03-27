@@ -13,7 +13,7 @@ use crate::application::ports::{
     RunRepository, StateRepository, TaskFieldsUpdate, TaskRepository, WatcherFieldsUpdate,
     WatcherRepository,
 };
-use crate::domain::models::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
+use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, WatchEvent, Watcher};
 
 /// Thread-safe `SQLite` database wrapper.
 ///
@@ -56,7 +56,8 @@ impl Database {
                 expires_at TEXT,
                 last_run_at TEXT,
                 last_run_ok BOOLEAN,
-                log_path TEXT NOT NULL
+                log_path TEXT NOT NULL,
+                timeout_minutes INTEGER NOT NULL DEFAULT 15
             );
 
             CREATE TABLE IF NOT EXISTS watchers (
@@ -71,16 +72,20 @@ impl Database {
                 enabled BOOLEAN NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 last_triggered_at TEXT,
-                trigger_count INTEGER NOT NULL DEFAULT 0
+                trigger_count INTEGER NOT NULL DEFAULT 0,
+                timeout_minutes INTEGER NOT NULL DEFAULT 15
             );
 
             CREATE TABLE IF NOT EXISTS runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                trigger_type TEXT NOT NULL,
+                summary TEXT,
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
                 exit_code INTEGER,
-                trigger_type TEXT NOT NULL,
+                timeout_at TEXT,
                 FOREIGN KEY(task_id) REFERENCES tasks(id)
             );
 
@@ -89,6 +94,60 @@ impl Database {
                 value TEXT NOT NULL
             );",
         )?;
+
+        // Migrate old schema if needed
+        self.migrate(&conn)?;
+
+        Ok(())
+    }
+
+    /// Run schema migrations for existing databases.
+    fn migrate(&self, conn: &Connection) -> Result<()> {
+        // Add timeout_minutes to tasks if missing
+        let has_timeout = conn
+            .prepare("SELECT timeout_minutes FROM tasks LIMIT 0")
+            .is_ok();
+        if !has_timeout {
+            conn.execute_batch(
+                "ALTER TABLE tasks ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
+            )?;
+        }
+
+        // Add timeout_minutes to watchers if missing
+        let has_watcher_timeout = conn
+            .prepare("SELECT timeout_minutes FROM watchers LIMIT 0")
+            .is_ok();
+        if !has_watcher_timeout {
+            conn.execute_batch(
+                "ALTER TABLE watchers ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
+            )?;
+        }
+
+        // Migrate runs table from INTEGER id to TEXT id with new columns
+        let has_status = conn
+            .prepare("SELECT status FROM runs LIMIT 0")
+            .is_ok();
+        if !has_status {
+            conn.execute_batch(
+                "ALTER TABLE runs RENAME TO runs_old;
+                 CREATE TABLE runs (
+                     id TEXT PRIMARY KEY,
+                     task_id TEXT NOT NULL,
+                     status TEXT NOT NULL DEFAULT 'pending',
+                     trigger_type TEXT NOT NULL,
+                     summary TEXT,
+                     started_at TEXT NOT NULL,
+                     finished_at TEXT,
+                     exit_code INTEGER,
+                     timeout_at TEXT,
+                     FOREIGN KEY(task_id) REFERENCES tasks(id)
+                 );
+                 INSERT INTO runs (id, task_id, status, trigger_type, started_at, finished_at, exit_code)
+                     SELECT CAST(id AS TEXT), task_id, 'success', trigger_type, started_at, finished_at, exit_code
+                     FROM runs_old;
+                 DROP TABLE runs_old;",
+            )?;
+        }
 
         Ok(())
     }
@@ -104,8 +163,8 @@ impl TaskRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
             "INSERT OR REPLACE INTO tasks
-            (id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, log_path)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, log_path, timeout_minutes)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &task.id,
                 &task.prompt,
@@ -117,6 +176,7 @@ impl TaskRepository for Database {
                 task.created_at.to_rfc3339(),
                 task.expires_at.map(|t| t.to_rfc3339()),
                 &task.log_path,
+                task.timeout_minutes,
             ],
         )?;
         Ok(())
@@ -129,7 +189,7 @@ impl TaskRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
-                    created_at, expires_at, last_run_at, last_run_ok, log_path
+                    created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
              FROM tasks WHERE id = ?1",
         )?;
 
@@ -148,6 +208,7 @@ impl TaskRepository for Database {
                     last_run_at_str: row.get(9)?,
                     last_run_ok: row.get(10)?,
                     log_path: row.get(11)?,
+                    timeout_minutes: row.get(12)?,
                 })
             })
             .optional()?;
@@ -165,7 +226,7 @@ impl TaskRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
-                    created_at, expires_at, last_run_at, last_run_ok, log_path
+                    created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
              FROM tasks ORDER BY created_at DESC",
         )?;
 
@@ -183,6 +244,7 @@ impl TaskRepository for Database {
                 last_run_at_str: row.get(9)?,
                 last_run_ok: row.get(10)?,
                 log_path: row.get(11)?,
+                timeout_minutes: row.get(12)?,
             })
         })?;
 
@@ -298,8 +360,8 @@ impl WatcherRepository for Database {
 
         conn.execute(
             "INSERT OR REPLACE INTO watchers
-            (id, path, events, prompt, cli, model, debounce_seconds, recursive, enabled, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            (id, path, events, prompt, cli, model, debounce_seconds, recursive, enabled, created_at, timeout_minutes)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 &watcher.id,
                 &watcher.path,
@@ -311,6 +373,7 @@ impl WatcherRepository for Database {
                 watcher.recursive,
                 watcher.enabled,
                 watcher.created_at.to_rfc3339(),
+                watcher.timeout_minutes,
             ],
         )?;
         Ok(())
@@ -323,7 +386,7 @@ impl WatcherRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive,
-                    enabled, created_at, last_triggered_at, trigger_count
+                    enabled, created_at, last_triggered_at, trigger_count, timeout_minutes
              FROM watchers WHERE id = ?1",
         )?;
 
@@ -342,6 +405,7 @@ impl WatcherRepository for Database {
                     created_at_str: row.get(9)?,
                     last_triggered_at_str: row.get(10)?,
                     trigger_count: row.get(11)?,
+                    timeout_minutes: row.get(12)?,
                 })
             })
             .optional()?;
@@ -359,7 +423,7 @@ impl WatcherRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
             "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive,
-                    enabled, created_at, last_triggered_at, trigger_count
+                    enabled, created_at, last_triggered_at, trigger_count, timeout_minutes
              FROM watchers ORDER BY created_at DESC",
         )?;
 
@@ -377,6 +441,7 @@ impl WatcherRepository for Database {
                 created_at_str: row.get(9)?,
                 last_triggered_at_str: row.get(10)?,
                 trigger_count: row.get(11)?,
+                timeout_minutes: row.get(12)?,
             })
         })?;
 
@@ -496,14 +561,18 @@ impl RunRepository for Database {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "INSERT INTO runs (task_id, started_at, finished_at, exit_code, trigger_type)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO runs (id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
+                &run.id,
                 &run.task_id,
+                run.status.as_str(),
+                run.trigger_type.as_str(),
+                &run.summary,
                 run.started_at.to_rfc3339(),
                 run.finished_at.map(|t| t.to_rfc3339()),
                 run.exit_code,
-                run.trigger_type.as_str(),
+                run.timeout_at.map(|t| t.to_rfc3339()),
             ],
         )?;
         Ok(())
@@ -515,40 +584,128 @@ impl RunRepository for Database {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT task_id, started_at, finished_at, exit_code, trigger_type
+            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
              FROM runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2",
         )?;
 
         let rows = stmt.query_map(params![task_id, limit as i64], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, Option<i32>>(3)?,
-                row.get::<_, String>(4)?,
-            ))
+            Ok(RunRow {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                status_str: row.get(2)?,
+                trigger_str: row.get(3)?,
+                summary: row.get(4)?,
+                started_at_str: row.get(5)?,
+                finished_at_str: row.get(6)?,
+                exit_code: row.get(7)?,
+                timeout_at_str: row.get(8)?,
+            })
         })?;
 
         let mut runs = Vec::new();
         for row_result in rows {
-            let (task_id, started_at_str, finished_at_str, exit_code, trigger_str) = row_result?;
-            let started_at =
-                chrono::DateTime::parse_from_rfc3339(&started_at_str)?.with_timezone(&Utc);
-            let finished_at = finished_at_str
-                .as_ref()
-                .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
-                .transpose()?;
-            let trigger_type = TriggerType::from_str(&trigger_str);
-
-            runs.push(RunLog {
-                task_id,
-                started_at,
-                finished_at,
-                exit_code,
-                trigger_type,
-            });
+            runs.push(row_result?.into_run_log()?);
         }
         Ok(runs)
+    }
+
+    fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+             FROM runs WHERE task_id = ?1 AND status IN ('pending', 'in_progress') LIMIT 1",
+        )?;
+
+        let run = stmt
+            .query_row(params![task_id], |row| {
+                Ok(RunRow {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    status_str: row.get(2)?,
+                    trigger_str: row.get(3)?,
+                    summary: row.get(4)?,
+                    started_at_str: row.get(5)?,
+                    finished_at_str: row.get(6)?,
+                    exit_code: row.get(7)?,
+                    timeout_at_str: row.get(8)?,
+                })
+            })
+            .optional()?;
+
+        match run {
+            Some(row) => Ok(Some(row.into_run_log()?)),
+            None => Ok(None),
+        }
+    }
+
+    fn update_run_status(
+        &self,
+        run_id: &str,
+        status: RunStatus,
+        summary: Option<&str>,
+    ) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let finished_at = if status.is_active() {
+            None
+        } else {
+            Some(Utc::now().to_rfc3339())
+        };
+        let rows = conn.execute(
+            "UPDATE runs SET status = ?1, summary = COALESCE(?2, summary), finished_at = COALESCE(?3, finished_at)
+             WHERE id = ?4",
+            params![status.as_str(), summary, finished_at, run_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    fn update_run_exit_code(&self, run_id: &str, exit_code: i32) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let rows = conn.execute(
+            "UPDATE runs SET exit_code = ?1 WHERE id = ?2",
+            params![exit_code, run_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    fn get_run(&self, run_id: &str) -> Result<Option<RunLog>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+             FROM runs WHERE id = ?1",
+        )?;
+
+        let run = stmt
+            .query_row(params![run_id], |row| {
+                Ok(RunRow {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    status_str: row.get(2)?,
+                    trigger_str: row.get(3)?,
+                    summary: row.get(4)?,
+                    started_at_str: row.get(5)?,
+                    finished_at_str: row.get(6)?,
+                    exit_code: row.get(7)?,
+                    timeout_at_str: row.get(8)?,
+                })
+            })
+            .optional()?;
+
+        match run {
+            Some(row) => Ok(Some(row.into_run_log()?)),
+            None => Ok(None),
+        }
     }
 }
 
@@ -593,6 +750,7 @@ struct TaskRow {
     last_run_at_str: Option<String>,
     last_run_ok: Option<bool>,
     log_path: String,
+    timeout_minutes: u32,
 }
 
 impl TaskRow {
@@ -624,6 +782,7 @@ impl TaskRow {
             last_run_at,
             last_run_ok: self.last_run_ok,
             log_path: self.log_path,
+            timeout_minutes: self.timeout_minutes,
         })
     }
 }
@@ -641,6 +800,7 @@ struct WatcherRow {
     created_at_str: String,
     last_triggered_at_str: Option<String>,
     trigger_count: u64,
+    timeout_minutes: u32,
 }
 
 impl WatcherRow {
@@ -668,6 +828,48 @@ impl WatcherRow {
             created_at,
             last_triggered_at,
             trigger_count: self.trigger_count,
+            timeout_minutes: self.timeout_minutes,
+        })
+    }
+}
+
+struct RunRow {
+    id: String,
+    task_id: String,
+    status_str: String,
+    trigger_str: String,
+    summary: Option<String>,
+    started_at_str: String,
+    finished_at_str: Option<String>,
+    exit_code: Option<i32>,
+    timeout_at_str: Option<String>,
+}
+
+impl RunRow {
+    fn into_run_log(self) -> Result<RunLog> {
+        let started_at =
+            chrono::DateTime::parse_from_rfc3339(&self.started_at_str)?.with_timezone(&Utc);
+        let finished_at = self
+            .finished_at_str
+            .as_ref()
+            .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+            .transpose()?;
+        let timeout_at = self
+            .timeout_at_str
+            .as_ref()
+            .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
+            .transpose()?;
+
+        Ok(RunLog {
+            id: self.id,
+            task_id: self.task_id,
+            status: RunStatus::from_str(&self.status_str),
+            trigger_type: TriggerType::from_str(&self.trigger_str),
+            summary: self.summary,
+            started_at,
+            finished_at,
+            exit_code: self.exit_code,
+            timeout_at,
         })
     }
 }
@@ -675,7 +877,7 @@ impl WatcherRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::models::{Cli, RunLog, Task, TriggerType, WatchEvent, Watcher};
+    use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, WatchEvent, Watcher};
     use chrono::{Duration, Utc};
     use tempfile::NamedTempFile;
 
@@ -702,6 +904,7 @@ mod tests {
             last_run_at: None,
             last_run_ok: None,
             log_path: "/tmp/test.log".to_string(),
+            timeout_minutes: 15,
         }
     }
 
@@ -719,6 +922,7 @@ mod tests {
             created_at: Utc::now(),
             last_triggered_at: None,
             trigger_count: 0,
+            timeout_minutes: 15,
         }
     }
 
@@ -928,11 +1132,15 @@ mod tests {
         db.insert_or_update_task(&sample_task("run-task")).unwrap();
 
         let run = RunLog {
+            id: uuid::Uuid::new_v4().to_string(),
             task_id: "run-task".to_string(),
+            status: RunStatus::Success,
+            trigger_type: TriggerType::Scheduled,
+            summary: None,
             started_at: Utc::now() - Duration::minutes(5),
             finished_at: Some(Utc::now()),
             exit_code: Some(0),
-            trigger_type: TriggerType::Scheduled,
+            timeout_at: None,
         };
         db.insert_run(&run).unwrap();
 
@@ -950,11 +1158,15 @@ mod tests {
 
         for i in 0..10 {
             let run = RunLog {
+                id: uuid::Uuid::new_v4().to_string(),
                 task_id: "many-runs".to_string(),
+                status: RunStatus::Success,
+                trigger_type: TriggerType::Manual,
+                summary: None,
                 started_at: Utc::now() - Duration::minutes(i),
                 finished_at: Some(Utc::now()),
                 exit_code: Some(0),
-                trigger_type: TriggerType::Manual,
+                timeout_at: None,
             };
             db.insert_run(&run).unwrap();
         }
@@ -969,11 +1181,15 @@ mod tests {
         db.insert_or_update_task(&sample_task("cascade-task"))
             .unwrap();
         let run = RunLog {
+            id: uuid::Uuid::new_v4().to_string(),
             task_id: "cascade-task".to_string(),
+            status: RunStatus::Pending,
+            trigger_type: TriggerType::Watch,
+            summary: None,
             started_at: Utc::now(),
             finished_at: None,
             exit_code: None,
-            trigger_type: TriggerType::Watch,
+            timeout_at: None,
         };
         db.insert_run(&run).unwrap();
         assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 1);
