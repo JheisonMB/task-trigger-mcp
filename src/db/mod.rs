@@ -200,7 +200,7 @@ impl TaskRepository for Database {
                 task.created_at.to_rfc3339(),
                 task.expires_at.map(|t| t.to_rfc3339()),
                 &task.log_path,
-                task.timeout_minutes,
+                task.timeout_minutes as i64,
             ],
         )?;
         Ok(())
@@ -393,11 +393,11 @@ impl WatcherRepository for Database {
                 &watcher.prompt,
                 watcher.cli.as_str(),
                 &watcher.model,
-                watcher.debounce_seconds,
+                watcher.debounce_seconds as i64,
                 watcher.recursive,
                 watcher.enabled,
                 watcher.created_at.to_rfc3339(),
-                watcher.timeout_minutes,
+                watcher.timeout_minutes as i64,
             ],
         )?;
         Ok(())
@@ -775,7 +775,7 @@ struct TaskRow {
     last_run_at_str: Option<String>,
     last_run_ok: Option<bool>,
     log_path: String,
-    timeout_minutes: u32,
+    timeout_minutes: i64,
 }
 
 impl TaskRow {
@@ -807,7 +807,7 @@ impl TaskRow {
             last_run_at,
             last_run_ok: self.last_run_ok,
             log_path: self.log_path,
-            timeout_minutes: self.timeout_minutes,
+            timeout_minutes: self.timeout_minutes as u32,
         })
     }
 }
@@ -819,13 +819,13 @@ struct WatcherRow {
     prompt: String,
     cli_str: String,
     model: Option<String>,
-    debounce_seconds: u64,
+    debounce_seconds: i64,
     recursive: bool,
     enabled: bool,
     created_at_str: String,
     last_triggered_at_str: Option<String>,
-    trigger_count: u64,
-    timeout_minutes: u32,
+    trigger_count: i64,
+    timeout_minutes: i64,
 }
 
 impl WatcherRow {
@@ -847,13 +847,13 @@ impl WatcherRow {
             prompt: self.prompt,
             cli,
             model: self.model,
-            debounce_seconds: self.debounce_seconds,
+            debounce_seconds: self.debounce_seconds as u64,
             recursive: self.recursive,
             enabled: self.enabled,
             created_at,
             last_triggered_at,
-            trigger_count: self.trigger_count,
-            timeout_minutes: self.timeout_minutes,
+            trigger_count: self.trigger_count as u64,
+            timeout_minutes: self.timeout_minutes as u32,
         })
     }
 }

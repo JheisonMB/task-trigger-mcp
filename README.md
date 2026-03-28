@@ -28,8 +28,8 @@ graph TB
         EXEC["Executor"]
     end
 
-    Agent["MCP Client<br/>(OpenCode, Kiro,<br/>Claude Desktop)"] -- "Streamable HTTP / stdio" --> MCP
-    EXEC --> CLI["Headless CLI<br/>(opencode run / kiro-cli)"]
+    Agent["MCP Client<br/>(OpenCode, Kiro, Copilot,<br/>Claude Desktop)"] -- "Streamable HTTP / stdio" --> MCP
+    EXEC --> CLI["Headless CLI<br/>(opencode run / kiro-cli / copilot)"]
 
     style daemon fill:#1a1a2e,stroke:#16213e,color:#eee
     style Agent fill:#0f3460,stroke:#16213e,color:#eee
