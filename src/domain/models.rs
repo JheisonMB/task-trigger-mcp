@@ -1,4 +1,4 @@
-//! Core domain models for the task-trigger-mcp daemon.
+//! Core domain models for the canopy daemon.
 //!
 //! Defines tasks, watchers, execution logs, and all supporting types.
 

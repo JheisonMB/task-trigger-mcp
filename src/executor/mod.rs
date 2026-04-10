@@ -207,7 +207,7 @@ impl Executor {
 
         let log_dir = dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("No home directory"))?
-            .join(".task-trigger/logs");
+            .join(".canopy/logs");
         let log_path = log_dir
             .join(&watcher.id)
             .with_extension("log")
