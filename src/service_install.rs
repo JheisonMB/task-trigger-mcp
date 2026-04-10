@@ -58,7 +58,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={exe_str} --port {port}
+ExecStart={exe_str} serve --port {port}
 Restart=on-failure
 RestartSec=5
 Environment=RUST_LOG=info
@@ -180,6 +180,7 @@ fn install_launchd_service(exe: &std::path::Path, port: u16) -> Result<()> {
     <key>ProgramArguments</key>
     <array>
         <string>{exe_str}</string>
+        <string>serve</string>
         <string>--port</string>
         <string>{port}</string>
     </array>
