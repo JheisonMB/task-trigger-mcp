@@ -1,18 +1,18 @@
 [package]
-name = "task-trigger-mcp"
-version = "1.3.0"
+name = "agent-canopy"
+version = "2.0.0"
 edition = "2021"
 rust-version = "1.75"
 description = "A self-contained MCP server for AI agent task scheduling and file watching"
 license = "MIT"
-repository = "https://github.com/JheisonMB/task-trigger-mcp"
-homepage = "https://github.com/JheisonMB/task-trigger-mcp"
+repository = "https://github.com/UniverLab/agent-canopy"
+homepage = "https://github.com/UniverLab/agent-canopy"
 keywords = ["mcp", "scheduler", "cron", "file-watcher", "ai-agent"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
 
 [[bin]]
-name = "task-trigger-mcp"
+name = "canopy"
 path = "src/main.rs"
 
 [dependencies]

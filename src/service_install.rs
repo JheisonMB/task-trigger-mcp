@@ -1,8 +1,8 @@
 //! System service installation and uninstallation.
 //!
 //! Supports:
-//! - **Linux/WSL**: systemd user unit at `~/.config/systemd/user/task-trigger-mcp.service`
-//! - **macOS**: launchd agent at `~/Library/LaunchAgents/com.task-trigger-mcp.plist`
+//! - **Linux/WSL**: systemd user unit at `~/.config/systemd/user/canopy.service`
+//! - **macOS**: launchd agent at `~/Library/LaunchAgents/com.canopy.plist`
 
 use anyhow::Result;
 
@@ -36,7 +36,7 @@ pub fn uninstall_service() -> Result<()> {
 
 // -- systemd (Linux/WSL) ------------------------------------------------------
 
-const SYSTEMD_SERVICE_NAME: &str = "task-trigger-mcp.service";
+const SYSTEMD_SERVICE_NAME: &str = "canopy.service";
 
 fn systemd_unit_dir() -> Result<std::path::PathBuf> {
     let home =
@@ -53,7 +53,7 @@ fn install_systemd_service(exe: &std::path::Path, port: u16) -> Result<()> {
 
     let unit_content = format!(
         r#"[Unit]
-Description=task-trigger-mcp daemon
+Description=canopy daemon
 After=network.target
 
 [Service]
@@ -147,7 +147,7 @@ fn uninstall_systemd_service() -> Result<()> {
 
 // -- launchd (macOS) ----------------------------------------------------------
 
-const LAUNCHD_LABEL: &str = "com.task-trigger-mcp";
+const LAUNCHD_LABEL: &str = "com.canopy";
 
 fn launchd_plist_path() -> Result<std::path::PathBuf> {
     let home =
@@ -163,7 +163,7 @@ fn install_launchd_service(exe: &std::path::Path, port: u16) -> Result<()> {
 
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    let log_dir = home.join(".task-trigger");
+    let log_dir = home.join(".canopy");
     std::fs::create_dir_all(&log_dir)?;
 
     let exe_str = exe.display();

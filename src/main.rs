@@ -1,4 +1,4 @@
-//! task-trigger-mcp — MCP server for AI agent task scheduling and file watching.
+//! canopy — MCP server for AI agent task scheduling and file watching.
 //!
 //! Binary modes:
 //! - `daemon start` — start the MCP server as a persistent background process
@@ -28,9 +28,9 @@ use executor::Executor;
 use scheduler::cron_scheduler::CronScheduler;
 use watchers::WatcherEngine;
 
-/// task-trigger-mcp: A self-contained MCP server for AI agent task scheduling.
+/// canopy: A self-contained MCP server for AI agent task scheduling.
 #[derive(Parser)]
-#[command(name = "task-trigger-mcp", version, about)]
+#[command(name = "canopy", version, about)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -113,7 +113,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
     tracing::info!(
-        "task-trigger-mcp v{} starting on port {}",
+        "canopy v{} starting on port {}",
         env!("CARGO_PKG_VERSION"),
         port
     );
@@ -404,7 +404,7 @@ fn resolve_port(port_override: Option<u16>) -> u16 {
 fn ensure_data_dir() -> Result<std::path::PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-    let data_dir = home.join(".task-trigger");
+    let data_dir = home.join(".canopy");
     std::fs::create_dir_all(&data_dir)?;
     std::fs::create_dir_all(data_dir.join("logs"))?;
     Ok(data_dir)
