@@ -13,7 +13,9 @@ mod db;
 mod domain;
 mod executor;
 mod scheduler;
-mod service_install;
+pub(crate) mod service_install;
+mod setup;
+mod tui;
 mod watchers;
 
 use anyhow::Result;
@@ -49,6 +51,13 @@ enum Commands {
     },
     /// Run in stdio MCP transport mode (legacy/fallback for clients without SSE).
     Stdio,
+    /// Launch the Agent Hub TUI.
+    Tui,
+    /// Run the setup wizard (configure MCP, start daemon, install service).
+    Setup,
+    /// Start the MCP server in foreground (used internally by daemon start).
+    #[command(hide = true)]
+    Serve,
 }
 
 #[derive(Subcommand)]
@@ -76,7 +85,23 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
         Some(Commands::Stdio) => handle_stdio().await,
-        None => handle_http_server(cli.port).await,
+        Some(Commands::Serve) => handle_http_server(cli.port).await,
+        Some(Commands::Tui) => {
+            tui::run_tui()?;
+            Ok(())
+        }
+        Some(Commands::Setup) => {
+            setup::run_setup()?;
+            tui::run_tui()?;
+            Ok(())
+        }
+        None => {
+            if !setup::is_configured() {
+                setup::run_setup()?;
+            }
+            tui::run_tui()?;
+            Ok(())
+        }
     }
 }
 
@@ -207,6 +232,7 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
             let exe = std::env::current_exe()?;
             let mut cmd = std::process::Command::new(&exe);
+            cmd.arg("serve");
             if let Some(port) = port_override {
                 cmd.arg("--port").arg(port.to_string());
             }
@@ -401,7 +427,7 @@ fn resolve_port(port_override: Option<u16>) -> u16 {
         .unwrap_or(7755)
 }
 
-fn ensure_data_dir() -> Result<std::path::PathBuf> {
+pub(crate) fn ensure_data_dir() -> Result<std::path::PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
     let data_dir = home.join(".canopy");
