@@ -634,6 +634,37 @@ impl RunRepository for Database {
         Ok(runs)
     }
 
+    fn list_all_recent_runs(&self, limit: usize) -> Result<Vec<RunLog>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+             FROM runs ORDER BY started_at DESC LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(RunRow {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                status_str: row.get(2)?,
+                trigger_str: row.get(3)?,
+                summary: row.get(4)?,
+                started_at_str: row.get(5)?,
+                finished_at_str: row.get(6)?,
+                exit_code: row.get(7)?,
+                timeout_at_str: row.get(8)?,
+            })
+        })?;
+
+        let mut runs = Vec::new();
+        for row_result in rows {
+            runs.push(row_result?.into_run_log()?);
+        }
+        Ok(runs)
+    }
+
     fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>> {
         let conn = self
             .conn

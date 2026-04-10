@@ -61,6 +61,7 @@ pub trait WatcherRepository {
 pub trait RunRepository {
     fn insert_run(&self, run: &RunLog) -> Result<()>;
     fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>>;
+    fn list_all_recent_runs(&self, limit: usize) -> Result<Vec<RunLog>>;
     fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>>;
     fn update_run_status(
         &self,
