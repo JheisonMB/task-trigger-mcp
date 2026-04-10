@@ -275,8 +275,8 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
         let agent = &app.interactive_agents[*idx];
         if let Some(snap) = agent.screen_snapshot() {
             render_vt_screen(frame, inner, &snap);
-            // Show cursor when agent is focused
-            if app.focus == Focus::Agent {
+            // Show cursor when agent is focused and not scrolled
+            if app.focus == Focus::Agent && !snap.scrolled {
                 let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
                 let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
                 frame.set_cursor_position((cx, cy));
@@ -362,7 +362,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Sidebar => "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit",
         Focus::LogPanel => "  ↑↓ scroll  Esc back  q quit",
         Focus::NewAgentDialog => "  ←→ select CLI  Tab autocomplete dir  ↑ back  Enter launch  Esc cancel",
-        Focus::Agent => "  Esc Esc detach  — all input goes to agent",
+        Focus::Agent => "  Esc Esc detach  Shift+↑↓ scroll  PgUp/PgDn  — all other input goes to agent",
     };
 
     let line = Line::from(Span::styled(hints, Style::default().fg(DIM)));

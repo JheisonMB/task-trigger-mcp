@@ -104,6 +104,35 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     };
     let idx = *idx;
 
+    // Shift+Up/Down or PageUp/PageDown = scroll through history
+    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    match code {
+        KeyCode::Up if shift => {
+            app.interactive_agents[idx].scroll_offset += 3;
+            return Ok(());
+        }
+        KeyCode::Down if shift => {
+            let agent = &mut app.interactive_agents[idx];
+            agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+            return Ok(());
+        }
+        KeyCode::PageUp => {
+            app.interactive_agents[idx].scroll_offset += 15;
+            return Ok(());
+        }
+        KeyCode::PageDown => {
+            let agent = &mut app.interactive_agents[idx];
+            agent.scroll_offset = agent.scroll_offset.saturating_sub(15);
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // Any other key resets scroll to live view
+    if app.interactive_agents[idx].scroll_offset > 0 {
+        app.interactive_agents[idx].scroll_offset = 0;
+    }
+
     let bytes = key_to_bytes(code, modifiers);
     if !bytes.is_empty() {
         let _ = app.interactive_agents[idx].write_to_pty(&bytes);

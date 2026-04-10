@@ -33,6 +33,8 @@ pub struct InteractiveAgent {
     vt: Arc<Mutex<vt100::Parser>>,
     /// Child process handle.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    /// Scroll offset (0 = bottom/live, positive = scrolled up).
+    pub scroll_offset: usize,
 }
 
 impl InteractiveAgent {
@@ -67,7 +69,7 @@ impl InteractiveAgent {
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
 
-        let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 0)));
+        let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let vt_clone = Arc::clone(&vt);
 
         // Background thread: read PTY output → feed into vt100 parser
@@ -96,6 +98,7 @@ impl InteractiveAgent {
             writer: Arc::new(Mutex::new(writer)),
             vt,
             child: Arc::new(Mutex::new(child)),
+            scroll_offset: 0,
         })
     }
 
@@ -109,17 +112,19 @@ impl InteractiveAgent {
     }
 
     /// Get a snapshot of the virtual terminal screen for rendering.
+    ///
+    /// When `scroll_offset > 0`, uses vt100's built-in scrollback navigation.
     pub fn screen_snapshot(&self) -> Option<ScreenSnapshot> {
-        let vt = self.vt.lock().ok()?;
+        let mut vt = self.vt.lock().ok()?;
+        vt.screen_mut().set_scrollback(self.scroll_offset);
         let screen = vt.screen();
-        let (rows, cols) = (screen.size().0, screen.size().1);
+        let (rows, cols) = screen.size();
 
         let mut cells = Vec::with_capacity(rows as usize);
         for row in 0..rows {
             let mut row_cells = Vec::with_capacity(cols as usize);
             for col in 0..cols {
-                let cell = screen.cell(row, col);
-                row_cells.push(cell.map(|c| VtCell {
+                row_cells.push(screen.cell(row, col).map(|c| VtCell {
                     ch: c.contents().to_string(),
                     fg: convert_color(c.fgcolor()),
                     bg: convert_color(c.bgcolor()),
@@ -132,11 +137,23 @@ impl InteractiveAgent {
         }
 
         let cursor = screen.cursor_position();
+        let scrolled = self.scroll_offset > 0;
         Some(ScreenSnapshot {
             cells,
-            cursor_row: cursor.0,
+            cursor_row: if scrolled { rows } else { cursor.0 },
             cursor_col: cursor.1,
+            scrolled,
         })
+    }
+
+    /// Total scrollback lines available.
+    #[allow(dead_code)]
+    pub fn scrollback_len(&self) -> usize {
+        self.vt
+            .lock()
+            .ok()
+            .map(|vt| vt.screen().scrollback() as usize)
+            .unwrap_or(0)
     }
 
     /// Get a plain-text preview of the screen (for sidebar log preview).
@@ -190,6 +207,7 @@ pub struct ScreenSnapshot {
     pub cells: Vec<Vec<Option<VtCell>>>,
     pub cursor_row: u16,
     pub cursor_col: u16,
+    pub scrolled: bool,
 }
 
 /// A single cell from the virtual terminal.
