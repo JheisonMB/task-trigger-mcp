@@ -1,5 +1,23 @@
-/target
-Cargo.lock
+# AI coding agents
+.kiro/
+.cursor/
+.windsurf/
+.claude/
+.continue/
+.copilot/
+.kilocode/
+.zencoder/
+.qwen/
+.agents/
+skills-lock.json
+
+### Rust ###
+debug/
+target/
+**/*.rs.bk
+*.pdb
+
+# Editor / OS
 *.swp
 *.swo
 *~
@@ -8,5 +26,3 @@ Cargo.lock
 .vscode/
 .idea/
 *.log
-.agents/
-skills-lock.json

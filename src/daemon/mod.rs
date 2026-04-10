@@ -125,7 +125,7 @@ pub struct TaskReportParams {
 
 // ── MCP Handler ──────────────────────────────────────────────────────
 
-/// The main MCP server handler for task-trigger-mcp.
+/// The main MCP server handler for canopy.
 #[derive(Clone)]
 pub struct TaskTriggerHandler {
     pub db: Arc<Database>,
@@ -134,6 +134,7 @@ pub struct TaskTriggerHandler {
     pub scheduler_notify: Arc<Notify>,
     pub start_time: std::time::Instant,
     pub port: u16,
+    #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
@@ -615,7 +616,7 @@ impl TaskTriggerHandler {
         };
 
         let mut status = format!(
-            "task-trigger-mcp v{}\n\
+            "canopy v{}\n\
              Uptime: {}\n\
              Transport: {}\n\
              Port: {}\n\
@@ -1088,7 +1089,7 @@ impl ServerHandler for TaskTriggerHandler {
 fn data_dir() -> Result<std::path::PathBuf, McpError> {
     let home = dirs::home_dir()
         .ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
-    Ok(home.join(".task-trigger"))
+    Ok(home.join(".canopy"))
 }
 
 fn success_result(message: &str) -> CallToolResult {
