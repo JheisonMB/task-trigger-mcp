@@ -360,26 +360,9 @@ fn build_cli_command(
 ) -> Command {
     let mut cmd = Command::new(cli_path);
 
-    match cli {
-        Cli::OpenCode => {
-            cmd.arg("run").arg(prompt);
-            if let Some(m) = model {
-                cmd.arg("-m").arg(m);
-            }
-            if let Some(dir) = working_dir {
-                cmd.arg("--dir").arg(dir);
-            }
-        }
-        Cli::Kiro => {
-            cmd.arg("chat")
-                .arg("--no-interactive")
-                .arg("--trust-all-tools")
-                .arg(prompt);
-            if let Some(m) = model {
-                cmd.arg("--model").arg(m);
-            }
-        }
-    }
+    // Use the strategy pattern to build CLI-specific arguments
+    let strategy = cli.strategy();
+    strategy.build_command(&mut cmd, prompt, model, working_dir);
 
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());

@@ -119,6 +119,8 @@ pub enum Cli {
     OpenCode,
     #[serde(rename = "kiro")]
     Kiro,
+    #[serde(rename = "copilot")]
+    Copilot,
 }
 
 impl Cli {
@@ -126,6 +128,7 @@ impl Cli {
     pub fn from_str(s: &str) -> Self {
         match s {
             "kiro" => Self::Kiro,
+            "copilot" => Self::Copilot,
             _ => Self::OpenCode,
         }
     }
@@ -135,6 +138,7 @@ impl Cli {
         match self {
             Self::OpenCode => "opencode",
             Self::Kiro => "kiro",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -143,6 +147,7 @@ impl Cli {
         match self {
             Self::OpenCode => "opencode",
             Self::Kiro => "kiro-cli",
+            Self::Copilot => "copilot",
         }
     }
 
@@ -154,6 +159,9 @@ impl Cli {
         }
         if which::which("kiro-cli").is_ok() {
             available.push(Cli::Kiro);
+        }
+        if which::which("copilot").is_ok() {
+            available.push(Cli::Copilot);
         }
         available
     }
@@ -171,15 +179,16 @@ impl Cli {
 
     /// Resolve CLI from an optional user-provided parameter.
     ///
-    /// - `Some("opencode")` / `Some("kiro")` → returns that variant.
+    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` → returns that variant.
     /// - `Some(other)` → error with unknown CLI message.
     /// - `None` → auto-detects from PATH. Fails if zero or multiple CLIs found.
     pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
         match param {
             Some("opencode") => Ok(Cli::OpenCode),
             Some("kiro") => Ok(Cli::Kiro),
+            Some("copilot") => Ok(Cli::Copilot),
             Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode' or 'kiro'",
+                "Unknown CLI '{}'. Must be 'opencode', 'kiro', or 'copilot'",
                 other
             )),
             None => match Cli::detect_default() {
@@ -191,7 +200,7 @@ impl Cli {
                     let available = Cli::detect_available();
                     if available.is_empty() {
                         Err(
-                            "No supported CLI found in PATH. Install 'opencode' or 'kiro-cli'."
+                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', or 'copilot'."
                                 .to_string(),
                         )
                     } else {
@@ -202,6 +211,15 @@ impl Cli {
                     }
                 }
             },
+        }
+    }
+
+    /// Get the execution strategy for this CLI.
+    pub fn strategy(&self) -> Box<dyn super::cli_strategy::CliStrategy> {
+        match self {
+            Self::OpenCode => Box::new(super::cli_strategy::OpenCodeStrategy),
+            Self::Kiro => Box::new(super::cli_strategy::KiroStrategy),
+            Self::Copilot => Box::new(super::cli_strategy::CopilotStrategy),
         }
     }
 }
