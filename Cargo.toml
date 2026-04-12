@@ -85,6 +85,9 @@ inquire = "0.7"
 # Shell argument parsing
 shell-words = "1.1"
 
+# Random number generation for automata noise injection
+rand = "0.8"
+
 # Unix process management (kill, setsid)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
