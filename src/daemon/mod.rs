@@ -1,4 +1,4 @@
-//! MCP Server handler implementing all task-trigger tools.
+//! MCP Server handler implementing all canopy tools.
 //!
 //! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
 //! with `Parameters<T>` for proper MCP protocol compliance.
@@ -25,8 +25,6 @@ use crate::domain::validation::{validate_id, validate_prompt, validate_watch_pat
 use crate::executor::Executor;
 use crate::watchers::WatcherEngine;
 
-// ── Aggregate parameter types ────────────────────────────────────────
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TaskAddParams {
     /// Unique identifier. Lowercase, hyphens, underscores.
@@ -35,7 +33,7 @@ pub struct TaskAddParams {
     pub prompt: String,
     /// Standard 5-field cron expression: minute hour day month weekday. Example: "0 9 * * *" for daily at 9am.
     pub schedule: String,
-    /// CLI to use: "opencode" or "kiro". If omitted, auto-detects from PATH.
+    /// CLI to use: "opencode", "kiro", "copilot", or "qwen". If omitted, auto-detects from PATH.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -57,7 +55,7 @@ pub struct TaskWatchParams {
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,
-    /// CLI to use: "opencode" or "kiro". If omitted, auto-detects from PATH.
+    /// CLI to use: "opencode", "kiro", "copilot", or "qwen". If omitted, auto-detects from PATH.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -75,18 +73,16 @@ pub struct TaskUpdateParams {
     pub id: String,
     /// New prompt/instruction (applies to both tasks and watchers).
     pub prompt: Option<String>,
-    /// New CLI: "opencode" or "kiro" (applies to both).
+    /// New CLI: "opencode", "kiro", "copilot", or "qwen" (applies to both).
     pub cli: Option<String>,
     /// New provider/model string, or null to clear (applies to both).
     pub model: Option<Option<String>>,
-    // ── Task-only fields ──
     /// New 5-field cron expression (task only).
     pub schedule: Option<String>,
     /// New working directory, or null to clear (task only).
     pub working_dir: Option<Option<String>>,
     /// New duration in minutes from now, or null to clear expiration (task only).
     pub duration_minutes: Option<Option<i64>>,
-    // ── Watcher-only fields ──
     /// New absolute path to watch (watcher only).
     pub path: Option<String>,
     /// New event list: "create", "modify", "delete", "move" (watcher only).
@@ -123,9 +119,6 @@ pub struct TaskReportParams {
     pub summary: Option<String>,
 }
 
-// ── MCP Handler ──────────────────────────────────────────────────────
-
-/// The main MCP server handler for canopy.
 #[derive(Clone)]
 pub struct TaskTriggerHandler {
     pub db: Arc<Database>,
@@ -450,7 +443,6 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // If the task has expired, clear expires_at so the scheduler picks it up
         if let Ok(Some(task)) = self.db.get_task(&id) {
             if task.is_expired() {
                 let clear_expiry = crate::application::ports::TaskFieldsUpdate {
@@ -505,7 +497,6 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        // Support both tasks and watchers
         let is_task = self
             .db
             .get_task(&id)
@@ -524,7 +515,6 @@ impl TaskTriggerHandler {
             )));
         }
 
-        // Fire-and-forget: spawn execution in background
         let executor = Arc::clone(&self.executor);
         let task_id = id.clone();
 
@@ -786,7 +776,6 @@ impl TaskTriggerHandler {
             )));
         }
 
-        // ── Shared validation ────────────────────────────────────
         if let Some(ref prompt) = params.prompt {
             if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
@@ -795,14 +784,17 @@ impl TaskTriggerHandler {
 
         let cli_str = if let Some(ref cli) = params.cli {
             match cli.as_str() {
-                "opencode" | "kiro" => Some(cli.as_str()),
-                _ => return Ok(error_result("CLI must be 'opencode' or 'kiro'")),
+                "opencode" | "kiro" | "copilot" | "qwen" => Some(cli.as_str()),
+                _ => {
+                    return Ok(error_result(
+                        "CLI must be 'opencode', 'kiro', 'copilot', or 'qwen'",
+                    ))
+                }
             }
         } else {
             None
         };
 
-        // ── Task update path ─────────────────────────────────────
         if is_task {
             let ignored: Vec<&str> = [
                 params.path.as_ref().map(|_| "path"),
@@ -884,7 +876,6 @@ impl TaskTriggerHandler {
             return Ok(success_result(&msg));
         }
 
-        // ── Watcher update path ──────────────────────────────────
         let ignored: Vec<&str> = [
             params.schedule.as_ref().map(|_| "schedule"),
             params.working_dir.as_ref().map(|_| "working_dir"),
@@ -931,7 +922,6 @@ impl TaskTriggerHandler {
             return Ok(error_result("No fields to update were provided"));
         }
 
-        // Restart watcher if structural fields changed
         let needs_restart = params.path.is_some()
             || params.events.is_some()
             || params.debounce_seconds.is_some()
@@ -1054,7 +1044,6 @@ impl TaskTriggerHandler {
             )));
         }
 
-        // On terminal status, update the parent task/watcher's last_run info
         if matches!(status, RunStatus::Success | RunStatus::Error) {
             let success = status == RunStatus::Success;
             let _ = self.db.update_task_last_run(&run.task_id, success);
@@ -1083,8 +1072,6 @@ impl ServerHandler for TaskTriggerHandler {
             )
     }
 }
-
-// ── Helpers ──────────────────────────────────────────────────────────
 
 fn data_dir() -> Result<std::path::PathBuf, McpError> {
     let home = dirs::home_dir()
