@@ -438,13 +438,12 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     };
 
     let area = centered_rect(60, 18, frame.area());
-    frame.render_widget(Clear, area);
+    // No Clear — let the background (automaton/banner) show through
 
     let block = Block::default()
         .title(" New Agent ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(INTERACTIVE_COLOR))
-        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+        .border_style(Style::default().fg(INTERACTIVE_COLOR));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -600,13 +599,13 @@ fn draw_quit_confirm(frame: &mut Frame) {
     let block = Block::default()
         .title(" Quit? ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
-        .style(Style::default().bg(Color::Rgb(30, 30, 20)));
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let msg = Paragraph::new("  Press y/Enter to quit, any key to cancel")
-        .style(Style::default().fg(Color::Yellow))
+    let msg = Paragraph::new("Press y/Enter to quit, any key to cancel")
+        .style(Style::default().fg(ACCENT))
         .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(msg, inner);
 }

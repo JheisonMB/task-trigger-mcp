@@ -48,8 +48,9 @@ impl BriansBrain {
     }
 
     /// Seed the grid from the CANOPY banner text.
-    /// Non-space characters in the banner become On cells, centered in the grid.
-    /// A sparse random scattering is added around the banner to fuel the explosion.
+    /// Only the solid block characters (`█`) become On cells — these are the
+    /// most prominent characters in the banner.  The automaton rules alone
+    /// create a natural explosion wave radiating outward from the banner shape.
     fn make_banner_grid(rows: usize, cols: usize) -> Vec<Vec<CellState>> {
         let mut grid = vec![vec![CellState::Off; cols]; rows];
 
@@ -59,7 +60,6 @@ impl BriansBrain {
         let top = rows.saturating_sub(banner_h) / 2;
         let left = cols.saturating_sub(banner_w) / 2;
 
-        // Place banner characters as On cells
         for (br, line) in BANNER.iter().enumerate() {
             let r = top + br;
             if r >= rows {
@@ -70,32 +70,8 @@ impl BriansBrain {
                 if c >= cols {
                     break;
                 }
-                if ch != ' ' {
-                    grid[r][c] = CellState::On;
-                }
-            }
-        }
-
-        // Add sparse random cells around the banner to fuel chain reactions
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
-
-        for r in 0..rows {
-            for c in 0..cols {
-                if grid[r][c] != CellState::Off {
-                    continue;
-                }
-                let mut h = r
-                    .wrapping_mul(2_654_435_761)
-                    .wrapping_add(c.wrapping_mul(2_246_822_519))
-                    ^ seed;
-                h ^= h >> 13;
-                h = h.wrapping_mul(1_013_904_223);
-                h ^= h >> 16;
-                // ~3% density outside the banner gives fuel for the explosion
-                if h % 32 == 0 {
+                // Only full-block characters seed the automaton
+                if ch == '█' {
                     grid[r][c] = CellState::On;
                 }
             }

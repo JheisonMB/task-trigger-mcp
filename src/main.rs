@@ -336,6 +336,10 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
 
     let router = axum::Router::new().nest_service("/mcp", service);
     let bind_addr = format!("127.0.0.1:{port}");
+
+    // Kill any stale process occupying the port before binding
+    kill_port_occupant(port);
+
     let tcp_listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
     tracing::info!(
@@ -407,6 +411,9 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             if let Some(port) = port_override {
                 cmd.arg("--port").arg(port.to_string());
             }
+
+            // Kill any stale process occupying the port before spawning
+            kill_port_occupant(port);
 
             let log_path = data_dir.join("daemon.log");
             let log_file = std::fs::OpenOptions::new()
@@ -737,6 +744,50 @@ fn is_process_running(pid: u32) -> bool {
     {
         let _ = pid;
         false
+    }
+}
+
+/// Kill whatever process is currently listening on the given port.
+/// This prevents "address already in use" errors when starting the daemon.
+fn kill_port_occupant(port: u16) {
+    #[cfg(unix)]
+    {
+        // Use `ss` or `lsof` to find the PID listening on the port
+        let output = std::process::Command::new("ss")
+            .args(["-tlnp", &format!("sport = :{port}")])
+            .output();
+
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // Parse PID from ss output — format: "pid=12345,"
+            for line in text.lines() {
+                if let Some(pid_start) = line.find("pid=") {
+                    let rest = &line[pid_start + 4..];
+                    if let Some(end) = rest.find(|c: char| !c.is_ascii_digit()) {
+                        if let Ok(pid) = rest[..end].parse::<u32>() {
+                            let self_pid = std::process::id();
+                            if pid != self_pid && pid != 0 {
+                                eprintln!(
+                                    "Port {port} occupied by PID {pid} — sending SIGTERM"
+                                );
+                                unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+                                // Brief wait for process to exit
+                                std::thread::sleep(std::time::Duration::from_millis(500));
+                                if unsafe { libc::kill(pid as i32, 0) } == 0 {
+                                    eprintln!("PID {pid} did not exit — sending SIGKILL");
+                                    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+                                    std::thread::sleep(std::time::Duration::from_millis(200));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = port;
     }
 }
 
