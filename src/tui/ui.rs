@@ -247,35 +247,55 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(DIM)
     };
 
-    let title = app.selected_id();
-    let title_suffix = if is_agent_focused {
-        " (Esc Esc detach)"
-    } else {
-        ""
-    };
-
     let block = Block::default()
-        .title(format!(" {title}{title_suffix} "))
         .borders(Borders::ALL)
         .border_style(border_style);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // If an interactive agent is selected, render its vt100 screen
-    if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-        let agent = &app.interactive_agents[*idx];
-        if let Some(snap) = agent.screen_snapshot() {
-            render_vt_screen(frame, inner, &snap);
-            // Show cursor when agent is focused and not scrolled
-            if app.focus == Focus::Agent && !snap.scrolled {
-                let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
-                let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
-                frame.set_cursor_position((cx, cy));
-            }
+    if app.agents.is_empty() {
+        draw_canopy_banner_preview(frame, inner);
+        return;
+    }
+
+    match app.selected_agent() {
+        Some(AgentEntry::Task(t)) if app.focus == Focus::Preview => {
+            draw_task_details(frame, inner, t, app);
             return;
         }
+        Some(AgentEntry::Watcher(w)) if app.focus == Focus::Preview => {
+            draw_watcher_details(frame, inner, w);
+            return;
+        }
+        Some(AgentEntry::Interactive(idx)) => {
+            let agent = &app.interactive_agents[*idx];
+            if let Some(snap) = agent.screen_snapshot() {
+                render_vt_screen(frame, inner, &snap);
+                if app.focus == Focus::Agent && !snap.scrolled {
+                    let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
+                    let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
+                    frame.set_cursor_position((cx, cy));
+                }
+                return;
+            }
+        }
+        _ => {}
     }
+
+    let title = app.selected_id();
+    let title_suffix = if is_agent_focused {
+        " (Esc Esc detach)"
+    } else if app.focus == Focus::Preview {
+        " (Enter interact)"
+    } else {
+        ""
+    };
+
+    let title_block = Block::default()
+        .title(format!(" {title}{title_suffix} "))
+        .borders(Borders::NONE);
+    frame.render_widget(title_block, area);
 
     let line_count = app.log_content.lines().count() as u16;
     let max_scroll = line_count.saturating_sub(inner.height);
@@ -347,7 +367,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Sidebar => {
             "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit"
         }
-        Focus::Preview => "  ↑↓ scroll  Esc back  q quit",
+        Focus::Preview => {
+            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+                "  ↑↓ scroll  Enter interact  Esc back  q quit"
+            } else {
+                "  ↑↓ scroll  Esc back  q quit"
+            }
+        }
         Focus::NewAgentDialog => {
             "  ←→ select CLI  Tab switch field  ↑↓ browse dirs  Enter navigate/launch  Esc cancel"
         }
@@ -518,4 +544,164 @@ fn truncate_path(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn draw_canopy_banner_preview(frame: &mut Frame, area: Rect) {
+    const BANNER: &str = r#"
+  ██████   ██████   ████████    ██████  ████████  █████ ████
+ ███░░███ ░░░░░███ ░░███░░███  ███░░███░░███░░███░░███ ░███
+░███ ░░░   ███████  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███
+░███  ███ ███░░███  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███
+░░██████ ░░████████ ████ █████░░██████  ░███████  ░░███████
+ ░░░░░░   ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░███░░░    ░░░░░███
+                                        ░███       ███ ░███
+                                        █████     ░░██████
+                                       ░░░░░       ░░░░░░
+"#;
+
+    let lines: Vec<Line> = BANNER
+        .lines()
+        .map(|l| {
+            Line::from(Span::styled(
+                format!("  {}", l),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+        })
+        .collect();
+
+    let banner = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+
+    frame.render_widget(banner, area);
+}
+
+fn draw_task_details(frame: &mut Frame, area: Rect, task: &crate::domain::models::Task, app: &App) {
+    let has_active = app.active_runs.contains_key(&task.id);
+    let status = if !task.enabled {
+        "⚫ Disabled"
+    } else if has_active {
+        "🟢 Running"
+    } else if task.last_run_ok == Some(true) {
+        "🔵 OK"
+    } else if task.last_run_ok == Some(false) {
+        "🔴 Failed"
+    } else {
+        "🔵 Never run"
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Status:  ", Style::default().fg(DIM)),
+            Span::styled(status, Style::default().fg(ACCENT)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Prompt:  ", Style::default().fg(DIM)),
+            Span::raw(&task.prompt),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Cron:    ", Style::default().fg(DIM)),
+            Span::styled(&task.schedule_expr, Style::default().fg(INTERACTIVE_COLOR)),
+        ]),
+        Line::from(vec![
+            Span::styled("CLI:     ", Style::default().fg(DIM)),
+            Span::raw(task.cli.as_str()),
+        ]),
+    ];
+
+    if let Some(ref model) = task.model {
+        lines.push(Line::from(vec![
+            Span::styled("Model:   ", Style::default().fg(DIM)),
+            Span::raw(model),
+        ]));
+    }
+
+    if let Some(ref dir) = task.working_dir {
+        lines.push(Line::from(vec![
+            Span::styled("Dir:     ", Style::default().fg(DIM)),
+            Span::raw(dir),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("Timeout: ", Style::default().fg(DIM)),
+        Span::raw(format!("{} min", task.timeout_minutes)),
+    ]));
+
+    if let Some(ref exp) = task.expires_at {
+        lines.push(Line::from(vec![
+            Span::styled("Expires: ", Style::default().fg(DIM)),
+            Span::raw(relative_time(exp)),
+        ]));
+    }
+
+    if let Some(ref lr) = task.last_run_at {
+        lines.push(Line::from(vec![
+            Span::styled("Last run:", Style::default().fg(DIM)),
+            Span::raw(relative_time(lr)),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn draw_watcher_details(frame: &mut Frame, area: Rect, watcher: &crate::domain::models::Watcher) {
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Status:  ", Style::default().fg(DIM)),
+            Span::styled(
+                if watcher.enabled {
+                    "🟢 Active"
+                } else {
+                    "⚫ Disabled"
+                },
+                Style::default().fg(ACCENT),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Prompt:  ", Style::default().fg(DIM)),
+            Span::raw(&watcher.prompt),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Path:    ", Style::default().fg(DIM)),
+            Span::raw(&watcher.path),
+        ]),
+        Line::from(vec![
+            Span::styled("Events:  ", Style::default().fg(DIM)),
+            Span::raw(
+                watcher
+                    .events
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("CLI:     ", Style::default().fg(DIM)),
+            Span::raw(watcher.cli.as_str()),
+        ]),
+        Line::from(vec![
+            Span::styled("Triggers:", Style::default().fg(DIM)),
+            Span::raw(watcher.trigger_count.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Debounce:", Style::default().fg(DIM)),
+            Span::raw(format!("{}s", watcher.debounce_seconds)),
+        ]),
+        Line::from(vec![
+            Span::styled("Recursive:", Style::default().fg(DIM)),
+            Span::raw(if watcher.recursive { "yes" } else { "no" }),
+        ]),
+        Line::from(vec![
+            Span::styled("Timeout: ", Style::default().fg(DIM)),
+            Span::raw(format!("{} min", watcher.timeout_minutes)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }

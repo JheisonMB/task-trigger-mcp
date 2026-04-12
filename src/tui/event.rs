@@ -44,7 +44,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     match app.focus {
         Focus::Sidebar => handle_sidebar_key(app, code),
-        Focus::Preview => handle_log_key(app, code),
+        Focus::Preview => handle_preview_key(app, code),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
@@ -52,15 +52,19 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
 
 fn handle_sidebar_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
-        KeyCode::Char('q') | KeyCode::Esc => app.running = false,
+        KeyCode::Char('q') => app.running = false,
+        KeyCode::Esc | KeyCode::Char('h') => {
+            // When nothing selected or first selection, show banner
+            if app.agents.is_empty() || app.selected == 0 {
+                app.focus = Focus::Preview;
+            } else {
+                app.running = false;
+            }
+        }
         KeyCode::Char('j') | KeyCode::Down => app.select_next(),
         KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
         KeyCode::Enter | KeyCode::Char('l') => {
-            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                app.focus = Focus::Agent;
-            } else {
-                app.focus = Focus::Preview;
-            }
+            app.focus = Focus::Preview;
         }
         KeyCode::Char('e') | KeyCode::Char('d') => {
             let _ = app.toggle_enable();
@@ -75,12 +79,23 @@ fn handle_sidebar_key(app: &mut App, code: KeyCode) -> Result<()> {
     Ok(())
 }
 
-fn handle_log_key(app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
-        KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Sidebar,
+        KeyCode::Esc | KeyCode::Char('h') => {
+            app.focus = Focus::Sidebar;
+        }
+        KeyCode::Enter | KeyCode::Char('l') => {
+            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+                app.focus = Focus::Agent;
+            }
+        }
         KeyCode::Char('q') => app.running = false,
-        KeyCode::Char('j') | KeyCode::Down => app.scroll_log_down(),
-        KeyCode::Char('k') | KeyCode::Up => app.scroll_log_up(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.scroll_log_down();
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.scroll_log_up();
+        }
         _ => {}
     }
     Ok(())
@@ -91,12 +106,11 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     // Double Esc = detach back to sidebar
     if code == KeyCode::Esc {
         if app.last_esc.elapsed() < Duration::from_millis(400) {
-            app.focus = Focus::Sidebar;
+            app.focus = Focus::Preview;
             app.last_esc = std::time::Instant::now() - Duration::from_secs(10);
             return Ok(());
         }
         app.last_esc = std::time::Instant::now();
-        // Single Esc still gets sent to the agent below
     }
 
     let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {

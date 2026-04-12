@@ -211,7 +211,7 @@ impl App {
             daemon_pid: None,
             daemon_version: String::new(),
             selected: 0,
-            focus: Focus::Sidebar,
+            focus: Focus::Preview,
             log_content: String::new(),
             log_scroll: 0,
             running: true,
