@@ -79,6 +79,12 @@ vt100 = "0.16"
 # HTTP client for registry fetch
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 
+# Interactive prompts for setup wizard
+inquire = "0.7"
+
+# Shell argument parsing
+shell-words = "1.1"
+
 # Unix process management (kill, setsid)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
