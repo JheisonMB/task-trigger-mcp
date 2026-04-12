@@ -11,19 +11,15 @@ use std::path::Path;
 /// Complete CLI definition from the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
-    /// Platform name (e.g., "qwen", "kiro", "opencode")
     pub name: String,
-    /// Binary name in PATH
     pub binary: String,
-    /// Command flags to run in headless mode (before prompt)
     pub headless_mode: String,
-    /// Flag to specify model (e.g., "--model", "-m")
+    #[serde(default)]
     pub model_flag: Option<String>,
-    /// Whether this CLI supports working directory flag
+    #[serde(default)]
     pub supports_working_dir: bool,
-    /// Flag to set working directory (e.g., "--dir", "--cwd")
+    #[serde(default)]
     pub working_dir_flag: Option<String>,
-    /// Environment variables to set when running this CLI
     #[serde(default)]
     pub env_vars: std::collections::HashMap<String, String>,
 }

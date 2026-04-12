@@ -234,8 +234,10 @@ fn select_platforms<'a>(detected: &[&'a Platform]) -> Result<Vec<&'a Platform>> 
     }
 
     let platform_names: Vec<&str> = detected.iter().map(|p| p.name.as_str()).collect();
+    let all_indices: Vec<usize> = (0..detected.len()).collect();
 
     let selected = MultiSelect::new("Select platforms to configure:", platform_names)
+        .with_default(&all_indices)
         .with_help_message("space: toggle | enter: confirm | ↑↓: navigate")
         .prompt()
         .map_err(|e| anyhow::anyhow!("Selection cancelled: {}", e))?;
