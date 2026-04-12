@@ -1,77 +1,60 @@
-//! CLI execution strategies.
+//! Dynamic CLI execution strategy.
 //!
-//! Each CLI has its own strategy for building command arguments.
+//! All CLI definitions come from the registry (platforms.json).
+//! Commands are built dynamically based on the saved configuration.
 
+use std::collections::HashMap;
 use tokio::process::Command;
 
-/// Strategy for building CLI commands.
-pub trait CliStrategy {
-    /// Build the command with appropriate arguments.
-    fn build_command(
+/// Strategy for building CLI commands from registry config.
+pub struct CliStrategy {
+    pub binary: String,
+    pub headless_mode: String,
+    pub model_flag: Option<String>,
+    pub supports_working_dir: bool,
+    pub working_dir_flag: Option<String>,
+    pub env_vars: HashMap<String, String>,
+}
+
+impl CliStrategy {
+    /// Build a command using the registry-defined configuration.
+    pub fn build_command(
         &self,
-        cmd: &mut Command,
         prompt: &str,
         model: Option<&str>,
         working_dir: Option<&str>,
-    );
-}
+    ) -> Command {
+        let mut cmd = Command::new(&self.binary);
 
-/// `OpenCode` CLI strategy.
-pub struct OpenCodeStrategy;
+        // Set environment variables
+        for (key, value) in &self.env_vars {
+            cmd.env(key, value);
+        }
 
-impl CliStrategy for OpenCodeStrategy {
-    fn build_command(
-        &self,
-        cmd: &mut Command,
-        prompt: &str,
-        model: Option<&str>,
-        working_dir: Option<&str>,
-    ) {
-        cmd.arg("run").arg(prompt);
+        // Add headless mode flags (before prompt)
+        for arg in shell_words::split(&self.headless_mode).unwrap_or_default() {
+            cmd.arg(arg);
+        }
+
+        // Add prompt
+        cmd.arg(prompt);
+
+        // Add model if specified
         if let Some(m) = model {
-            cmd.arg("-m").arg(m);
+            if let Some(ref flag) = self.model_flag {
+                cmd.arg(flag).arg(m);
+            }
         }
-        if let Some(dir) = working_dir {
-            cmd.arg("--dir").arg(dir);
+
+        // Add working directory if supported
+        if self.supports_working_dir {
+            if let Some(dir) = working_dir {
+                if let Some(ref flag) = self.working_dir_flag {
+                    cmd.arg(flag).arg(dir);
+                }
+            }
         }
-    }
-}
 
-/// Kiro CLI strategy.
-pub struct KiroStrategy;
-
-impl CliStrategy for KiroStrategy {
-    fn build_command(
-        &self,
-        cmd: &mut Command,
-        prompt: &str,
-        model: Option<&str>,
-        _working_dir: Option<&str>,
-    ) {
-        cmd.arg("chat")
-            .arg("--no-interactive")
-            .arg("--trust-all-tools")
-            .arg(prompt);
-        if let Some(m) = model {
-            cmd.arg("--model").arg(m);
-        }
-    }
-}
-
-/// GitHub `Copilot` CLI strategy.
-pub struct CopilotStrategy;
-
-impl CliStrategy for CopilotStrategy {
-    fn build_command(
-        &self,
-        cmd: &mut Command,
-        prompt: &str,
-        model: Option<&str>,
-        _working_dir: Option<&str>,
-    ) {
-        cmd.arg("-p").arg(prompt).arg("--allow-all-tools");
-        if let Some(m) = model {
-            cmd.arg("--model").arg(m);
-        }
+        cmd
     }
 }
