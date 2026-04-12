@@ -6,7 +6,7 @@
 //! Keys:
 //!   Home:    ↑↓ → Preview, q quit, Esc confirm-quit, n new agent
 //!   Preview: ↑↓ navigate, Enter → Focus, Esc → Home, agent actions
-//!   Focus:   background → scroll log, interactive → PTY, EscEsc → Preview
+//!   Focus:   background → scroll log, interactive → PTY, `EscEsc` → Preview
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -26,9 +26,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
         // Tick speed adapts to what needs frequent repaints
         let tick = match app.focus {
             Focus::Agent | Focus::NewAgentDialog => Duration::from_millis(50),
-            Focus::Preview
-                if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) =>
-            {
+            Focus::Preview if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) => {
                 Duration::from_millis(100)
             }
             Focus::Home if app.brain.as_ref().is_some_and(|b| b.active) => {
@@ -174,9 +172,11 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 
     // Shift+Up/Down or PageUp/PageDown = scroll history
     let shift = modifiers.contains(KeyModifiers::SHIFT);
+    let max_scroll = app.interactive_agents[idx].max_scroll();
     match code {
         KeyCode::Up if shift => {
-            app.interactive_agents[idx].scroll_offset += 3;
+            app.interactive_agents[idx].scroll_offset =
+                (app.interactive_agents[idx].scroll_offset + 3).min(max_scroll + 1);
             return Ok(());
         }
         KeyCode::Down if shift => {
@@ -185,7 +185,8 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
             return Ok(());
         }
         KeyCode::PageUp => {
-            app.interactive_agents[idx].scroll_offset += 15;
+            app.interactive_agents[idx].scroll_offset =
+                (app.interactive_agents[idx].scroll_offset + 15).min(max_scroll + 1);
             return Ok(());
         }
         KeyCode::PageDown => {

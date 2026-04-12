@@ -25,16 +25,22 @@ pub struct InteractiveAgent {
     pub id: String,
     pub cli: Cli,
     pub working_dir: String,
+    #[allow(dead_code)]
     pub started_at: DateTime<Utc>,
     pub status: AgentStatus,
     /// PTY writer — send bytes to the agent's stdin.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
-    /// Virtual terminal screen — fed by PTY output.
+    /// Virtual terminal screen — fed by PTY output (for live rendering with colors).
     vt: Arc<Mutex<vt100::Parser>>,
     /// Child process handle.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     /// Scroll offset (0 = bottom/live, positive = scrolled up).
     pub scroll_offset: usize,
+    /// Accumulated plain-text output for scrollback history.
+    output_buffer: Arc<Mutex<String>>,
+    /// PTY dimensions.
+    rows: u16,
+    cols: u16,
 }
 
 impl InteractiveAgent {
@@ -78,8 +84,10 @@ impl InteractiveAgent {
 
         let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let vt_clone = Arc::clone(&vt);
+        let output_buffer = Arc::new(Mutex::new(String::new()));
+        let output_clone = Arc::clone(&output_buffer);
 
-        // Background thread: read PTY output → feed into vt100 parser
+        // Background thread: read PTY output → feed into vt100 parser and text buffer
         std::thread::spawn(move || {
             let mut tmp = [0u8; 4096];
             loop {
@@ -88,6 +96,19 @@ impl InteractiveAgent {
                     Ok(n) => {
                         if let Ok(mut parser) = vt_clone.lock() {
                             parser.process(&tmp[..n]);
+                        }
+                        // Append plain text to output buffer
+                        if let Ok(mut buf) = output_clone.lock() {
+                            if let Ok(text) = String::from_utf8(tmp[..n].to_vec()) {
+                                buf.push_str(&text);
+                                // Cap buffer at ~500KB to avoid memory issues
+                                if buf.len() > 500_000 {
+                                    let split = buf.len() - 400_000;
+                                    if let Some(idx) = buf[split..].find('\n') {
+                                        buf.drain(..split + idx);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -106,6 +127,9 @@ impl InteractiveAgent {
             vt,
             child: Arc::new(Mutex::new(child)),
             scroll_offset: 0,
+            output_buffer,
+            rows,
+            cols,
         })
     }
 
@@ -120,65 +144,127 @@ impl InteractiveAgent {
 
     /// Get a snapshot of the virtual terminal screen for rendering.
     ///
-    /// When `scroll_offset > 0`, uses vt100's built-in scrollback navigation.
+    /// When `scroll_offset == 0`, returns the live vt100 screen with colors.
+    /// When `scroll_offset > 0`, renders plain-text scrollback from the output buffer.
     pub fn screen_snapshot(&self) -> Option<ScreenSnapshot> {
-        let mut vt = self.vt.lock().ok()?;
-        vt.screen_mut().set_scrollback(self.scroll_offset);
-        let screen = vt.screen();
-        let (rows, cols) = screen.size();
+        if self.scroll_offset == 0 {
+            // Live view: use vt100 screen with full colors
+            let mut vt = self.vt.lock().ok()?;
+            vt.screen_mut().set_scrollback(0);
+            let screen = vt.screen();
+            let (rows, cols) = screen.size();
 
-        let mut cells = Vec::with_capacity(rows as usize);
-        for row in 0..rows {
-            let mut row_cells = Vec::with_capacity(cols as usize);
-            for col in 0..cols {
-                row_cells.push(screen.cell(row, col).map(|c| VtCell {
-                    ch: c.contents().to_string(),
-                    fg: convert_color(c.fgcolor()),
-                    bg: convert_color(c.bgcolor()),
-                    bold: c.bold(),
-                    underline: c.underline(),
-                    inverse: c.inverse(),
-                }));
+            let mut cells = Vec::with_capacity(rows as usize);
+            for row in 0..rows {
+                let mut row_cells = Vec::with_capacity(cols as usize);
+                for col in 0..cols {
+                    row_cells.push(screen.cell(row, col).map(|c| VtCell {
+                        ch: c.contents().to_string(),
+                        fg: convert_color(c.fgcolor()),
+                        bg: convert_color(c.bgcolor()),
+                        bold: c.bold(),
+                        underline: c.underline(),
+                        inverse: c.inverse(),
+                    }));
+                }
+                cells.push(row_cells);
             }
-            cells.push(row_cells);
+
+            let cursor = screen.cursor_position();
+            Some(ScreenSnapshot {
+                cells,
+                cursor_row: cursor.0,
+                cursor_col: cursor.1,
+                scrolled: false,
+                text_lines: None,
+            })
+        } else {
+            // Scrolled back: render plain text from output buffer
+            let output = self.output_buffer.lock().ok()?;
+            let lines: Vec<&str> = output.lines().collect();
+            let total_lines = lines.len();
+
+            // Calculate which lines to show based on scroll_offset
+            // scroll_offset=1 means show last (total-1) lines, etc.
+            let visible_rows = self.rows as usize;
+            let end = total_lines.saturating_sub(self.scroll_offset - 1);
+            let start = end.saturating_sub(visible_rows);
+
+            let text_lines: Vec<String> = lines[start..end.min(total_lines)]
+                .iter()
+                .map(|l| {
+                    // Truncate/pad to fit cols
+                    let ch_count = l.chars().count();
+                    if ch_count > self.cols as usize {
+                        l.chars().take(self.cols as usize).collect()
+                    } else {
+                        format!("{:<width$}", l, width = self.cols as usize)
+                    }
+                })
+                .collect();
+
+            // Pad to fill visible rows
+            let padded_rows = text_lines.len();
+            let mut padded: Vec<String> = text_lines;
+            for _ in 0..(visible_rows.saturating_sub(padded_rows)) {
+                padded.push(" ".repeat(self.cols as usize));
+            }
+
+            // Convert text lines to cell format (no colors for scrollback)
+            let mut cells = Vec::with_capacity(padded.len());
+            for line in &padded {
+                let mut row_cells = Vec::with_capacity(self.cols as usize);
+                for ch in line.chars() {
+                    row_cells.push(Some(VtCell {
+                        ch: ch.to_string(),
+                        fg: ratatui::style::Color::Gray,
+                        bg: ratatui::style::Color::Reset,
+                        bold: false,
+                        underline: false,
+                        inverse: false,
+                    }));
+                }
+                // Pad remaining columns
+                for _ in 0..((self.cols as usize).saturating_sub(line.chars().count())) {
+                    row_cells.push(Some(VtCell {
+                        ch: " ".to_string(),
+                        fg: ratatui::style::Color::Gray,
+                        bg: ratatui::style::Color::Reset,
+                        bold: false,
+                        underline: false,
+                        inverse: false,
+                    }));
+                }
+                cells.push(row_cells);
+            }
+
+            Some(ScreenSnapshot {
+                cells,
+                cursor_row: self.rows, // hide cursor when scrolled
+                cursor_col: 0,
+                scrolled: true,
+                text_lines: Some(padded),
+            })
         }
-
-        let cursor = screen.cursor_position();
-        let scrolled = self.scroll_offset > 0;
-        Some(ScreenSnapshot {
-            cells,
-            cursor_row: if scrolled { rows } else { cursor.0 },
-            cursor_col: cursor.1,
-            scrolled,
-        })
-    }
-
-    /// Total scrollback lines available.
-    #[allow(dead_code)]
-    pub fn scrollback_len(&self) -> usize {
-        self.vt
-            .lock()
-            .ok()
-            .map(|vt| vt.screen().scrollback())
-            .unwrap_or(0)
     }
 
     /// Get a plain-text preview of the screen (for sidebar log preview).
     pub fn output(&self) -> String {
-        let Some(snap) = self.screen_snapshot() else {
-            return String::new();
-        };
-        snap.cells
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|c| c.as_ref().map(|c| c.ch.as_str()).unwrap_or(" "))
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        if let Ok(output) = self.output_buffer.lock() {
+            // Return last few lines of output buffer
+            let lines: Vec<&str> = output.lines().collect();
+            let take = lines.len().min(self.rows as usize);
+            lines
+                .iter()
+                .rev()
+                .take(take)
+                .rev()
+                .map(|l| l.trim_end())
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        }
     }
 
     /// Check if the process has exited.
@@ -201,6 +287,14 @@ impl InteractiveAgent {
         }
         self.status = AgentStatus::Exited(-9);
     }
+
+    /// Maximum scroll offset based on accumulated output.
+    pub fn max_scroll(&self) -> usize {
+        self.output_buffer
+            .lock()
+            .map(|b| b.lines().count())
+            .unwrap_or(0)
+    }
 }
 
 /// A snapshot of the virtual terminal screen.
@@ -210,6 +304,8 @@ pub struct ScreenSnapshot {
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub scrolled: bool,
+    /// Plain-text lines (only present when scrolled into history).
+    pub text_lines: Option<Vec<String>>,
 }
 
 /// A single cell from the virtual terminal.
