@@ -46,14 +46,29 @@ pub enum Focus {
     Agent,
 }
 
+/// Type of task to create.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NewTaskType {
+    Interactive,
+    Scheduled,
+    Watcher,
+}
+
 /// State for the "new agent" dialog.
 pub struct NewAgentDialog {
+    pub task_type: NewTaskType,
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
     /// Registry configs parallel to `available_clis` (for `interactive_args` etc.)
     pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
     pub working_dir: String,
-    /// Which field is focused: 0 = CLI, 1 = working dir.
+    pub model: String,
+    /// Task/watch fields
+    pub prompt: String,
+    pub cron_expr: String,
+    pub watch_path: String,
+    pub watch_events: Vec<String>,
+    /// Which field is focused: 0=type, 1=CLI, 2=dir, 3=model, 4=prompt, 5=cron/watch
     pub field: usize,
     pub dir_entries: Vec<String>,
     pub dir_selected: usize,
@@ -63,12 +78,12 @@ pub struct NewAgentDialog {
 
 impl NewAgentDialog {
     pub fn new() -> Self {
-        // Load available CLIs from saved config
         let (available, configs) = Self::load_available_clis();
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let mut dialog = Self {
+            task_type: NewTaskType::Interactive,
             cli_index: 0,
             available_clis: if available.is_empty() {
                 vec![Cli::OpenCode, Cli::Kiro, Cli::Qwen]
@@ -81,7 +96,12 @@ impl NewAgentDialog {
                 configs
             },
             working_dir: cwd.clone(),
-            field: 0,
+            model: String::new(),
+            prompt: String::new(),
+            cron_expr: "0 9 * * *".to_string(),
+            watch_path: cwd.clone(),
+            watch_events: vec!["create".to_string(), "modify".to_string()],
+            field: 1,
             dir_entries: Vec::new(),
             dir_selected: 0,
             dir_scroll: 0,
@@ -492,20 +512,87 @@ impl App {
         let Some(dialog) = &self.new_agent_dialog else {
             return Ok(());
         };
-        let cli = dialog.selected_cli();
-        let dir = dialog.working_dir.clone();
-        let interactive_args = dialog.selected_interactive_args();
 
-        let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-        let cols = tw.saturating_sub(28);
-        let rows = th.saturating_sub(4);
+        let model = if dialog.model.is_empty() {
+            None
+        } else {
+            Some(dialog.model.clone())
+        };
 
-        let agent = InteractiveAgent::spawn(cli, &dir, cols, rows, interactive_args.as_deref())?;
-        self.interactive_agents.push(agent);
+        match dialog.task_type {
+            NewTaskType::Interactive => {
+                let cli = dialog.selected_cli();
+                let dir = dialog.working_dir.clone();
+                let interactive_args = dialog.selected_interactive_args();
+                let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+                let cols = tw.saturating_sub(28);
+                let rows = th.saturating_sub(4);
+                let agent =
+                    InteractiveAgent::spawn(cli, &dir, cols, rows, interactive_args.as_deref())?;
+                self.interactive_agents.push(agent);
+            }
+            NewTaskType::Scheduled => {
+                if dialog.prompt.is_empty() {
+                    return Ok(());
+                }
+                let cli = dialog.selected_cli();
+                let id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let task = crate::domain::models::Task {
+                    id,
+                    prompt: dialog.prompt.clone(),
+                    schedule_expr: dialog.cron_expr.clone(),
+                    cli,
+                    model,
+                    working_dir: if dialog.working_dir.is_empty() {
+                        None
+                    } else {
+                        Some(dialog.working_dir.clone())
+                    },
+                    enabled: true,
+                    created_at: Utc::now(),
+                    last_run_at: None,
+                    last_run_ok: None,
+                    log_path: String::new(),
+                    timeout_minutes: 15,
+                    expires_at: None,
+                };
+                self.db.insert_or_update_task(&task)?;
+            }
+            NewTaskType::Watcher => {
+                if dialog.prompt.is_empty() || dialog.watch_path.is_empty() {
+                    return Ok(());
+                }
+                let cli = dialog.selected_cli();
+                let id = format!("watch-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let events: Vec<_> = dialog
+                    .watch_events
+                    .iter()
+                    .filter_map(|e| crate::domain::models::WatchEvent::from_str(e))
+                    .collect();
+                if events.is_empty() {
+                    return Ok(());
+                }
+                let watcher = crate::domain::models::Watcher {
+                    id,
+                    path: dialog.watch_path.clone(),
+                    events,
+                    prompt: dialog.prompt.clone(),
+                    cli,
+                    model,
+                    recursive: false,
+                    debounce_seconds: 5,
+                    enabled: true,
+                    trigger_count: 0,
+                    created_at: Utc::now(),
+                    last_triggered_at: None,
+                    timeout_minutes: 15,
+                };
+                self.db.insert_or_update_watcher(&watcher)?;
+            }
+        }
 
         self.refresh_agents()?;
         self.selected = self.agents.len().saturating_sub(1);
-
         self.close_new_agent_dialog();
         self.focus = Focus::Preview;
         Ok(())

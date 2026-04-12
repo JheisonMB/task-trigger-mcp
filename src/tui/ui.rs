@@ -441,33 +441,38 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         return;
     };
 
-    let area = centered_rect(60, 18, frame.area());
-    // No Clear — let the background (automaton/banner) show through
+    let height = match dialog.task_type {
+        super::app::NewTaskType::Interactive => 16,
+        super::app::NewTaskType::Scheduled => 16,
+        super::app::NewTaskType::Watcher => 14,
+    };
+    let area = centered_rect(65, height, frame.area());
 
     let block = Block::default()
-        .title(" New Agent ")
+        .title(" New Task ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(INTERACTIVE_COLOR));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let cli_style = if dialog.field == 0 {
-        Style::default()
-            .fg(Color::Black)
-            .bg(INTERACTIVE_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
+    let type_names = ["Interactive", "Scheduled", "Watcher"];
+    let type_idx = match dialog.task_type {
+        super::app::NewTaskType::Interactive => 0,
+        super::app::NewTaskType::Scheduled => 1,
+        super::app::NewTaskType::Watcher => 2,
     };
 
-    let dir_style = if dialog.field == 1 {
-        Style::default()
-            .fg(Color::Black)
-            .bg(INTERACTIVE_COLOR)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
+    let is_focused = |field: usize| dialog.field == field;
+    let focus_style = |field: usize| {
+        if is_focused(field) {
+            Style::default()
+                .fg(Color::Black)
+                .bg(INTERACTIVE_COLOR)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        }
     };
 
     let cli_name = dialog.selected_cli().as_str();
@@ -476,25 +481,74 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  CLI:  ", Style::default().fg(DIM)),
-            Span::styled(format!(" ◀ {cli_name} ▶ "), cli_style),
+            Span::styled("  Type:  ", Style::default().fg(DIM)),
+            Span::styled(format!(" ◀ {} ▶ ", type_names[type_idx]), focus_style(0)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Dir:  ", Style::default().fg(DIM)),
-            Span::styled(&dialog.working_dir, dir_style),
+            Span::styled("  CLI:   ", Style::default().fg(DIM)),
+            Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(1)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Dir:   ", Style::default().fg(DIM)),
+            Span::styled(truncate_str(&dialog.working_dir, 50), focus_style(2)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Model: ", Style::default().fg(DIM)),
+            Span::styled(
+                if dialog.model.is_empty() {
+                    "(optional, e.g. gpt-4.1)".to_string()
+                } else {
+                    dialog.model.clone()
+                },
+                focus_style(3),
+            ),
         ]),
         Line::from(""),
     ];
 
-    // Add directory browser list
-    if !dialog.dir_entries.is_empty() {
+    // Type-specific fields
+    if matches!(
+        dialog.task_type,
+        super::app::NewTaskType::Scheduled | super::app::NewTaskType::Watcher
+    ) {
+        lines.push(Line::from(vec![
+            Span::styled("  Prompt:", Style::default().fg(DIM)),
+            Span::styled(
+                if dialog.prompt.is_empty() {
+                    "enter task prompt...".to_string()
+                } else {
+                    dialog.prompt.clone()
+                },
+                focus_style(4),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        if dialog.task_type == super::app::NewTaskType::Scheduled {
+            lines.push(Line::from(vec![
+                Span::styled("  Cron:  ", Style::default().fg(DIM)),
+                Span::styled(dialog.cron_expr.clone(), focus_style(5)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  Path:  ", Style::default().fg(DIM)),
+                Span::styled(truncate_str(&dialog.watch_path, 50), focus_style(5)),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Directory browser (for interactive mode)
+    if dialog.task_type == super::app::NewTaskType::Interactive && !dialog.dir_entries.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Directories (↑↓ navigate, Space to enter):",
             Style::default().fg(DIM),
         )));
 
-        let visible_rows = 6;
+        let visible_rows = 4;
         let scroll = dialog.dir_selected.saturating_sub(visible_rows - 1);
 
         for (i, entry) in dialog.dir_entries.iter().enumerate().skip(scroll) {
@@ -503,7 +557,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             }
 
             let is_selected = i == dialog.dir_selected;
-            let entry_style = if is_selected && dialog.field == 1 {
+            let entry_style = if is_selected && is_focused(2) {
                 Style::default()
                     .fg(Color::Black)
                     .bg(INTERACTIVE_COLOR)
@@ -517,17 +571,28 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             };
 
             let icon = if entry == ".." { "📁" } else { "📂" };
-
             lines.push(Line::from(Span::styled(
                 format!("    {} {}", icon, entry),
                 entry_style,
             )));
         }
+        lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(""));
+    let help_text = match dialog.task_type {
+        super::app::NewTaskType::Interactive => {
+            "  Tab: next field · ←→: CLI · ↑↓: dirs · Space: enter dir · Enter: launch · Esc: cancel"
+        }
+        super::app::NewTaskType::Scheduled => {
+            "  Tab: next field · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+        }
+        super::app::NewTaskType::Watcher => {
+            "  Tab: next field · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+        }
+    };
+
     lines.push(Line::from(Span::styled(
-        "  ←→: CLI · ↓: dirs · Space: enter dir · Enter: launch · Esc: cancel",
+        help_text,
         Style::default().fg(DIM),
     )));
 

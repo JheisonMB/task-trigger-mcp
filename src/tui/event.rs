@@ -212,7 +212,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 
 // ── Dialog: new agent creation ──────────────────────────────────────
 //
-// Flow: ←→ choose CLI, ↓ go to dir picker, ↑↓ navigate dirs,
+// Flow: Tab/Shift+Tab switch fields, ←→ choose CLI, ↑↓ navigate dirs,
 //       Space enter directory, Enter launch, Esc cancel.
 
 fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
@@ -223,31 +223,67 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Enter => {
-            // Enter always launches
             let _ = app.launch_new_agent();
+        }
+        KeyCode::Tab => {
+            let Some(dialog) = &mut app.new_agent_dialog else {
+                return Ok(());
+            };
+            let max_field = match dialog.task_type {
+                super::app::NewTaskType::Interactive => 3, // type, CLI, dir, model
+                super::app::NewTaskType::Scheduled => 5,   // + prompt, cron
+                super::app::NewTaskType::Watcher => 5,     // + prompt, watch_path
+            };
+            dialog.field = (dialog.field + 1).min(max_field);
+        }
+        KeyCode::BackTab => {
+            let Some(dialog) = &mut app.new_agent_dialog else {
+                return Ok(());
+            };
+            dialog.field = dialog.field.saturating_sub(1);
         }
         _ => {
             let Some(dialog) = &mut app.new_agent_dialog else {
                 return Ok(());
             };
             match dialog.field {
-                // CLI selector
+                // Task type selector
                 0 => match code {
-                    KeyCode::Left => dialog.prev_cli(),
-                    KeyCode::Right => dialog.next_cli(),
-                    KeyCode::Down => {
-                        dialog.field = 1;
+                    KeyCode::Left | KeyCode::Up => {
+                        dialog.task_type = match dialog.task_type {
+                            super::app::NewTaskType::Interactive => {
+                                super::app::NewTaskType::Watcher
+                            }
+                            super::app::NewTaskType::Scheduled => {
+                                super::app::NewTaskType::Interactive
+                            }
+                            super::app::NewTaskType::Watcher => super::app::NewTaskType::Scheduled,
+                        };
+                    }
+                    KeyCode::Right | KeyCode::Down => {
+                        dialog.task_type = match dialog.task_type {
+                            super::app::NewTaskType::Interactive => {
+                                super::app::NewTaskType::Scheduled
+                            }
+                            super::app::NewTaskType::Scheduled => super::app::NewTaskType::Watcher,
+                            super::app::NewTaskType::Watcher => {
+                                super::app::NewTaskType::Interactive
+                            }
+                        };
                     }
                     _ => {}
                 },
-                // Directory browser
+                // CLI selector
                 1 => match code {
+                    KeyCode::Left => dialog.prev_cli(),
+                    KeyCode::Right => dialog.next_cli(),
+                    _ => {}
+                },
+                // Directory browser
+                2 => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
-                        } else {
-                            // At top of dir list, go back to CLI selector
-                            dialog.field = 0;
                         }
                     }
                     KeyCode::Down => {
@@ -256,12 +292,45 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         }
                     }
                     KeyCode::Char(' ') => {
-                        // Space = enter selected directory
                         dialog.navigate_to_selected();
                     }
                     KeyCode::Backspace => {
                         dialog.working_dir.pop();
                     }
+                    _ => {}
+                },
+                // Model input
+                3 => match code {
+                    KeyCode::Char(c) => dialog.model.push(c),
+                    KeyCode::Backspace => {
+                        dialog.model.pop();
+                    }
+                    _ => {}
+                },
+                // Prompt (scheduled/watcher)
+                4 => match code {
+                    KeyCode::Char(c) => dialog.prompt.push(c),
+                    KeyCode::Backspace => {
+                        dialog.prompt.pop();
+                    }
+                    _ => {}
+                },
+                // Cron expr or watch path
+                5 => match dialog.task_type {
+                    super::app::NewTaskType::Scheduled => match code {
+                        KeyCode::Char(c) => dialog.cron_expr.push(c),
+                        KeyCode::Backspace => {
+                            dialog.cron_expr.pop();
+                        }
+                        _ => {}
+                    },
+                    super::app::NewTaskType::Watcher => match code {
+                        KeyCode::Char(c) => dialog.watch_path.push(c),
+                        KeyCode::Backspace => {
+                            dialog.watch_path.pop();
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 },
                 _ => {}
