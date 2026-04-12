@@ -87,7 +87,6 @@ impl Executor {
             }
         }
 
-        // Check lock: if there's an active run, record as missed
         self.resolve_timeout(&task.id);
         if let Ok(Some(active)) = self.db.get_active_run(&task.id) {
             tracing::info!(
@@ -110,7 +109,6 @@ impl Executor {
             return Ok(-1);
         }
 
-        // Create run and lock the task
         let run_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let timeout_at = now + chrono::Duration::minutes(i64::from(task.timeout_minutes));
@@ -143,8 +141,6 @@ impl Executor {
 
         let result = self.run_cli_process(&params).await?;
 
-        // If the agent didn't report via task_report, auto-close the run
-        // based on the process exit code.
         if let Ok(Some(run)) = self.db.get_run(&run_id) {
             if run.status.is_active() {
                 let status = if result.success {
@@ -182,7 +178,6 @@ impl Executor {
             return Ok(-1);
         }
 
-        // Check lock
         self.resolve_timeout(&watcher.id);
         if let Ok(Some(active)) = self.db.get_active_run(&watcher.id) {
             tracing::info!(
@@ -214,7 +209,6 @@ impl Executor {
             .to_string_lossy()
             .to_string();
 
-        // Create run and lock
         let run_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
         let timeout_at = now + chrono::Duration::minutes(i64::from(watcher.timeout_minutes));
@@ -352,17 +346,14 @@ fn resolve_cli_binary(cli: &Cli) -> Result<PathBuf> {
 
 /// Build the CLI command with appropriate flags.
 fn build_cli_command(
-    cli_path: &Path,
+    _cli_path: &Path,
     cli: &Cli,
     prompt: &str,
     model: Option<&str>,
     working_dir: Option<&str>,
 ) -> Command {
-    let mut cmd = Command::new(cli_path);
-
-    // Use the strategy pattern to build CLI-specific arguments
     let strategy = cli.strategy();
-    strategy.build_command(&mut cmd, prompt, model, working_dir);
+    let mut cmd = strategy.build_command(prompt, model, working_dir);
 
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
