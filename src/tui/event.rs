@@ -119,11 +119,6 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         app.last_esc = std::time::Instant::now();
     }
 
-    if code == KeyCode::Char('h') {
-        app.focus = Focus::Home;
-        return Ok(());
-    }
-
     let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {
         app.focus = Focus::Home;
         return Ok(());

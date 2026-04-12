@@ -102,22 +102,57 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let card_height: u16 = 5;
-    let visible_cards = (inner.height / card_height).max(1) as usize;
-    let scroll = app.selected.saturating_sub(visible_cards - 1);
+    let card_h: u16 = 5;
+    let header_h: u16 = 1;
+    let bg_green = Color::Rgb(20, 38, 20);
+    let bg_blue = Color::Rgb(15, 22, 40);
 
     let mut y = inner.y;
-    let mut prev_was_interactive = false;
 
-    for (i, agent) in app.agents.iter().enumerate().skip(scroll) {
-        if y + card_height > inner.y + inner.height {
-            break;
+    // ── Background Agents section ──
+    let bg_agents: Vec<_> = app
+        .agents
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !matches!(a, AgentEntry::Interactive(_)))
+        .collect();
+
+    if !bg_agents.is_empty() {
+        let hdr = Line::from(vec![
+            Span::styled(
+                " BACKGROUND",
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" ({})", bg_agents.len())),
+        ]);
+        frame.render_widget(
+            Paragraph::new(hdr),
+            Rect::new(inner.x, y, inner.width, header_h),
+        );
+        y += header_h;
+
+        for (i, agent) in &bg_agents {
+            if y + card_h > inner.y + inner.height {
+                break;
+            }
+            let card_area = Rect::new(inner.x, y, inner.width, card_h - 1);
+            draw_card_with_bg(frame, card_area, agent, app, *i == app.selected, bg_green);
+            y += card_h;
         }
+    }
 
-        let is_interactive = matches!(agent, AgentEntry::Interactive(_));
-        if is_interactive && !prev_was_interactive && y + card_height < inner.y + inner.height {
+    // ── Interactive Agents section ──
+    let ix_agents: Vec<_> = app
+        .agents
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+        .collect();
+
+    if !ix_agents.is_empty() {
+        if y < inner.y + inner.height {
             let sep = Line::from(Span::styled(
-                " ── INTERACTIVE ──",
+                " ─── INTERACTIVE ───",
                 Style::default()
                     .fg(INTERACTIVE_COLOR)
                     .add_modifier(Modifier::BOLD),
@@ -125,21 +160,61 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             frame.render_widget(Paragraph::new(sep), Rect::new(inner.x, y, inner.width, 1));
             y += 1;
         }
-        prev_was_interactive = is_interactive;
 
-        if y + card_height - 1 > inner.y + inner.height {
-            break;
+        let hdr = Line::from(vec![
+            Span::styled(
+                " AGENTS",
+                Style::default()
+                    .fg(INTERACTIVE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" ({})", ix_agents.len())),
+        ]);
+        if y < inner.y + inner.height {
+            frame.render_widget(
+                Paragraph::new(hdr),
+                Rect::new(inner.x, y, inner.width, header_h),
+            );
+            y += header_h;
         }
 
-        let is_selected = i == app.selected;
-        let card_area = Rect::new(inner.x, y, inner.width, card_height - 1);
-        draw_card(frame, card_area, agent, app, is_selected);
-        y += card_height;
+        for (i, agent) in &ix_agents {
+            if y + card_h > inner.y + inner.height {
+                break;
+            }
+            let card_area = Rect::new(inner.x, y, inner.width, card_h - 1);
+            draw_card_with_bg(frame, card_area, agent, app, *i == app.selected, bg_blue);
+            y += card_h;
+        }
+    }
+
+    // ── Scroll indicator ──
+    let total_cards = app.agents.len() as u16;
+    let visible = if y > inner.y + 1 {
+        (y - inner.y - 2) / card_h
+    } else {
+        0
+    };
+    if total_cards > visible && visible > 0 {
+        let pct = (app.selected as u16 + 1).min(visible) * 100 / total_cards;
+        let indicator = format!(" {}% ", pct);
+        let len = indicator.len() as u16;
+        frame.render_widget(
+            Paragraph::new(Span::styled(&indicator, Style::default().fg(DIM))),
+            Rect::new(inner.x + inner.width - len, inner.y, len, 1),
+        );
     }
 }
 
-fn draw_card(frame: &mut Frame, area: Rect, agent: &AgentEntry, app: &App, selected: bool) {
-    let bg = if selected { BG_SELECTED } else { Color::Reset };
+fn draw_card_with_bg(
+    frame: &mut Frame,
+    area: Rect,
+    agent: &AgentEntry,
+    app: &App,
+    selected: bool,
+    section_bg: Color,
+) {
+    let bg = if selected { BG_SELECTED } else { section_bg };
     let is_interactive = matches!(agent, AgentEntry::Interactive(_));
     let accent = if is_interactive {
         INTERACTIVE_COLOR
@@ -194,12 +269,12 @@ fn draw_card(frame: &mut Frame, area: Rect, agent: &AgentEntry, app: &App, selec
         .border_style(Style::default().fg(border_color))
         .style(Style::default().bg(bg));
 
-    let inner = block.inner(area);
+    let inner_area = block.inner(area);
     frame.render_widget(block, area);
 
-    let w = inner.width as usize;
+    let w = inner_area.width as usize;
 
-    if inner.height >= 1 {
+    if inner_area.height >= 1 {
         let line = Line::from(vec![
             Span::raw(format!("{icon} ")),
             Span::styled(
@@ -211,27 +286,27 @@ fn draw_card(frame: &mut Frame, area: Rect, agent: &AgentEntry, app: &App, selec
         ]);
         frame.render_widget(
             Paragraph::new(line),
-            Rect::new(inner.x, inner.y, inner.width, 1),
+            Rect::new(inner_area.x, inner_area.y, inner_area.width, 1),
         );
     }
-    if inner.height >= 2 {
+    if inner_area.height >= 2 {
         let line = Line::from(Span::styled(
             truncate_str(&line2_text, w),
             Style::default().fg(DIM),
         ));
         frame.render_widget(
             Paragraph::new(line),
-            Rect::new(inner.x, inner.y + 1, inner.width, 1),
+            Rect::new(inner_area.x, inner_area.y + 1, inner_area.width, 1),
         );
     }
-    if inner.height >= 3 {
+    if inner_area.height >= 3 {
         let line = Line::from(Span::styled(
             truncate_str(&line3_text, w),
             Style::default().fg(DIM),
         ));
         frame.render_widget(
             Paragraph::new(line),
-            Rect::new(inner.x, inner.y + 2, inner.width, 1),
+            Rect::new(inner_area.x, inner_area.y + 2, inner_area.width, 1),
         );
     }
 }
