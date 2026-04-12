@@ -118,7 +118,8 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let show_selection = app.focus == Focus::Preview || app.focus == Focus::Agent;
+    // Sidebar is highlighted only when focus is Home
+    let sidebar_focused = app.focus == Focus::Home;
     let card_h = 3u16;
 
     // Calculate proportional split
@@ -127,11 +128,9 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         let ix_needed = ix_agents.len() as u16 * card_h + 2;
         let total = bg_needed + ix_needed;
         if total <= area.height {
-            let [top, bottom] = Layout::vertical([
-                Constraint::Length(bg_needed),
-                Constraint::Min(ix_needed),
-            ])
-            .areas(area);
+            let [top, bottom] =
+                Layout::vertical([Constraint::Length(bg_needed), Constraint::Min(ix_needed)])
+                    .areas(area);
             (Some(top), Some(bottom))
         } else {
             let [top, bottom] =
@@ -146,8 +145,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     if let Some(bg_area) = bg_area {
-        let selected_here = show_selection && bg_agents.iter().any(|(i, _)| *i == app.selected);
-        let border_color = if selected_here { ACCENT } else { DIM };
+        let border_color = if sidebar_focused { ACCENT } else { DIM };
         let block = Block::default()
             .title(Span::styled(
                 format!(" Background ({}) ", bg_agents.len()),
@@ -157,12 +155,11 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(bg_area);
         frame.render_widget(block, bg_area);
-        draw_agent_list(frame, inner, &bg_agents, app, show_selection, ACCENT);
+        draw_agent_list(frame, inner, &bg_agents, app, sidebar_focused, ACCENT);
     }
 
     if let Some(ix_area) = ix_area {
-        let selected_here = show_selection && ix_agents.iter().any(|(i, _)| *i == app.selected);
-        let border_color = if selected_here {
+        let border_color = if sidebar_focused {
             INTERACTIVE_COLOR
         } else {
             DIM
@@ -178,7 +175,14 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(ix_area);
         frame.render_widget(block, ix_area);
-        draw_agent_list(frame, inner, &ix_agents, app, show_selection, INTERACTIVE_COLOR);
+        draw_agent_list(
+            frame,
+            inner,
+            &ix_agents,
+            app,
+            sidebar_focused,
+            INTERACTIVE_COLOR,
+        );
     }
 }
 
@@ -593,7 +597,7 @@ fn truncate_path(path: &str) -> String {
 }
 
 fn draw_quit_confirm(frame: &mut Frame) {
-    let area = centered_rect(40, 5, frame.area());
+    let area = centered_rect(40, 3, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()

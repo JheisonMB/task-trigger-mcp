@@ -15,6 +15,7 @@ A self-contained MCP server that lets AI agents register, manage, and execute sc
 
 ---
 
+
 ## How It Works
 
 ```mermaid
@@ -344,4 +345,4 @@ MIT — see [LICENSE](LICENSE) for details.
 
 ---
 
-Made with ❤️ by [JheisonMB](https://github.com/JheisonMB) and [UniverLab](https://github.com/UniverLab)
+Made with ❤️ by [JheisonMB](https://github.com/JheisonMB) and [UniverLab](https://github.com/UniverLab) 
