@@ -82,7 +82,10 @@ fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
-        KeyCode::Esc | KeyCode::Char('h') => {
+        KeyCode::Char('h') | KeyCode::Char('b') => {
+            app.focus = Focus::Home;
+        }
+        KeyCode::Esc => {
             app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {

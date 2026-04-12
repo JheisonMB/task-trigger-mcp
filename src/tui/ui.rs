@@ -254,33 +254,55 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if app.agents.is_empty() {
-        draw_canopy_banner_preview(frame, inner);
-        return;
-    }
-
-    match app.selected_agent() {
-        Some(AgentEntry::Task(t)) if app.focus == Focus::Preview => {
-            draw_task_details(frame, inner, t, app);
-            return;
-        }
-        Some(AgentEntry::Watcher(w)) if app.focus == Focus::Preview => {
-            draw_watcher_details(frame, inner, w);
-            return;
-        }
-        Some(AgentEntry::Interactive(idx)) => {
-            let agent = &app.interactive_agents[*idx];
-            if let Some(snap) = agent.screen_snapshot() {
-                render_vt_screen(frame, inner, &snap);
-                if app.focus == Focus::Agent && !snap.scrolled {
-                    let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
-                    let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
-                    frame.set_cursor_position((cx, cy));
-                }
+    match app.focus {
+        Focus::Home => {
+            if app.agents.is_empty() {
+                draw_canopy_banner_preview(frame, inner);
                 return;
             }
+            match app.selected_agent() {
+                Some(AgentEntry::Task(t)) => {
+                    draw_task_details(frame, inner, t, app);
+                    return;
+                }
+                Some(AgentEntry::Watcher(w)) => {
+                    draw_watcher_details(frame, inner, w);
+                    return;
+                }
+                Some(AgentEntry::Interactive(idx)) => {
+                    let agent = &app.interactive_agents[*idx];
+                    if let Some(snap) = agent.screen_snapshot() {
+                        render_vt_screen(frame, inner, &snap);
+                        return;
+                    }
+                }
+                _ => {}
+            }
         }
-        _ => {}
+        Focus::Preview => {
+            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                let agent = &app.interactive_agents[*idx];
+                if let Some(snap) = agent.screen_snapshot() {
+                    render_vt_screen(frame, inner, &snap);
+                    return;
+                }
+            }
+        }
+        Focus::Agent => {
+            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                let agent = &app.interactive_agents[*idx];
+                if let Some(snap) = agent.screen_snapshot() {
+                    render_vt_screen(frame, inner, &snap);
+                    if !snap.scrolled {
+                        let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
+                        let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
+                        frame.set_cursor_position((cx, cy));
+                    }
+                    return;
+                }
+            }
+        }
+        Focus::NewAgentDialog => {}
     }
 
     let title = app.selected_id();
@@ -367,9 +389,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Home => "  ↑↓ nav  Enter preview  n new  x kill  r rerun  e/d toggle  q quit",
         Focus::Preview => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  ↑↓ scroll  Enter interact  Esc home  q quit"
+                "  ↑↓ scroll  Enter interact  h/Esc home  q quit"
             } else {
-                "  ↑↓ scroll  Esc home  q quit"
+                "  ↑↓ scroll  h/Esc home  q quit"
             }
         }
         Focus::NewAgentDialog => {

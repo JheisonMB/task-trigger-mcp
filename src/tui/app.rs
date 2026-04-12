@@ -89,11 +89,14 @@ impl NewAgentDialog {
         if let Some(home) = dirs::home_dir() {
             let config_path = home.join(".canopy/cli_config.json");
             if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&config_path) {
-                return registry
+                let clis: Vec<Cli> = registry
                     .available_clis
                     .iter()
                     .filter_map(|c| Cli::resolve(Some(&c.name)).ok())
                     .collect();
+                if !clis.is_empty() {
+                    return clis;
+                }
             }
         }
         Cli::detect_available()
