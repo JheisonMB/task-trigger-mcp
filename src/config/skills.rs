@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// A skill definition from the registry.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
     /// Unique skill identifier
@@ -25,6 +26,7 @@ pub struct Skill {
 }
 
 /// Platform-specific installation path for a skill.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillInstallPath {
     pub platform: String,
@@ -33,6 +35,7 @@ pub struct SkillInstallPath {
 }
 
 /// Registry of available skills.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsRegistry {
     pub version: u32,
@@ -40,6 +43,7 @@ pub struct SkillsRegistry {
 }
 
 /// Installed skill record.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledSkill {
     pub id: String,
@@ -48,6 +52,7 @@ pub struct InstalledSkill {
 }
 
 impl SkillsRegistry {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             version: 1,
@@ -55,11 +60,13 @@ impl SkillsRegistry {
         }
     }
 
+    #[allow(dead_code)]
     pub fn fetch_from_registry() -> Result<Self> {
         Ok(Self::new())
     }
 
     /// Install a skill to selected platforms.
+    #[allow(dead_code)]
     pub fn install_skill(&self, skill: &Skill, target_platforms: &[&str]) -> Result<Vec<String>> {
         let home = dirs::home_dir().context("No home directory")?;
         let mut installed = Vec::new();
@@ -82,6 +89,7 @@ impl SkillsRegistry {
     }
 
     /// List installed skills from .canopy/skills.json.
+    #[allow(dead_code)]
     pub fn list_installed() -> Result<Vec<InstalledSkill>> {
         let home = dirs::home_dir().context("No home directory")?;
         let skills_file = home.join(".canopy/skills.json");
@@ -96,6 +104,7 @@ impl SkillsRegistry {
     }
 
     /// Save installed skills record to .canopy/skills.json.
+    #[allow(dead_code)]
     pub fn save_installed(skills: &[InstalledSkill]) -> Result<()> {
         let home = dirs::home_dir().context("No home directory")?;
         let canopy_dir = home.join(".canopy");
@@ -113,6 +122,7 @@ impl Default for SkillsRegistry {
     }
 }
 
+#[allow(dead_code)]
 pub fn extract_skills_from_platform(_platform: &str, _skills_dir: &Path) -> Result<Vec<String>> {
     Ok(Vec::new())
 }

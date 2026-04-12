@@ -12,7 +12,6 @@ pub mod skills;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::path::Path;
 
 /// MCP Server configuration entry.
@@ -90,7 +89,7 @@ impl McpConfigRegistry {
     }
 
     /// Extract all MCP configs from detected platforms.
-    pub fn extract_all(platforms: &[crate::setup::Platform]) -> Result<Self> {
+    pub fn extract_all(platforms: &[&crate::setup::Platform]) -> Result<Self> {
         let mut registry = Self::new();
         let home = dirs::home_dir().context("No home directory")?;
 
@@ -102,7 +101,7 @@ impl McpConfigRegistry {
 
             match Self::extract_from_platform(
                 &platform.name,
-                &config_path,
+                &home.join(&platform.config_path),
                 &platform.mcp_servers_key,
             ) {
                 Ok(platform_config) => {
@@ -118,6 +117,7 @@ impl McpConfigRegistry {
     }
 
     /// Get all unique MCP server names across all platforms.
+    #[allow(dead_code)]
     pub fn unique_server_names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self
             .platforms
@@ -157,6 +157,7 @@ impl McpConfigRegistry {
     }
 
     /// Sync selected servers to target platforms.
+    #[allow(dead_code)]
     pub fn sync_servers(
         &self,
         server_names: &[&str],
@@ -213,7 +214,8 @@ fn extract_servers_from_object(servers_object: &serde_json::Value) -> Vec<McpSer
     servers
 }
 
-/// Get the mcp_servers_key path for a platform from the registry.
+/// Get the `mcp_servers_key` path for a platform from the registry.
+#[allow(dead_code)]
 pub fn get_mcp_servers_key_for_platform(platform: &crate::setup::Platform) -> &[String] {
     &platform.mcp_servers_key
 }

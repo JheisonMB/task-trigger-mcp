@@ -146,7 +146,7 @@ async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
     use config::McpConfigRegistry;
     use std::io;
 
-    let home = dirs::home_dir().context("No home directory")?;
+    let _home = dirs::home_dir().context("No home directory")?;
     print!("  Fetching platform registry... ");
     io::Write::flush(&mut io::stdout())?;
     let registry = setup::fetch_registry_raw()?;
@@ -373,6 +373,34 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             }
 
             let exe = std::env::current_exe()?;
+            let port = resolve_port(port_override);
+
+            #[cfg(target_os = "linux")]
+            {
+                let home = dirs::home_dir().expect("No home directory");
+                let service_path = home.join(".config/systemd/user/canopy.service");
+                if !service_path.exists() {
+                    print!("  Installing system service... ");
+                    match service_install::install_service(&exe, port) {
+                        Ok(_) => println!("\x1b[32m✅\x1b[0m installed"),
+                        Err(e) => println!("\x1b[33m⚠\x1b[0m  {}", e),
+                    }
+                }
+            }
+
+            #[cfg(target_os = "macos")]
+            {
+                let home = dirs::home_dir().expect("No home directory");
+                let plist_path = home.join("Library/LaunchAgents/com.canopy.plist");
+                if !plist_path.exists() {
+                    print!("  Installing system service... ");
+                    match service_install::install_service(&exe, port) {
+                        Ok(_) => println!("\x1b[32m✅\x1b[0m installed"),
+                        Err(e) => println!("\x1b[33m⚠\x1b[0m  {}", e),
+                    }
+                }
+            }
+
             let mut cmd = std::process::Command::new(&exe);
             cmd.arg("serve");
             if let Some(port) = port_override {
@@ -477,7 +505,12 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
         }
 
         DaemonAction::Restart => {
-            Box::pin(handle_daemon_action(DaemonAction::Stop, port_override)).await?;
+            println!("  Restarting daemon...");
+            let stop_result =
+                Box::pin(handle_daemon_action(DaemonAction::Stop, port_override)).await;
+            if let Err(e) = stop_result {
+                eprintln!("Warning: stop failed: {}", e);
+            }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             Box::pin(handle_daemon_action(DaemonAction::Start, port_override)).await?;
         }
@@ -489,16 +522,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             } else {
                 println!("No daemon logs found at {}", log_path.display());
             }
-        }
-
-        DaemonAction::InstallService => {
-            let exe = std::env::current_exe()?;
-            let port = resolve_port(port_override);
-            service_install::install_service(&exe, port)?;
-        }
-
-        DaemonAction::UninstallService => {
-            service_install::uninstall_service()?;
         }
     }
 

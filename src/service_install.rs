@@ -24,6 +24,7 @@ pub fn install_service(exe_path: &std::path::Path, port: u16) -> Result<()> {
 }
 
 /// Uninstall the system service.
+#[allow(dead_code)]
 pub fn uninstall_service() -> Result<()> {
     if cfg!(target_os = "macos") {
         uninstall_launchd_service()
@@ -118,6 +119,7 @@ WantedBy=default.target
     Ok(())
 }
 
+#[allow(dead_code)]
 fn uninstall_systemd_service() -> Result<()> {
     let unit_dir = systemd_unit_dir()?;
     let unit_path = unit_dir.join(SYSTEMD_SERVICE_NAME);
@@ -230,6 +232,7 @@ fn install_launchd_service(exe: &std::path::Path, port: u16) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn uninstall_launchd_service() -> Result<()> {
     let plist_path = launchd_plist_path()?;
 
