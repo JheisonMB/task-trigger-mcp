@@ -200,6 +200,8 @@ pub struct App {
     pub new_agent_dialog: Option<NewAgentDialog>,
     /// Timestamp of last Esc press (for double-Esc detection).
     pub last_esc: std::time::Instant,
+    /// Whether the quit confirmation overlay is shown.
+    pub quit_confirm: bool,
 
     // Brian's Brain automaton
     pub brain: Option<super::brians_brain::BriansBrain>,
@@ -224,6 +226,7 @@ impl App {
             running: true,
             new_agent_dialog: None,
             last_esc: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            quit_confirm: false,
             brain: None,
         };
         app.refresh()?;
@@ -243,22 +246,24 @@ impl App {
 
     pub fn tick_brians_brain(&mut self) {
         if self.focus != Focus::Home {
-            if self.brain.is_some() {
-                self.brain = None;
-            }
             return;
         }
 
-        if self.brain.is_none() {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            let cols = tw.saturating_sub(26);
-            let rows = th.saturating_sub(4);
-            if cols > 0 && rows > 0 {
-                self.brain = Some(super::brians_brain::BriansBrain::new(
-                    rows as usize,
-                    cols as usize,
-                ));
-            }
+        let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+        let cols = tw.saturating_sub(26) as usize;
+        let rows = th.saturating_sub(4) as usize;
+
+        if cols == 0 || rows == 0 {
+            return;
+        }
+
+        // Initialize or reinitialize on terminal resize
+        let needs_reinit = match &self.brain {
+            None => true,
+            Some(b) => b.rows != rows || b.cols != cols,
+        };
+        if needs_reinit {
+            self.brain = Some(super::brians_brain::BriansBrain::new(rows, cols));
         }
 
         if let Some(ref mut brain) = self.brain {
@@ -268,6 +273,13 @@ impl App {
             if brain.active {
                 brain.step();
             }
+        }
+    }
+
+    /// Dismiss the Brian's Brain screensaver and reset it for next time.
+    pub fn dismiss_brain(&mut self) {
+        if let Some(ref mut brain) = self.brain {
+            brain.reset();
         }
     }
 

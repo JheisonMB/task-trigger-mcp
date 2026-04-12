@@ -1,7 +1,12 @@
 //! Event loop — polls crossterm events with a tick for data refresh.
 //!
-//! In Agent focus mode, all keys are forwarded to the PTY stdin
-//! except double-Esc which detaches back to the sidebar.
+//! Navigation flow:
+//!   Home (screensaver) → Preview (agent details) → Focus (log / PTY)
+//!
+//! Keys:
+//!   Home:    ↑↓ → Preview, q quit, Esc confirm-quit, n new agent
+//!   Preview: ↑↓ navigate, Enter → Focus, Esc → Home, agent actions
+//!   Focus:   background → scroll log, interactive → PTY, EscEsc → Preview
 
 use anyhow::Result;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -18,11 +23,18 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
     while app.running {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Shorter poll when agent is focused or dialog is open for responsive I/O
-        let tick = if app.focus == Focus::Agent || app.focus == Focus::NewAgentDialog {
-            Duration::from_millis(50)
-        } else {
-            Duration::from_secs(1)
+        // Tick speed adapts to what needs frequent repaints
+        let tick = match app.focus {
+            Focus::Agent | Focus::NewAgentDialog => Duration::from_millis(50),
+            Focus::Preview
+                if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) =>
+            {
+                Duration::from_millis(100)
+            }
+            Focus::Home if app.brain.as_ref().is_some_and(|b| b.active) => {
+                Duration::from_millis(100)
+            }
+            _ => Duration::from_secs(1),
         };
 
         if event::poll(tick)? {
@@ -33,7 +45,6 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             }
         }
 
-        // Always refresh after handling events
         app.refresh()?;
     }
 
@@ -50,22 +61,68 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
     }
 }
 
+// ── Home: screensaver — arrows enter Preview ────────────────────────
+
 fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
+    // Quit-confirmation overlay intercepts all keys
+    if app.quit_confirm {
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => app.running = false,
+            _ => app.quit_confirm = false,
+        }
+        return Ok(());
+    }
+
     match code {
         KeyCode::Char('q') => app.running = false,
         KeyCode::Esc => {
-            app.running = false;
+            app.quit_confirm = true;
         }
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.select_next();
-            app.focus = Focus::Home;
+        KeyCode::Down | KeyCode::Char('j') => {
+            if !app.agents.is_empty() {
+                app.dismiss_brain();
+                app.selected = 0;
+                app.log_scroll = 0;
+                app.focus = Focus::Preview;
+            }
         }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.select_prev();
+        KeyCode::Up | KeyCode::Char('k') => {
+            if !app.agents.is_empty() {
+                app.dismiss_brain();
+                app.selected = app.agents.len().saturating_sub(1);
+                app.log_scroll = 0;
+                app.focus = Focus::Preview;
+            }
+        }
+        KeyCode::Enter => {
+            if !app.agents.is_empty() {
+                app.dismiss_brain();
+                app.log_scroll = 0;
+                app.focus = Focus::Preview;
+            }
+        }
+        KeyCode::Char('n') => app.open_new_agent_dialog(),
+        _ => {}
+    }
+    Ok(())
+}
+
+// ── Preview: navigate agents, Enter → Focus ─────────────────────────
+
+fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
+    match code {
+        KeyCode::Esc | KeyCode::Char('h') => {
             app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {
-            app.focus = Focus::Preview;
+            app.log_scroll = 0;
+            app.focus = Focus::Agent;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.select_next();
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.select_prev();
         }
         KeyCode::Char('e') | KeyCode::Char('d') => {
             let _ = app.toggle_enable();
@@ -78,38 +135,28 @@ fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
         KeyCode::Char('x') => app.kill_selected_agent(),
-        _ => {}
-    }
-    Ok(())
-}
-
-fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
-    match code {
-        KeyCode::Char('h') | KeyCode::Char('b') => {
-            app.focus = Focus::Home;
-        }
-        KeyCode::Esc => {
-            app.focus = Focus::Home;
-        }
-        KeyCode::Enter | KeyCode::Char('l') => {
-            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                app.focus = Focus::Agent;
-            }
-        }
         KeyCode::Char('q') => app.running = false,
-        KeyCode::Char('j') | KeyCode::Down => {
-            app.scroll_log_down();
-        }
-        KeyCode::Char('k') | KeyCode::Up => {
-            app.scroll_log_up();
-        }
         _ => {}
     }
     Ok(())
 }
 
-/// In Agent focus: forward all keys to the PTY, except double-Esc to detach.
+// ── Focus: PTY interaction or log scroll ────────────────────────────
+
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Background agents: simple log-scrolling, single Esc → Preview
+    if !matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Preview,
+            KeyCode::Down | KeyCode::Char('j') => app.scroll_log_down(),
+            KeyCode::Up | KeyCode::Char('k') => app.scroll_log_up(),
+            KeyCode::Char('q') => app.running = false,
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // Interactive agents: double-Esc → Preview
     if code == KeyCode::Esc {
         if app.last_esc.elapsed() < Duration::from_millis(400) {
             app.focus = Focus::Preview;
@@ -125,7 +172,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     };
     let idx = *idx;
 
-    // Shift+Up/Down or PageUp/PageDown = scroll through history
+    // Shift+Up/Down or PageUp/PageDown = scroll history
     let shift = modifiers.contains(KeyModifiers::SHIFT);
     match code {
         KeyCode::Up if shift => {
@@ -149,7 +196,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         _ => {}
     }
 
-    // Any other key resets scroll to live view
+    // Typing resets scroll to live view
     if app.interactive_agents[idx].scroll_offset > 0 {
         app.interactive_agents[idx].scroll_offset = 0;
     }
@@ -162,6 +209,8 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     Ok(())
 }
 
+// ── Dialog: new agent creation ──────────────────────────────────────
+
 fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     let Some(dialog) = &mut app.new_agent_dialog else {
         return Ok(());
@@ -170,19 +219,12 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Tab => {
-            // Tab switches between CLI and directory field
-            if dialog.field == 0 {
-                dialog.field = 1;
-            } else {
-                dialog.field = 0;
-            }
+            dialog.field = if dialog.field == 0 { 1 } else { 0 };
         }
         KeyCode::Enter => {
-            // If in directory field and browsing, navigate into selected dir
             if dialog.field == 1 && !dialog.dir_entries.is_empty() {
                 dialog.navigate_to_selected();
             } else {
-                // Launch the agent
                 let _ = app.launch_new_agent();
             }
         }
@@ -197,7 +239,6 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     _ => {}
                 },
                 1 => match code {
-                    // Arrow keys navigate directory list
                     KeyCode::Up | KeyCode::Char('k') => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
@@ -211,7 +252,6 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Enter => {
                         dialog.navigate_to_selected();
                     }
-                    // Text input still works
                     KeyCode::Char(c) => dialog.working_dir.push(c),
                     KeyCode::Backspace => {
                         dialog.working_dir.pop();

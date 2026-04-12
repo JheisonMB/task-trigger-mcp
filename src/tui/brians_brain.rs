@@ -2,6 +2,7 @@
 //!
 //! 3-state automaton: On → Dying → Off → On
 //! Rule: Off cell turns On if exactly 2 neighbors are On.
+//! Uses toroidal wrapping so patterns flow across edges.
 
 use std::time::Instant;
 
@@ -22,27 +23,37 @@ pub struct BriansBrain {
 
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize) -> Self {
-        let mut grid = vec![vec![CellState::Off; cols]; rows];
-        // Seed initial pattern in center
-        let mid_r = rows / 2;
-        let mid_c = cols / 2;
-        // Simple seed: a few On cells
-        let seed = [(0, 0), (0, 1), (1, 0), (-1, 0), (0, -1)];
-        for (dr, dc) in seed {
-            let r = (mid_r as isize + dr) as usize;
-            let c = (mid_c as isize + dc) as usize;
-            if r < rows && c < cols {
-                grid[r][c] = CellState::On;
-            }
-        }
-
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as usize;
         Self {
-            grid,
+            grid: Self::make_grid(rows, cols, seed),
             rows,
             cols,
             home_since: Instant::now(),
             active: false,
         }
+    }
+
+    /// Pseudo-random grid with ~12% On density. Time-based seed gives
+    /// a unique pattern each time the screensaver activates.
+    fn make_grid(rows: usize, cols: usize, seed: usize) -> Vec<Vec<CellState>> {
+        let mut grid = vec![vec![CellState::Off; cols]; rows];
+        for r in 0..rows {
+            for c in 0..cols {
+                let mut h = r
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(c.wrapping_mul(2_246_822_519))
+                    ^ seed;
+                h = h.wrapping_mul(1_013_904_223).wrapping_add(1_664_525);
+                h ^= h >> 16;
+                if h % 8 == 0 {
+                    grid[r][c] = CellState::On;
+                }
+            }
+        }
+        grid
     }
 
     pub fn should_activate(&self) -> bool {
@@ -51,19 +62,22 @@ impl BriansBrain {
 
     pub fn activate(&mut self) {
         self.active = true;
-        self.home_since = Instant::now();
     }
 
-    #[allow(dead_code)]
     pub fn reset(&mut self) {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as usize;
         self.active = false;
-        self.grid = vec![vec![CellState::Off; self.cols]; self.rows];
+        self.home_since = Instant::now();
+        self.grid = Self::make_grid(self.rows, self.cols, seed);
     }
 
     pub fn step(&mut self) {
         let mut next = vec![vec![CellState::Off; self.cols]; self.rows];
-        for (r, row) in self.grid.iter().enumerate() {
-            for (c, _) in row.iter().enumerate() {
+        for r in 0..self.rows {
+            for c in 0..self.cols {
                 next[r][c] = match self.grid[r][c] {
                     CellState::On => CellState::Dying,
                     CellState::Dying => CellState::Off,
@@ -75,21 +89,17 @@ impl BriansBrain {
         self.grid = next;
     }
 
+    /// Count On neighbours with toroidal (wrap-around) boundaries.
     fn count_on_neighbors(&self, row: usize, col: usize) -> usize {
         let mut count = 0;
-        for dr in -1..=1 {
-            for dc in -1..=1 {
+        for dr in [-1i32, 0, 1] {
+            for dc in [-1i32, 0, 1] {
                 if dr == 0 && dc == 0 {
                     continue;
                 }
-                let r = row as isize + dr;
-                let c = col as isize + dc;
-                if r >= 0
-                    && r < self.rows as isize
-                    && c >= 0
-                    && c < self.cols as isize
-                    && self.grid[r as usize][c as usize] == CellState::On
-                {
+                let r = (row as i32 + dr).rem_euclid(self.rows as i32) as usize;
+                let c = (col as i32 + dc).rem_euclid(self.cols as i32) as usize;
+                if self.grid[r][c] == CellState::On {
                     count += 1;
                 }
             }

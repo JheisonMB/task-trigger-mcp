@@ -37,6 +37,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if app.new_agent_dialog.is_some() {
         draw_new_agent_dialog(frame, app);
     }
+
+    if app.quit_confirm {
+        draw_quit_confirm(frame);
+    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -83,157 +87,136 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let border_style = if app.focus == Focus::Home {
-        Style::default().fg(ACCENT)
-    } else {
-        Style::default().fg(DIM)
-    };
-
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(border_style);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.agents.is_empty() {
-        let msg = Paragraph::new("  No agents registered").style(Style::default().fg(DIM));
-        frame.render_widget(msg, inner);
-        return;
-    }
-
-    let card_h: u16 = 5;
-    let header_h: u16 = 1;
-    let bg_green = Color::Rgb(20, 38, 20);
-    let bg_blue = Color::Rgb(15, 22, 40);
-
-    let mut y = inner.y;
-
-    // ── Background Agents section ──
-    let bg_agents: Vec<_> = app
+    let bg_agents: Vec<(usize, &AgentEntry)> = app
         .agents
         .iter()
         .enumerate()
         .filter(|(_, a)| !matches!(a, AgentEntry::Interactive(_)))
         .collect();
-
-    if !bg_agents.is_empty() {
-        let hdr = Line::from(vec![
-            Span::styled(
-                " BACKGROUND",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" ({})", bg_agents.len())),
-        ]);
-        frame.render_widget(
-            Paragraph::new(hdr),
-            Rect::new(inner.x, y, inner.width, header_h),
-        );
-        y += header_h;
-
-        for (i, agent) in &bg_agents {
-            if y + card_h > inner.y + inner.height {
-                break;
-            }
-            let card_area = Rect::new(inner.x, y, inner.width, card_h - 1);
-            draw_card_with_bg(frame, card_area, agent, app, *i == app.selected, bg_green);
-            y += card_h;
-        }
-    }
-
-    // ── Interactive Agents section ──
-    let ix_agents: Vec<_> = app
+    let ix_agents: Vec<(usize, &AgentEntry)> = app
         .agents
         .iter()
         .enumerate()
         .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
         .collect();
 
-    if !ix_agents.is_empty() {
-        if y < inner.y + inner.height {
-            let sep = Line::from(Span::styled(
-                " ─── INTERACTIVE ───",
-                Style::default()
-                    .fg(INTERACTIVE_COLOR)
-                    .add_modifier(Modifier::BOLD),
+    let has_bg = !bg_agents.is_empty();
+    let has_ix = !ix_agents.is_empty();
+
+    if !has_bg && !has_ix {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM))
+            .title(Span::styled(
+                " Agents ",
+                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
             ));
-            frame.render_widget(Paragraph::new(sep), Rect::new(inner.x, y, inner.width, 1));
-            y += 1;
-        }
-
-        let hdr = Line::from(vec![
-            Span::styled(
-                " AGENTS",
-                Style::default()
-                    .fg(INTERACTIVE_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" ({})", ix_agents.len())),
-        ]);
-        if y < inner.y + inner.height {
-            frame.render_widget(
-                Paragraph::new(hdr),
-                Rect::new(inner.x, y, inner.width, header_h),
-            );
-            y += header_h;
-        }
-
-        for (i, agent) in &ix_agents {
-            if y + card_h > inner.y + inner.height {
-                break;
-            }
-            let card_area = Rect::new(inner.x, y, inner.width, card_h - 1);
-            draw_card_with_bg(frame, card_area, agent, app, *i == app.selected, bg_blue);
-            y += card_h;
-        }
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let msg = Paragraph::new("  No agents registered").style(Style::default().fg(DIM));
+        frame.render_widget(msg, inner);
+        return;
     }
 
-    // ── Scroll indicator ──
-    let total_cards = app.agents.len() as u16;
-    let visible = if y > inner.y + 1 {
-        (y - inner.y - 2) / card_h
+    let show_selection = app.focus == Focus::Preview || app.focus == Focus::Agent;
+    let card_h = 3u16;
+
+    // Calculate proportional split
+    let (bg_area, ix_area) = if has_bg && has_ix {
+        let bg_needed = bg_agents.len() as u16 * card_h + 2;
+        let ix_needed = ix_agents.len() as u16 * card_h + 2;
+        let total = bg_needed + ix_needed;
+        if total <= area.height {
+            let [top, bottom] = Layout::vertical([
+                Constraint::Length(bg_needed),
+                Constraint::Min(ix_needed),
+            ])
+            .areas(area);
+            (Some(top), Some(bottom))
+        } else {
+            let [top, bottom] =
+                Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                    .areas(area);
+            (Some(top), Some(bottom))
+        }
+    } else if has_bg {
+        (Some(area), None)
     } else {
-        0
+        (None, Some(area))
     };
-    if total_cards > visible && visible > 0 {
-        let pct = (app.selected as u16 + 1).min(visible) * 100 / total_cards;
-        let indicator = format!(" {}% ", pct);
-        let len = indicator.len() as u16;
-        frame.render_widget(
-            Paragraph::new(Span::styled(&indicator, Style::default().fg(DIM))),
-            Rect::new(inner.x + inner.width - len, inner.y, len, 1),
-        );
+
+    if let Some(bg_area) = bg_area {
+        let selected_here = show_selection && bg_agents.iter().any(|(i, _)| *i == app.selected);
+        let border_color = if selected_here { ACCENT } else { DIM };
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" Background ({}) ", bg_agents.len()),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(bg_area);
+        frame.render_widget(block, bg_area);
+        draw_agent_list(frame, inner, &bg_agents, app, show_selection, ACCENT);
+    }
+
+    if let Some(ix_area) = ix_area {
+        let selected_here = show_selection && ix_agents.iter().any(|(i, _)| *i == app.selected);
+        let border_color = if selected_here {
+            INTERACTIVE_COLOR
+        } else {
+            DIM
+        };
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" Interactive ({}) ", ix_agents.len()),
+                Style::default()
+                    .fg(INTERACTIVE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(ix_area);
+        frame.render_widget(block, ix_area);
+        draw_agent_list(frame, inner, &ix_agents, app, show_selection, INTERACTIVE_COLOR);
     }
 }
 
-fn draw_card_with_bg(
+fn draw_agent_list(
+    frame: &mut Frame,
+    area: Rect,
+    agents: &[(usize, &AgentEntry)],
+    app: &App,
+    show_selection: bool,
+    accent: Color,
+) {
+    let card_h = 3u16;
+    let mut y = area.y;
+    for (i, agent) in agents {
+        if y + card_h > area.y + area.height {
+            break;
+        }
+        let card_area = Rect::new(area.x, y, area.width, card_h);
+        let selected = show_selection && *i == app.selected;
+        draw_sidebar_card(frame, card_area, agent, app, selected, accent);
+        y += card_h;
+    }
+}
+
+fn draw_sidebar_card(
     frame: &mut Frame,
     area: Rect,
     agent: &AgentEntry,
     app: &App,
     selected: bool,
-    section_bg: Color,
+    accent: Color,
 ) {
-    let bg = if selected { BG_SELECTED } else { section_bg };
-    let is_interactive = matches!(agent, AgentEntry::Interactive(_));
-    let accent = if is_interactive {
-        INTERACTIVE_COLOR
-    } else {
-        ACCENT
-    };
-    let border_color = if selected { accent } else { DIM };
-
-    let (icon, id, line2_text, line3_text) = match agent {
+    let (icon, id, info) = match agent {
         AgentEntry::Task(t) => {
             let has_active = app.active_runs.contains_key(&t.id);
             let icon = status_icon(t.enabled, has_active, t.last_run_ok);
-            let l2 = format!("cron · {}", t.cli);
-            let l3 = t
-                .last_run_at
-                .as_ref()
-                .map(|dt| format!("{} {}", relative_time(dt), run_result_icon(t.last_run_ok)))
-                .unwrap_or_else(|| t.schedule_expr.clone());
-            (icon, t.id.as_str(), l2, l3)
+            let info = format!("cron · {}", t.cli);
+            (icon, t.id.as_str(), info)
         }
         AgentEntry::Watcher(w) => {
             let has_active = app.active_runs.contains_key(&w.id);
@@ -244,9 +227,8 @@ fn draw_card_with_bg(
             } else {
                 "👁"
             };
-            let l2 = format!("watch · {}", w.cli);
-            let l3 = format!("triggers: {}", w.trigger_count);
-            (icon, w.id.as_str(), l2, l3)
+            let info = format!("watch · {}", w.cli);
+            (icon, w.id.as_str(), info)
         }
         AgentEntry::Interactive(idx) => {
             let a = &app.interactive_agents[*idx];
@@ -255,82 +237,52 @@ fn draw_card_with_bg(
                 AgentStatus::Exited(0) => "✅",
                 AgentStatus::Exited(_) => "🔴",
             };
-            let l2 = format!("{} · {}", a.cli, truncate_path(&a.working_dir));
-            let l3 = match a.status {
-                AgentStatus::Running => format!("running · {}", relative_time(&a.started_at)),
-                AgentStatus::Exited(code) => format!("exited ({})", code),
-            };
-            (icon, a.id.as_str(), l2, l3)
+            let info = format!("{} · {}", a.cli, truncate_path(&a.working_dir));
+            (icon, a.id.as_str(), info)
         }
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color))
-        .style(Style::default().bg(bg));
+    let bg = if selected { BG_SELECTED } else { Color::Reset };
+    let w = area.width as usize;
 
-    let inner_area = block.inner(area);
-    frame.render_widget(block, area);
-
-    let w = inner_area.width as usize;
-
-    if inner_area.height >= 1 {
+    if area.height >= 1 {
         let line = Line::from(vec![
-            Span::raw(format!("{icon} ")),
+            Span::raw(format!(" {icon} ")),
             Span::styled(
-                truncate_str(id, w.saturating_sub(3)),
+                truncate_str(id, w.saturating_sub(4)),
                 Style::default()
                     .add_modifier(Modifier::BOLD)
                     .fg(if selected { accent } else { Color::White }),
             ),
         ]);
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect::new(inner_area.x, inner_area.y, inner_area.width, 1),
-        );
+        let r = Rect::new(area.x, area.y, area.width, 1);
+        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
-    if inner_area.height >= 2 {
+    if area.height >= 2 {
         let line = Line::from(Span::styled(
-            truncate_str(&line2_text, w),
+            format!("    {}", truncate_str(&info, w.saturating_sub(4))),
             Style::default().fg(DIM),
         ));
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect::new(inner_area.x, inner_area.y + 1, inner_area.width, 1),
-        );
-    }
-    if inner_area.height >= 3 {
-        let line = Line::from(Span::styled(
-            truncate_str(&line3_text, w),
-            Style::default().fg(DIM),
-        ));
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect::new(inner_area.x, inner_area.y + 2, inner_area.width, 1),
-        );
+        let r = Rect::new(area.x, area.y + 1, area.width, 1);
+        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
 }
 
 fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
-    let is_agent_focused = app.focus == Focus::Agent;
-    let border_style = if is_agent_focused || app.focus == Focus::Preview {
-        Style::default().fg(if is_agent_focused {
-            INTERACTIVE_COLOR
-        } else {
-            ACCENT
-        })
-    } else {
-        Style::default().fg(DIM)
+    let border_color = match app.focus {
+        Focus::Agent => INTERACTIVE_COLOR,
+        Focus::Preview => ACCENT,
+        _ => DIM,
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border_style);
-
+        .border_style(Style::default().fg(border_color));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     match app.focus {
+        // ── Home: banner + brain screensaver ──
         Focus::Home => {
             if let Some(ref brain) = app.brain {
                 if brain.active {
@@ -338,10 +290,12 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
                     return;
                 }
             }
-            if app.agents.is_empty() {
-                draw_canopy_banner_preview(frame, inner);
-                return;
-            }
+            draw_canopy_banner_preview(frame, inner);
+            return;
+        }
+
+        // ── Preview: config/details or read-only PTY ──
+        Focus::Preview => {
             match app.selected_agent() {
                 Some(AgentEntry::Task(t)) => {
                     draw_task_details(frame, inner, t, app);
@@ -360,16 +314,10 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 _ => {}
             }
+            // Fallback: log
         }
-        Focus::Preview => {
-            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                let agent = &app.interactive_agents[*idx];
-                if let Some(snap) = agent.screen_snapshot() {
-                    render_vt_screen(frame, inner, &snap);
-                    return;
-                }
-            }
-        }
+
+        // ── Focus: interactive PTY (with cursor) or scrollable log ──
         Focus::Agent => {
             if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                 let agent = &app.interactive_agents[*idx];
@@ -383,19 +331,18 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
                     return;
                 }
             }
+            // background agents fall through to log rendering below
         }
         Focus::NewAgentDialog => {}
     }
 
+    // ── Log / text content ──
     let title = app.selected_id();
-    let title_suffix = if is_agent_focused {
-        " (Esc Esc detach)"
-    } else if app.focus == Focus::Preview {
-        " (Enter interact)"
-    } else {
-        ""
+    let title_suffix = match app.focus {
+        Focus::Agent => " (Esc → back)",
+        Focus::Preview => " (Enter → focus)",
+        _ => "",
     };
-
     let title_block = Block::default()
         .title(format!(" {title}{title_suffix} "))
         .borders(Borders::NONE);
@@ -409,7 +356,6 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-
     frame.render_widget(paragraph, inner);
 
     if line_count > inner.height {
@@ -468,21 +414,19 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSn
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Home => {
-            "  ↑↓ nav  Enter preview  D delete  n new  x kill  r rerun  e/d toggle  q quit"
-        }
+        Focus::Home => "  ↑↓ select agent  n new agent  q quit  Esc confirm quit",
         Focus::Preview => {
-            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  ↑↓ scroll  Enter interact  h/Esc home  q quit"
-            } else {
-                "  ↑↓ scroll  h/Esc home  q quit"
-            }
+            "  ↑↓ nav  Enter focus  D delete  r rerun  e/d toggle  n new  Esc home  q quit"
         }
         Focus::NewAgentDialog => {
             "  ←→ select CLI  Tab switch  ↑↓ browse  Enter nav/launch  Esc cancel"
         }
         Focus::Agent => {
-            "  h home  Esc Esc preview  Shift+↑↓ scroll  PgUp/PgDn  — all input goes to agent"
+            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn — all input goes to agent"
+            } else {
+                "  ↑↓/jk scroll log  Esc back  q quit"
+            }
         }
     };
 
@@ -622,6 +566,7 @@ fn status_icon(enabled: bool, running: bool, last_ok: Option<bool>) -> &'static 
     }
 }
 
+#[allow(dead_code)]
 fn run_result_icon(last_ok: Option<bool>) -> &'static str {
     match last_ok {
         Some(true) => "✅",
@@ -648,6 +593,24 @@ fn truncate_path(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+fn draw_quit_confirm(frame: &mut Frame) {
+    let area = centered_rect(40, 5, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Quit? ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .style(Style::default().bg(Color::Rgb(30, 30, 20)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let msg = Paragraph::new("  Press y/Enter to quit, any key to cancel")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(msg, inner);
 }
 
 fn draw_canopy_banner_preview(frame: &mut Frame, area: Rect) {
