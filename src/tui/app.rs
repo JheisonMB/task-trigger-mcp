@@ -38,9 +38,10 @@ impl AgentEntry {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Sidebar,
-    LogPanel,
+    /// Preview mode: task details, read-only agent output, or canopy banner.
+    Preview,
     NewAgentDialog,
-    /// Focused on an interactive agent — keys go to PTY.
+    /// Interactive mode: keys go to PTY.
     Agent,
 }
 
@@ -405,7 +406,11 @@ impl App {
         let agent = InteractiveAgent::spawn(cli, &dir, cols, rows)?;
         self.interactive_agents.push(agent);
 
+        self.refresh_agents()?;
+        self.selected = self.agents.len().saturating_sub(1);
+
         self.close_new_agent_dialog();
+        self.focus = Focus::Agent;
         Ok(())
     }
 

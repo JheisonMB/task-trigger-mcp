@@ -12,7 +12,7 @@ use super::agent::AgentStatus;
 use super::app::{relative_time, AgentEntry, App, Focus};
 
 const ACCENT: Color = Color::Rgb(76, 175, 80);
-const DIM: Color = Color::DarkGray;
+const DIM: Color = Color::Rgb(150, 150, 170);
 const ERROR_COLOR: Color = Color::Rgb(229, 57, 53);
 const BG_SELECTED: Color = Color::Rgb(30, 30, 46);
 const INTERACTIVE_COLOR: Color = Color::Rgb(100, 181, 246);
@@ -237,7 +237,7 @@ fn draw_card(frame: &mut Frame, area: Rect, agent: &AgentEntry, app: &App, selec
 
 fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let is_agent_focused = app.focus == Focus::Agent;
-    let border_style = if is_agent_focused || app.focus == Focus::LogPanel {
+    let border_style = if is_agent_focused || app.focus == Focus::Preview {
         Style::default().fg(if is_agent_focused {
             INTERACTIVE_COLOR
         } else {
@@ -347,7 +347,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Sidebar => {
             "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit"
         }
-        Focus::LogPanel => "  ↑↓ scroll  Esc back  q quit",
+        Focus::Preview => "  ↑↓ scroll  Esc back  q quit",
         Focus::NewAgentDialog => {
             "  ←→ select CLI  Tab switch field  ↑↓ browse dirs  Enter navigate/launch  Esc cancel"
         }

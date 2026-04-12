@@ -44,7 +44,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     match app.focus {
         Focus::Sidebar => handle_sidebar_key(app, code),
-        Focus::LogPanel => handle_log_key(app, code),
+        Focus::Preview => handle_log_key(app, code),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
@@ -59,7 +59,7 @@ fn handle_sidebar_key(app: &mut App, code: KeyCode) -> Result<()> {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                 app.focus = Focus::Agent;
             } else {
-                app.focus = Focus::LogPanel;
+                app.focus = Focus::Preview;
             }
         }
         KeyCode::Char('e') | KeyCode::Char('d') => {
