@@ -113,7 +113,6 @@ impl std::fmt::Display for WatchEvent {
 
 /// Supported CLI tools for task execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
 pub enum Cli {
     #[serde(rename = "opencode")]
     OpenCode,
@@ -121,6 +120,8 @@ pub enum Cli {
     Kiro,
     #[serde(rename = "copilot")]
     Copilot,
+    #[serde(rename = "qwen")]
+    Qwen,
 }
 
 impl Cli {
@@ -129,6 +130,7 @@ impl Cli {
         match s {
             "kiro" => Self::Kiro,
             "copilot" => Self::Copilot,
+            "qwen" => Self::Qwen,
             _ => Self::OpenCode,
         }
     }
@@ -139,6 +141,7 @@ impl Cli {
             Self::OpenCode => "opencode",
             Self::Kiro => "kiro",
             Self::Copilot => "copilot",
+            Self::Qwen => "qwen",
         }
     }
 
@@ -148,6 +151,7 @@ impl Cli {
             Self::OpenCode => "opencode",
             Self::Kiro => "kiro-cli",
             Self::Copilot => "copilot",
+            Self::Qwen => "qwen",
         }
     }
 
@@ -162,6 +166,9 @@ impl Cli {
         }
         if which::which("copilot").is_ok() {
             available.push(Cli::Copilot);
+        }
+        if which::which("qwen").is_ok() {
+            available.push(Cli::Qwen);
         }
         available
     }
@@ -179,7 +186,7 @@ impl Cli {
 
     /// Resolve CLI from an optional user-provided parameter.
     ///
-    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` → returns that variant.
+    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` / `Some("qwen")` → returns that variant.
     /// - `Some(other)` → error with unknown CLI message.
     /// - `None` → auto-detects from PATH. Fails if zero or multiple CLIs found.
     pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
@@ -187,8 +194,9 @@ impl Cli {
             Some("opencode") => Ok(Cli::OpenCode),
             Some("kiro") => Ok(Cli::Kiro),
             Some("copilot") => Ok(Cli::Copilot),
+            Some("qwen") => Ok(Cli::Qwen),
             Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode', 'kiro', or 'copilot'",
+                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', or 'qwen'",
                 other
             )),
             None => match Cli::detect_default() {
@@ -200,7 +208,7 @@ impl Cli {
                     let available = Cli::detect_available();
                     if available.is_empty() {
                         Err(
-                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', or 'copilot'."
+                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', or 'qwen'."
                                 .to_string(),
                         )
                     } else {
@@ -215,12 +223,39 @@ impl Cli {
     }
 
     /// Get the execution strategy for this CLI.
-    pub fn strategy(&self) -> Box<dyn super::cli_strategy::CliStrategy> {
-        match self {
-            Self::OpenCode => Box::new(super::cli_strategy::OpenCodeStrategy),
-            Self::Kiro => Box::new(super::cli_strategy::KiroStrategy),
-            Self::Copilot => Box::new(super::cli_strategy::CopilotStrategy),
-        }
+    ///
+    /// Loads the strategy from the saved registry config.
+    /// Panics with a clear error if configuration is not found.
+    pub fn strategy(&self) -> Box<super::cli_strategy::CliStrategy> {
+        let home = dirs::home_dir().expect("Could not determine home directory");
+        let config_path = home.join(".canopy/cli_config.json");
+        let registry = super::cli_config::CliRegistry::load(&config_path).unwrap_or_else(|| {
+            panic!(
+                "CLI configuration not found at {}\n\
+                     Run 'canopy setup' to configure and generate the CLI config file.",
+                config_path.display()
+            )
+        });
+
+        let cli_config = registry.get(self.as_str()).unwrap_or_else(|| {
+            panic!(
+                "CLI '{}' not found in configuration at {}\n\
+                 Available CLIs: {}\n\
+                 Run 'canopy setup' to update the configuration.",
+                self.as_str(),
+                config_path.display(),
+                registry.names().join(", ")
+            )
+        });
+
+        Box::new(super::cli_strategy::CliStrategy {
+            binary: cli_config.binary.clone(),
+            headless_mode: cli_config.headless_mode.clone(),
+            model_flag: cli_config.model_flag.clone(),
+            supports_working_dir: cli_config.supports_working_dir,
+            working_dir_flag: cli_config.working_dir_flag.clone(),
+            env_vars: cli_config.env_vars.clone(),
+        })
     }
 }
 
@@ -329,8 +364,6 @@ mod tests {
     use super::*;
     use chrono::Duration;
 
-    // ── Task::is_expired ──────────────────────────────────────────
-
     #[test]
     fn test_task_not_expired_no_expiry() {
         let task = Task {
@@ -391,8 +424,6 @@ mod tests {
         assert!(task.is_expired());
     }
 
-    // ── WatchEvent ────────────────────────────────────────────────
-
     #[test]
     fn test_watch_event_from_str() {
         assert_eq!(WatchEvent::from_str("create"), Some(WatchEvent::Create));
@@ -410,8 +441,6 @@ mod tests {
         assert_eq!(WatchEvent::Delete.to_string(), "delete");
         assert_eq!(WatchEvent::Move.to_string(), "move");
     }
-
-    // ── Cli ───────────────────────────────────────────────────────
 
     #[test]
     fn test_cli_from_str() {
@@ -456,8 +485,6 @@ mod tests {
         assert!(err.contains("Unknown CLI 'vim'"));
     }
 
-    // ── WatchEvent::parse_list ────────────────────────────────────
-
     #[test]
     fn test_parse_list_valid_events() {
         let input = vec!["create".to_string(), "modify".to_string()];
@@ -490,8 +517,6 @@ mod tests {
         let err = WatchEvent::parse_list(&input).unwrap_err();
         assert!(err.contains("At least one event type must be specified"));
     }
-
-    // ── TriggerType ───────────────────────────────────────────────
 
     #[test]
     fn test_trigger_type_from_str() {
