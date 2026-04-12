@@ -210,49 +210,54 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 }
 
 // ── Dialog: new agent creation ──────────────────────────────────────
+//
+// Flow: ←→ choose CLI, ↓ go to dir picker, ↑↓ navigate dirs,
+//       Space enter directory, Enter launch, Esc cancel.
 
 fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
-    let Some(dialog) = &mut app.new_agent_dialog else {
+    if app.new_agent_dialog.is_none() {
         return Ok(());
-    };
+    }
 
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
-        KeyCode::Tab => {
-            dialog.field = if dialog.field == 0 { 1 } else { 0 };
-        }
         KeyCode::Enter => {
-            if dialog.field == 1 && !dialog.dir_entries.is_empty() {
-                dialog.navigate_to_selected();
-            } else {
-                let _ = app.launch_new_agent();
-            }
+            // Enter always launches
+            let _ = app.launch_new_agent();
         }
         _ => {
             let Some(dialog) = &mut app.new_agent_dialog else {
                 return Ok(());
             };
             match dialog.field {
+                // CLI selector
                 0 => match code {
-                    KeyCode::Left | KeyCode::Char('h') => dialog.prev_cli(),
-                    KeyCode::Right | KeyCode::Char('l') => dialog.next_cli(),
+                    KeyCode::Left => dialog.prev_cli(),
+                    KeyCode::Right => dialog.next_cli(),
+                    KeyCode::Down => {
+                        dialog.field = 1;
+                    }
                     _ => {}
                 },
+                // Directory browser
                 1 => match code {
-                    KeyCode::Up | KeyCode::Char('k') => {
+                    KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
+                        } else {
+                            // At top of dir list, go back to CLI selector
+                            dialog.field = 0;
                         }
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
+                    KeyCode::Down => {
                         if dialog.dir_selected + 1 < dialog.dir_entries.len() {
                             dialog.dir_selected += 1;
                         }
                     }
-                    KeyCode::Enter => {
+                    KeyCode::Char(' ') => {
+                        // Space = enter selected directory
                         dialog.navigate_to_selected();
                     }
-                    KeyCode::Char(c) => dialog.working_dir.push(c),
                     KeyCode::Backspace => {
                         dialog.working_dir.pop();
                     }

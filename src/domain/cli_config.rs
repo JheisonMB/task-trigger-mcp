@@ -25,6 +25,9 @@ pub struct CliConfig {
     pub working_dir_flag: Option<String>,
     #[serde(default)]
     pub env_vars: std::collections::HashMap<String, String>,
+    /// Arguments to pass when launching in interactive (TUI) mode.
+    #[serde(default)]
+    pub interactive_args: Option<String>,
 }
 
 /// Persisted CLI configuration for available CLIs.

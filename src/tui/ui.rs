@@ -15,8 +15,8 @@ use super::brians_brain::CellState;
 const ACCENT: Color = Color::Rgb(76, 175, 80);
 const DIM: Color = Color::Rgb(150, 150, 170);
 const ERROR_COLOR: Color = Color::Rgb(229, 57, 53);
-const BG_SELECTED: Color = Color::Rgb(30, 30, 46);
-const INTERACTIVE_COLOR: Color = Color::Rgb(100, 181, 246);
+const BG_SELECTED: Color = Color::Rgb(20, 40, 20);
+const INTERACTIVE_COLOR: Color = Color::Rgb(102, 187, 106);
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [header, body, footer] = Layout::vertical([
@@ -282,13 +282,11 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
 
     match app.focus {
-        // ── Home: banner + brain screensaver ──
+        // ── Home: banner/brain grid (pre-activation shows banner as cells) ──
         Focus::Home => {
             if let Some(ref brain) = app.brain {
-                if brain.active {
-                    draw_brians_brain(frame, inner, brain);
-                    return;
-                }
+                draw_brians_brain(frame, inner, brain);
+                return;
             }
             draw_canopy_banner_preview(frame, inner);
             return;
@@ -419,7 +417,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             "  ↑↓ nav  Enter focus  D delete  r rerun  e/d toggle  n new  Esc home  q quit"
         }
         Focus::NewAgentDialog => {
-            "  ←→ select CLI  Tab switch  ↑↓ browse  Enter nav/launch  Esc cancel"
+            "  ←→ select CLI  ↓ browse dirs  Space enter dir  Enter launch  Esc cancel"
         }
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
@@ -446,7 +444,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         .title(" New Agent ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(INTERACTIVE_COLOR))
-        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -489,7 +487,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Add directory browser list
     if !dialog.dir_entries.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  Directories (↑↓ navigate, Enter to enter):",
+            "  Directories (↑↓ navigate, Space to enter):",
             Style::default().fg(DIM),
         )));
 
@@ -526,7 +524,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  Tab: switch field · ↑↓: browse dirs · Enter: navigate/launch · Esc: cancel",
+        "  ←→: CLI · ↓: dirs · Space: enter dir · Enter: launch · Esc: cancel",
         Style::default().fg(DIM),
     )));
 

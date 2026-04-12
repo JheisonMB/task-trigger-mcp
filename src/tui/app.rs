@@ -50,6 +50,8 @@ pub enum Focus {
 pub struct NewAgentDialog {
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
+    /// Registry configs parallel to available_clis (for interactive_args etc.)
+    pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
     pub working_dir: String,
     /// Which field is focused: 0 = CLI, 1 = working dir.
     pub field: usize,
@@ -62,7 +64,7 @@ pub struct NewAgentDialog {
 impl NewAgentDialog {
     pub fn new() -> Self {
         // Load available CLIs from saved config
-        let available = Self::load_available_clis();
+        let (available, configs) = Self::load_available_clis();
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
@@ -72,6 +74,11 @@ impl NewAgentDialog {
                 vec![Cli::OpenCode, Cli::Kiro, Cli::Qwen]
             } else {
                 available
+            },
+            cli_configs: if configs.is_empty() {
+                vec![None, None, None]
+            } else {
+                configs
             },
             working_dir: cwd.clone(),
             field: 0,
@@ -84,26 +91,40 @@ impl NewAgentDialog {
         dialog
     }
 
-    /// Load available CLIs from saved registry config.
-    fn load_available_clis() -> Vec<Cli> {
+    /// Load available CLIs from saved registry config, returning both
+    /// the Cli enum list and their corresponding CliConfig for interactive_args.
+    fn load_available_clis() -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
         if let Some(home) = dirs::home_dir() {
             let config_path = home.join(".canopy/cli_config.json");
             if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&config_path) {
-                let clis: Vec<Cli> = registry
-                    .available_clis
-                    .iter()
-                    .filter_map(|c| Cli::resolve(Some(&c.name)).ok())
-                    .collect();
+                let mut clis = Vec::new();
+                let mut configs = Vec::new();
+                for c in &registry.available_clis {
+                    if let Ok(cli) = Cli::resolve(Some(&c.name)) {
+                        clis.push(cli);
+                        configs.push(Some(c.clone()));
+                    }
+                }
                 if !clis.is_empty() {
-                    return clis;
+                    return (clis, configs);
                 }
             }
         }
-        Cli::detect_available()
+        let detected = Cli::detect_available();
+        let none_configs = vec![None; detected.len()];
+        (detected, none_configs)
     }
 
     pub fn selected_cli(&self) -> Cli {
         self.available_clis[self.cli_index]
+    }
+
+    /// Get the interactive_args for the currently selected CLI from the registry.
+    pub fn selected_interactive_args(&self) -> Option<String> {
+        self.cli_configs
+            .get(self.cli_index)
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.interactive_args.clone())
     }
 
     pub fn next_cli(&mut self) {
@@ -348,6 +369,10 @@ impl App {
 
         match agent {
             AgentEntry::Interactive(idx) => {
+                if *idx >= self.interactive_agents.len() {
+                    self.log_content = String::from("Agent removed");
+                    return;
+                }
                 let output = self.interactive_agents[*idx].output();
                 self.log_content = if output.is_empty() {
                     format!(
@@ -361,10 +386,30 @@ impl App {
             _ => {
                 let id = agent.id(self).to_string();
                 let log_path = self.data_dir.join("logs").join(format!("{id}.log"));
-                self.log_content = match std::fs::read_to_string(&log_path) {
-                    Ok(content) => tail_lines(&content, 200),
-                    Err(_) => format!("No logs yet for '{id}'"),
+
+                let mut content = match std::fs::read_to_string(&log_path) {
+                    Ok(c) => tail_lines(&c, 200),
+                    Err(_) => String::new(),
                 };
+
+                // If there's an active run, show status at the top
+                if let Some(run) = self.active_runs.get(&id) {
+                    let header = format!(
+                        "⏳ Run {} in progress ({})\n{}\n",
+                        &run.id[..8.min(run.id.len())],
+                        relative_time(&run.started_at),
+                        "─".repeat(40),
+                    );
+                    content = if content.is_empty() {
+                        format!("{header}Waiting for output...")
+                    } else {
+                        format!("{header}{content}")
+                    };
+                } else if content.is_empty() {
+                    content = format!("No logs yet for '{id}'");
+                }
+
+                self.log_content = content;
             }
         }
     }
@@ -449,12 +494,19 @@ impl App {
         };
         let cli = dialog.selected_cli();
         let dir = dialog.working_dir.clone();
+        let interactive_args = dialog.selected_interactive_args();
 
         let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
         let cols = tw.saturating_sub(28);
         let rows = th.saturating_sub(4);
 
-        let agent = InteractiveAgent::spawn(cli, &dir, cols, rows)?;
+        let agent = InteractiveAgent::spawn(
+            cli,
+            &dir,
+            cols,
+            rows,
+            interactive_args.as_deref(),
+        )?;
         self.interactive_agents.push(agent);
 
         self.refresh_agents()?;
@@ -471,6 +523,11 @@ impl App {
         };
         let idx = *idx;
         self.interactive_agents[idx].kill();
+        self.interactive_agents.remove(idx);
+        let _ = self.refresh_agents();
+        if self.selected >= self.agents.len() && !self.agents.is_empty() {
+            self.selected = self.agents.len() - 1;
+        }
     }
 
     pub fn delete_selected(&mut self) -> Result<()> {
@@ -486,9 +543,13 @@ impl App {
             }
             AgentEntry::Interactive(idx) => {
                 self.interactive_agents[*idx].kill();
+                self.interactive_agents.remove(*idx);
             }
         }
         self.refresh_agents()?;
+        if self.selected >= self.agents.len() && !self.agents.is_empty() {
+            self.selected = self.agents.len() - 1;
+        }
         Ok(())
     }
 

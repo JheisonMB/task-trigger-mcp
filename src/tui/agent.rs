@@ -41,7 +41,14 @@ impl InteractiveAgent {
     /// Spawn a new interactive agent in a PTY with a virtual terminal.
     ///
     /// `cols` and `rows` should match the panel area where the agent will render.
-    pub fn spawn(cli: Cli, working_dir: &str, cols: u16, rows: u16) -> Result<Self> {
+    /// Interactive args come from the registry (`CliConfig::interactive_args`).
+    pub fn spawn(
+        cli: Cli,
+        working_dir: &str,
+        cols: u16,
+        rows: u16,
+        interactive_args: Option<&str>,
+    ) -> Result<Self> {
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -52,13 +59,13 @@ impl InteractiveAgent {
         })?;
 
         let mut cmd = CommandBuilder::new(cli.command_name());
-        match cli {
-            Cli::OpenCode => {}
-            Cli::Kiro => {
-                cmd.arg("--tui");
+        // Apply registry-driven interactive args (e.g. "--tui", "-c", etc.)
+        if let Some(args) = interactive_args {
+            for arg in args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.arg(arg);
+                }
             }
-            Cli::Copilot => {}
-            Cli::Qwen => {}
         }
         cmd.cwd(working_dir);
 

@@ -3,6 +3,9 @@
 //! 3-state automaton: On → Dying → Off → On
 //! Rule: Off cell turns On if exactly 2 neighbors are On.
 //! Uses toroidal wrapping so patterns flow across edges.
+//!
+//! The grid is seeded from the CANOPY banner text so the automaton
+//! looks like the banner "exploding" when it activates.
 
 use std::time::Instant;
 
@@ -21,14 +24,22 @@ pub struct BriansBrain {
     pub active: bool,
 }
 
+const BANNER: &[&str] = &[
+    r"  ██████   ██████   ████████    ██████  ████████  █████ ████",
+    r" ███░░███ ░░░░░███ ░░███░░███  ███░░███░░███░░███░░███ ░███",
+    r"░███ ░░░   ███████  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███",
+    r"░███  ███ ███░░███  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███",
+    r"░░██████ ░░████████ ████ █████░░██████  ░███████  ░░███████",
+    r" ░░░░░░   ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░███░░░    ░░░░░███",
+    r"                                        ░███       ███ ░███",
+    r"                                        █████     ░░██████",
+    r"                                       ░░░░░       ░░░░░░",
+];
+
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize) -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
         Self {
-            grid: Self::make_grid(rows, cols, seed),
+            grid: Self::make_banner_grid(rows, cols),
             rows,
             cols,
             home_since: Instant::now(),
@@ -36,23 +47,60 @@ impl BriansBrain {
         }
     }
 
-    /// Pseudo-random grid with ~12% On density. Time-based seed gives
-    /// a unique pattern each time the screensaver activates.
-    fn make_grid(rows: usize, cols: usize, seed: usize) -> Vec<Vec<CellState>> {
+    /// Seed the grid from the CANOPY banner text.
+    /// Non-space characters in the banner become On cells, centered in the grid.
+    /// A sparse random scattering is added around the banner to fuel the explosion.
+    fn make_banner_grid(rows: usize, cols: usize) -> Vec<Vec<CellState>> {
         let mut grid = vec![vec![CellState::Off; cols]; rows];
-        for r in 0..rows {
-            for c in 0..cols {
-                let mut h = r
-                    .wrapping_mul(2_654_435_761)
-                    .wrapping_add(c.wrapping_mul(2_246_822_519))
-                    ^ seed;
-                h = h.wrapping_mul(1_013_904_223).wrapping_add(1_664_525);
-                h ^= h >> 16;
-                if h % 8 == 0 {
+
+        let banner_h = BANNER.len();
+        let banner_w = BANNER.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+
+        let top = rows.saturating_sub(banner_h) / 2;
+        let left = cols.saturating_sub(banner_w) / 2;
+
+        // Place banner characters as On cells
+        for (br, line) in BANNER.iter().enumerate() {
+            let r = top + br;
+            if r >= rows {
+                break;
+            }
+            for (bc, ch) in line.chars().enumerate() {
+                let c = left + bc;
+                if c >= cols {
+                    break;
+                }
+                if ch != ' ' {
                     grid[r][c] = CellState::On;
                 }
             }
         }
+
+        // Add sparse random cells around the banner to fuel chain reactions
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos() as usize;
+
+        for r in 0..rows {
+            for c in 0..cols {
+                if grid[r][c] != CellState::Off {
+                    continue;
+                }
+                let mut h = r
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(c.wrapping_mul(2_246_822_519))
+                    ^ seed;
+                h ^= h >> 13;
+                h = h.wrapping_mul(1_013_904_223);
+                h ^= h >> 16;
+                // ~3% density outside the banner gives fuel for the explosion
+                if h % 32 == 0 {
+                    grid[r][c] = CellState::On;
+                }
+            }
+        }
+
         grid
     }
 
@@ -65,13 +113,9 @@ impl BriansBrain {
     }
 
     pub fn reset(&mut self) {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as usize;
         self.active = false;
         self.home_since = Instant::now();
-        self.grid = Self::make_grid(self.rows, self.cols, seed);
+        self.grid = Self::make_banner_grid(self.rows, self.cols);
     }
 
     pub fn step(&mut self) {
