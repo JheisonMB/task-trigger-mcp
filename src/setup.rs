@@ -4,6 +4,7 @@
 //! by config file existence, configures MCP, starts daemon, installs service.
 
 use anyhow::{Context, Result};
+use inquire::MultiSelect;
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -11,24 +12,54 @@ use std::path::Path;
 const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/platforms.json";
 
-// ── Registry types ───────────────────────────────────────────────
-
-#[derive(Deserialize)]
-struct Registry {
-    platforms: Vec<Platform>,
+#[derive(Deserialize, Clone)]
+pub struct RegistryRaw {
+    pub platforms: Vec<Platform>,
 }
 
-#[derive(Deserialize)]
-struct Platform {
-    name: String,
-    config_path: String,
-    servers_key: Vec<String>,
-    canopy_entry: serde_json::Value,
+#[derive(Deserialize, Clone)]
+pub struct Platform {
+    pub name: String,
+    pub config_path: String,
+    /// Path to ALL MCP servers object (e.g., ["mcpServers"])
+    pub mcp_servers_key: Vec<String>,
+    /// Key for canopy entry within the servers object (e.g., "canopy")
+    pub canopy_entry_key: String,
+    pub canopy_entry: serde_json::Value,
     #[serde(default)]
-    deprecated_keys: Vec<String>,
+    pub deprecated_keys: Vec<String>,
+    /// CLI execution strategy definition
+    #[serde(default)]
+    pub cli: Option<serde_json::Value>,
 }
 
-// ── Public API ───────────────────────────────────────────────────
+/// Platform with parsed CLI config (for saving to .canopy/)
+pub struct PlatformWithCli {
+    #[allow(dead_code)]
+    pub name: String,
+    #[allow(dead_code)]
+    pub config_path: String,
+    pub cli: Option<crate::domain::cli_config::CliConfig>,
+}
+
+impl Platform {
+    fn to_platform_with_cli(&self) -> PlatformWithCli {
+        let cli = self.cli.as_ref().and_then(|v| {
+            serde_json::from_value::<crate::domain::cli_config::CliConfig>(v.clone())
+                .map(|mut c| {
+                    c.name = self.name.clone();
+                    c
+                })
+                .ok()
+        });
+
+        PlatformWithCli {
+            name: self.name.clone(),
+            config_path: self.config_path.clone(),
+            cli,
+        }
+    }
+}
 
 pub fn is_configured() -> bool {
     dirs::home_dir()
@@ -36,19 +67,22 @@ pub fn is_configured() -> bool {
         .unwrap_or(false)
 }
 
+/// Fetch the platform registry (public for use by config commands).
+pub fn fetch_registry_raw() -> Result<RegistryRaw> {
+    fetch_registry()
+}
+
 pub fn run_setup() -> Result<()> {
     print_banner();
 
     let home = dirs::home_dir().context("No home directory")?;
 
-    // Fetch registry (remote with local fallback)
     print!("  Fetching platform registry... ");
     io::stdout().flush()?;
     let registry = fetch_registry()?;
     println!("\x1b[32m✓\x1b[0m {} platform(s)", registry.platforms.len());
     println!();
 
-    // Detect which platforms have config files
     let detected: Vec<&Platform> = registry
         .platforms
         .iter()
@@ -57,7 +91,15 @@ pub fn run_setup() -> Result<()> {
 
     if detected.is_empty() {
         println!("  No supported platforms detected.");
-        println!("  Supported: {}", registry.platforms.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "));
+        println!(
+            "  Supported: {}",
+            registry
+                .platforms
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         println!();
     } else {
         println!("  Detected platforms:");
@@ -67,13 +109,11 @@ pub fn run_setup() -> Result<()> {
         println!();
     }
 
-    // All detected selected by default — user can deselect
     let selected = select_platforms(&detected)?;
 
-    // Configure MCP + remove deprecated keys
     for p in &selected {
         let path = home.join(&p.config_path);
-        let servers_parent = &p.servers_key[0];
+        let servers_parent = &p.mcp_servers_key[0];
 
         for old_key in &p.deprecated_keys {
             if let Ok(true) = remove_json_key(&path, servers_parent, old_key) {
@@ -81,7 +121,9 @@ pub fn run_setup() -> Result<()> {
             }
         }
 
-        let key_refs: Vec<&str> = p.servers_key.iter().map(|s| s.as_str()).collect();
+        let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
+        key_refs.push(&p.canopy_entry_key);
+
         match upsert_json_key(&path, &key_refs, &p.canopy_entry) {
             Ok(true) => println!("  \x1b[32m✅\x1b[0m Configured MCP for {}", p.name),
             Ok(false) => println!("  \x1b[33m⏭\x1b[0m  {} already configured", p.name),
@@ -89,6 +131,29 @@ pub fn run_setup() -> Result<()> {
         }
     }
     println!();
+
+    print!("  Saving CLI configuration... ");
+    io::stdout().flush()?;
+    let platforms_with_cli: Vec<PlatformWithCli> = selected
+        .iter()
+        .map(|p| p.to_platform_with_cli())
+        .filter(|p| p.cli.is_some())
+        .collect();
+
+    let cli_registry =
+        crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
+    let canopy_dir = home.join(".canopy");
+    std::fs::create_dir_all(&canopy_dir)?;
+
+    match cli_registry.save(&canopy_dir.join("cli_config.json")) {
+        Ok(_) => {
+            println!(
+                "\x1b[32m✅\x1b[0m {} CLI(s) saved",
+                cli_registry.available_clis.len()
+            );
+        }
+        Err(e) => println!("\x1b[33m⚠\x1b[0m  Failed to save CLI config: {}", e),
+    }
 
     // Start daemon
     print!("  Starting daemon... ");
@@ -121,10 +186,7 @@ pub fn run_setup() -> Result<()> {
     Ok(())
 }
 
-// ── Registry fetch ───────────────────────────────────────────────
-
-/// Fetch registry directly from the repo.
-fn fetch_registry() -> Result<Registry> {
+fn fetch_registry() -> Result<RegistryRaw> {
     let response = reqwest::blocking::Client::new()
         .get(REGISTRY_URL)
         .header("User-Agent", "canopy")
@@ -137,8 +199,6 @@ fn fetch_registry() -> Result<Registry> {
 
     response.json().context("Invalid registry JSON")
 }
-
-// ── Banner ───────────────────────────────────────────────────────
 
 const BANNER: &str = r#"                                                     
   ██████   ██████   ████████    ██████  ████████  █████ ████
@@ -159,8 +219,6 @@ fn print_banner() {
     println!();
 }
 
-// ── Platform selection ───────────────────────────────────────────
-
 fn select_platforms<'a>(detected: &[&'a Platform]) -> Result<Vec<&'a Platform>> {
     if detected.is_empty() {
         println!("  Press Enter to continue...");
@@ -169,39 +227,18 @@ fn select_platforms<'a>(detected: &[&'a Platform]) -> Result<Vec<&'a Platform>> 
         return Ok(vec![]);
     }
 
-    println!("  All detected platforms will be configured.");
-    println!("  To exclude, type numbers to deselect (e.g. '1' or '0,2').");
-    println!("  Press Enter to configure all.\n");
+    let platform_names: Vec<&str> = detected.iter().map(|p| p.name.as_str()).collect();
 
-    for (i, p) in detected.iter().enumerate() {
-        println!("    [\x1b[32m{i}\x1b[0m] {}", p.name);
-    }
+    let selected = MultiSelect::new("Select platforms to configure:", platform_names)
+        .with_help_message("space: toggle | enter: confirm | ↑↓: navigate")
+        .prompt()
+        .map_err(|e| anyhow::anyhow!("Selection cancelled: {}", e))?;
 
-    print!("\n  deselect> ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-
-    if input.is_empty() {
-        return Ok(detected.to_vec());
-    }
-
-    let exclude: Vec<usize> = input
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-
-    Ok(detected
+    Ok(selected
         .iter()
-        .enumerate()
-        .filter(|(i, _)| !exclude.contains(i))
-        .map(|(_, p)| *p)
+        .filter_map(|name| detected.iter().find(|p| p.name == *name).copied())
         .collect())
 }
-
-// ── JSON helpers ─────────────────────────────────────────────────
 
 fn upsert_json_key(path: &Path, keys: &[&str], value: &serde_json::Value) -> Result<bool> {
     let mut root: serde_json::Value = if path.exists() {
@@ -240,8 +277,7 @@ fn remove_json_key(path: &Path, parent_key: &str, key: &str) -> Result<bool> {
     }
     let content = std::fs::read_to_string(path)?;
     let clean = strip_jsonc_comments(&content);
-    let mut root: serde_json::Value =
-        serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
+    let mut root: serde_json::Value = serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
 
     let Some(parent) = root.get_mut(parent_key).and_then(|v| v.as_object_mut()) else {
         return Ok(false);
@@ -254,7 +290,7 @@ fn remove_json_key(path: &Path, parent_key: &str, key: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn strip_jsonc_comments(input: &str) -> String {
+pub(crate) fn strip_jsonc_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     let mut in_string = false;
@@ -300,8 +336,6 @@ fn strip_jsonc_comments(input: &str) -> String {
     }
     out
 }
-
-// ── Daemon & service ─────────────────────────────────────────────
 
 fn start_daemon_if_needed() -> Result<bool> {
     let data_dir = crate::ensure_data_dir()?;
