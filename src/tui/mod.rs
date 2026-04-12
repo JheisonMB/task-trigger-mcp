@@ -6,6 +6,7 @@
 
 mod agent;
 mod app;
+mod brians_brain;
 mod event;
 mod ui;
 

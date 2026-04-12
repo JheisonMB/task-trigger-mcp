@@ -10,6 +10,7 @@ use ratatui::Frame;
 
 use super::agent::AgentStatus;
 use super::app::{relative_time, AgentEntry, App, Focus};
+use super::brians_brain::CellState;
 
 const ACCENT: Color = Color::Rgb(76, 175, 80);
 const DIM: Color = Color::Rgb(150, 150, 170);
@@ -256,6 +257,12 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     match app.focus {
         Focus::Home => {
+            if let Some(ref brain) = app.brain {
+                if brain.active {
+                    draw_brians_brain(frame, inner, brain);
+                    return;
+                }
+            }
             if app.agents.is_empty() {
                 draw_canopy_banner_preview(frame, inner);
                 return;
@@ -737,4 +744,28 @@ fn draw_watcher_details(frame: &mut Frame, area: Rect, watcher: &crate::domain::
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+fn draw_brians_brain(frame: &mut Frame, area: Rect, brain: &super::brians_brain::BriansBrain) {
+    let buf = frame.buffer_mut();
+    for (r, row) in brain.grid.iter().enumerate() {
+        if r as u16 >= area.height {
+            break;
+        }
+        for (c, cell) in row.iter().enumerate() {
+            if c as u16 >= area.width {
+                break;
+            }
+            let x = area.x + c as u16;
+            let y = area.y + r as u16;
+            let (ch, color) = match cell {
+                CellState::On => ("█", ACCENT),
+                CellState::Dying => ("░", Color::Rgb(100, 130, 100)),
+                CellState::Off => (" ", Color::Reset),
+            };
+            let buf_cell = &mut buf[(x, y)];
+            buf_cell.set_symbol(ch);
+            buf_cell.set_style(Style::default().fg(color));
+        }
+    }
 }

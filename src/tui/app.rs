@@ -200,6 +200,9 @@ pub struct App {
     pub new_agent_dialog: Option<NewAgentDialog>,
     /// Timestamp of last Esc press (for double-Esc detection).
     pub last_esc: std::time::Instant,
+
+    // Brian's Brain automaton
+    pub brain: Option<super::brians_brain::BriansBrain>,
 }
 
 impl App {
@@ -221,6 +224,7 @@ impl App {
             running: true,
             new_agent_dialog: None,
             last_esc: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            brain: None,
         };
         app.refresh()?;
         Ok(app)
@@ -232,8 +236,39 @@ impl App {
         self.refresh_agents()?;
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
+        self.tick_brians_brain();
         self.refresh_log();
         Ok(())
+    }
+
+    pub fn tick_brians_brain(&mut self) {
+        if self.focus != Focus::Home {
+            if self.brain.is_some() {
+                self.brain = None;
+            }
+            return;
+        }
+
+        if self.brain.is_none() {
+            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+            let cols = tw.saturating_sub(26);
+            let rows = th.saturating_sub(4);
+            if cols > 0 && rows > 0 {
+                self.brain = Some(super::brians_brain::BriansBrain::new(
+                    rows as usize,
+                    cols as usize,
+                ));
+            }
+        }
+
+        if let Some(ref mut brain) = self.brain {
+            if brain.should_activate() {
+                brain.activate();
+            }
+            if brain.active {
+                brain.step();
+            }
+        }
     }
 
     fn refresh_daemon_status(&mut self) {
