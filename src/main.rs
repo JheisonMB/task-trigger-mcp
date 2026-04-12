@@ -8,6 +8,7 @@
 //! - (no args) — start in foreground with Streamable HTTP transport
 
 mod application;
+mod config;
 mod daemon;
 mod db;
 mod domain;
@@ -37,8 +38,8 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Port for Streamable HTTP server (overrides `TASK_TRIGGER_PORT` env var).
-    #[arg(long, short)]
+    /// Port for Streamable HTTP server (overrides `CANOPY_PORT` env var).
+    #[arg(long, short, global = true)]
     port: Option<u16>,
 }
 
@@ -48,6 +49,11 @@ enum Commands {
     Daemon {
         #[command(subcommand)]
         action: DaemonAction,
+    },
+    /// MCP configuration sync (extract, compare, sync across platforms).
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
     /// Run in stdio MCP transport mode (legacy/fallback for clients without SSE).
     Stdio,
@@ -61,21 +67,27 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
+enum ConfigAction {
+    /// Extract MCP configurations from all platforms.
+    Extract,
+    /// Compare MCP configurations across platforms.
+    Compare,
+    /// Sync selected MCPs to target platforms.
+    Sync,
+}
+
+#[derive(Subcommand)]
 enum DaemonAction {
-    /// Start daemon in background.
+    /// Start daemon in background (auto-installs service for persistence).
     Start,
     /// Stop the running daemon.
     Stop,
     /// Check daemon status.
     Status,
-    /// Restart the daemon.
+    /// Restart the daemon (stop + start).
     Restart,
     /// Tail daemon logs.
     Logs,
-    /// Install as a system service (systemd on Linux, launchd on macOS).
-    InstallService,
-    /// Uninstall the system service.
-    UninstallService,
 }
 
 #[tokio::main]
@@ -84,6 +96,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
+        Some(Commands::Config { action }) => handle_config_action(action).await,
         Some(Commands::Stdio) => handle_stdio().await,
         Some(Commands::Serve) => handle_http_server(cli.port).await,
         Some(Commands::Tui) => {
@@ -125,6 +138,139 @@ async fn shutdown_signal() {
     {
         ctrl_c.await.ok();
     }
+}
+
+/// Handle MCP configuration actions.
+async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
+    use anyhow::Context;
+    use config::McpConfigRegistry;
+    use std::io;
+
+    let home = dirs::home_dir().context("No home directory")?;
+    print!("  Fetching platform registry... ");
+    io::Write::flush(&mut io::stdout())?;
+    let registry = setup::fetch_registry_raw()?;
+    println!("\x1b[32m✓\x1b[0m {} platform(s)", registry.platforms.len());
+    println!();
+
+    match action {
+        ConfigAction::Extract => {
+            println!("  Extracting MCP configurations...\n");
+
+            let platforms: Vec<_> = registry.platforms.iter().collect();
+            let mcp_registry = McpConfigRegistry::extract_all(&platforms)?;
+
+            for platform_config in &mcp_registry.platforms {
+                println!(
+                    "  \x1b[32m✓\x1b[0m {} ({} servers)",
+                    platform_config.platform,
+                    platform_config.servers.len()
+                );
+                for server in &platform_config.servers {
+                    let status = if server.enabled { "🟢" } else { "⚫" };
+                    println!("      {} {}", status, server.name);
+                }
+            }
+
+            if mcp_registry.platforms.is_empty() {
+                println!("  \x1b[33m⏭\x1b[0m  No platforms with config files found.");
+            }
+        }
+
+        ConfigAction::Compare => {
+            println!("  Comparing MCP configurations across platforms...\n");
+
+            let platforms: Vec<_> = registry.platforms.iter().collect();
+            let mcp_registry = McpConfigRegistry::extract_all(&platforms)?;
+
+            let all_configs = &mcp_registry.platforms;
+            if all_configs.len() < 2 {
+                println!("  Need at least 2 platforms with configs to compare.");
+                return Ok(());
+            }
+
+            let all_servers: std::collections::HashSet<String> = all_configs
+                .iter()
+                .flat_map(|c| c.servers.iter().map(|s| s.name.clone()))
+                .collect();
+
+            let max_name_len = all_configs
+                .iter()
+                .map(|c| c.platform.len())
+                .max()
+                .unwrap_or(8);
+
+            println!(
+                "  {:<20} {}",
+                "Server",
+                all_configs
+                    .iter()
+                    .map(|c| format!("{:^width$}", c.platform, width = max_name_len))
+                    .collect::<Vec<_>>()
+                    .join("  ")
+            );
+            println!("  {:─<50}", "");
+
+            for server_name in &all_servers {
+                let mut row = format!("  {:<20}", server_name);
+                for config in all_configs {
+                    let has = config.servers.iter().any(|s| s.name == *server_name);
+                    let icon = if has {
+                        "\x1b[32m✓\x1b[0m"
+                    } else {
+                        "\x1b[31m✗\x1b[0m"
+                    };
+                    row.push_str(&format!("  {:^width$}", icon, width = max_name_len));
+                }
+                println!("{}", row);
+            }
+            println!();
+
+            // Show diff summary
+            for (i, config) in all_configs.iter().enumerate() {
+                for other in &all_configs[i + 1..] {
+                    let only_in_from = mcp_registry.server_diff(&config.platform, &other.platform);
+                    let only_in_to = mcp_registry.server_diff(&other.platform, &config.platform);
+
+                    if !only_in_from.is_empty() || !only_in_to.is_empty() {
+                        println!("  \x1b[1m{} vs {}\x1b[0m", config.platform, other.platform);
+                        if !only_in_from.is_empty() {
+                            println!(
+                                "    Only in {}: {}",
+                                config.platform,
+                                only_in_from
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+                        if !only_in_to.is_empty() {
+                            println!(
+                                "    Only in {}: {}",
+                                other.platform,
+                                only_in_to
+                                    .iter()
+                                    .map(|s| s.name.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            );
+                        }
+                        println!();
+                    }
+                }
+            }
+        }
+
+        ConfigAction::Sync => {
+            println!("  MCP configuration sync — interactive mode\n");
+            println!("  This feature will be available in a future release.");
+            println!("  For now, use 'canopy config extract' and 'canopy config compare'");
+            println!("  to manually sync configurations.");
+        }
+    }
+
+    Ok(())
 }
 
 /// Start the Streamable HTTP MCP server in foreground.
@@ -177,9 +323,6 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
             .into(),
         {
-            // StreamableHttpServerConfig is non-exhaustive; construct via
-            // Default and set the allowed field. Silence clippy's
-            // `field_reassign_with_default` for this small helper block.
             #[allow(clippy::field_reassign_with_default)]
             {
                 let mut cfg =
@@ -207,7 +350,6 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
         })
         .await?;
 
-    // Cleanup
     scheduler_cancel.cancel();
     watcher_engine.stop_all().await;
     remove_pid_file(&data_dir);
@@ -251,8 +393,6 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt;
-                // SAFETY: setsid() is async-signal-safe and only affects
-                // the child process's session group.
                 unsafe {
                     cmd.pre_exec(|| {
                         libc::setsid();
@@ -388,7 +528,7 @@ async fn handle_stdio() -> Result<()> {
         Arc::clone(&executor),
         Arc::clone(&watcher_engine),
         scheduler_notify,
-        0, // No port in stdio mode
+        0,
     );
 
     let transport = rmcp::transport::stdio();
@@ -397,15 +537,12 @@ async fn handle_stdio() -> Result<()> {
 
     server.waiting().await?;
 
-    // Cleanup
     cron_scheduler.stop();
     watcher_engine.stop_all().await;
     tracing::info!("Stdio server stopped");
 
     Ok(())
 }
-
-// -- Utility functions --------------------------------------------------------
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -420,7 +557,7 @@ fn init_tracing() {
 fn resolve_port(port_override: Option<u16>) -> u16 {
     port_override
         .or_else(|| {
-            std::env::var("TASK_TRIGGER_PORT")
+            std::env::var("CANOPY_PORT")
                 .ok()
                 .and_then(|p| p.parse::<u16>().ok())
         })
@@ -455,8 +592,6 @@ fn read_pid(data_dir: &std::path::Path) -> Option<u32> {
 fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: kill(pid, 0) checks if the process exists without
-        // sending a signal. It only reads process state.
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
     #[cfg(not(unix))]
@@ -469,8 +604,6 @@ fn is_process_running(pid: u32) -> bool {
 fn send_signal(pid: u32) {
     #[cfg(unix)]
     {
-        // SAFETY: Sends SIGTERM to the specified PID. This is the
-        // standard graceful shutdown signal on Unix systems.
         unsafe {
             libc::kill(pid as i32, libc::SIGTERM);
         }
