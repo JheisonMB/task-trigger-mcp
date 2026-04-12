@@ -767,9 +767,7 @@ fn kill_port_occupant(port: u16) {
                         if let Ok(pid) = rest[..end].parse::<u32>() {
                             let self_pid = std::process::id();
                             if pid != self_pid && pid != 0 {
-                                eprintln!(
-                                    "Port {port} occupied by PID {pid} — sending SIGTERM"
-                                );
+                                eprintln!("Port {port} occupied by PID {pid} — sending SIGTERM");
                                 unsafe { libc::kill(pid as i32, libc::SIGTERM) };
                                 // Brief wait for process to exit
                                 std::thread::sleep(std::time::Duration::from_millis(500));

@@ -50,7 +50,7 @@ pub enum Focus {
 pub struct NewAgentDialog {
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
-    /// Registry configs parallel to available_clis (for interactive_args etc.)
+    /// Registry configs parallel to `available_clis` (for `interactive_args` etc.)
     pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
     pub working_dir: String,
     /// Which field is focused: 0 = CLI, 1 = working dir.
@@ -92,7 +92,7 @@ impl NewAgentDialog {
     }
 
     /// Load available CLIs from saved registry config, returning both
-    /// the Cli enum list and their corresponding CliConfig for interactive_args.
+    /// the Cli enum list and their corresponding `CliConfig` for `interactive_args`.
     fn load_available_clis() -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
         if let Some(home) = dirs::home_dir() {
             let config_path = home.join(".canopy/cli_config.json");
@@ -119,7 +119,7 @@ impl NewAgentDialog {
         self.available_clis[self.cli_index]
     }
 
-    /// Get the interactive_args for the currently selected CLI from the registry.
+    /// Get the `interactive_args` for the currently selected CLI from the registry.
     pub fn selected_interactive_args(&self) -> Option<String> {
         self.cli_configs
             .get(self.cli_index)
@@ -500,13 +500,7 @@ impl App {
         let cols = tw.saturating_sub(28);
         let rows = th.saturating_sub(4);
 
-        let agent = InteractiveAgent::spawn(
-            cli,
-            &dir,
-            cols,
-            rows,
-            interactive_args.as_deref(),
-        )?;
+        let agent = InteractiveAgent::spawn(cli, &dir, cols, rows, interactive_args.as_deref())?;
         self.interactive_agents.push(agent);
 
         self.refresh_agents()?;
