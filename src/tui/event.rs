@@ -18,8 +18,8 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
     while app.running {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Shorter poll when agent is focused for responsive I/O
-        let tick = if app.focus == Focus::Agent {
+        // Shorter poll when agent is focused or dialog is open for responsive I/O
+        let tick = if app.focus == Focus::Agent || app.focus == Focus::NewAgentDialog {
             Duration::from_millis(50)
         } else {
             Duration::from_secs(1)
@@ -33,6 +33,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             }
         }
 
+        // Always refresh after handling events
         app.refresh()?;
     }
 
@@ -149,14 +150,21 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Tab => {
-            if dialog.field == 1 {
-                dialog.complete_path();
-            } else {
+            // Tab switches between CLI and directory field
+            if dialog.field == 0 {
                 dialog.field = 1;
+            } else {
+                dialog.field = 0;
             }
         }
         KeyCode::Enter => {
-            let _ = app.launch_new_agent();
+            // If in directory field and browsing, navigate into selected dir
+            if dialog.field == 1 && !dialog.dir_entries.is_empty() {
+                dialog.navigate_to_selected();
+            } else {
+                // Launch the agent
+                let _ = app.launch_new_agent();
+            }
         }
         _ => {
             let Some(dialog) = &mut app.new_agent_dialog else {
@@ -169,11 +177,25 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     _ => {}
                 },
                 1 => match code {
+                    // Arrow keys navigate directory list
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if dialog.dir_selected > 0 {
+                            dialog.dir_selected -= 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                            dialog.dir_selected += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        dialog.navigate_to_selected();
+                    }
+                    // Text input still works
                     KeyCode::Char(c) => dialog.working_dir.push(c),
                     KeyCode::Backspace => {
                         dialog.working_dir.pop();
                     }
-                    KeyCode::Up => dialog.field = 0,
                     _ => {}
                 },
                 _ => {}

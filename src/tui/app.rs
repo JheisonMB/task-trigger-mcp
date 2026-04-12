@@ -9,7 +9,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::application::ports::{RunRepository, StateRepository, TaskRepository, WatcherRepository};
+use crate::application::ports::{
+    RunRepository, StateRepository, TaskRepository, WatcherRepository,
+};
 use crate::db::Database;
 use crate::domain::models::{Cli, RunLog, Task, Watcher};
 
@@ -49,24 +51,50 @@ pub struct NewAgentDialog {
     pub working_dir: String,
     /// Which field is focused: 0 = CLI, 1 = working dir.
     pub field: usize,
+    pub dir_entries: Vec<String>,
+    pub dir_selected: usize,
+    pub dir_scroll: usize,
+    pub current_path: String,
 }
 
 impl NewAgentDialog {
     pub fn new() -> Self {
-        let available = Cli::detect_available();
+        // Load available CLIs from saved config
+        let available = Self::load_available_clis();
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        Self {
+        let mut dialog = Self {
             cli_index: 0,
             available_clis: if available.is_empty() {
-                vec![Cli::OpenCode, Cli::Kiro]
+                vec![Cli::OpenCode, Cli::Kiro, Cli::Qwen]
             } else {
                 available
             },
-            working_dir: cwd,
+            working_dir: cwd.clone(),
             field: 0,
+            dir_entries: Vec::new(),
+            dir_selected: 0,
+            dir_scroll: 0,
+            current_path: cwd,
+        };
+        dialog.refresh_dir_entries();
+        dialog
+    }
+
+    /// Load available CLIs from saved registry config.
+    fn load_available_clis() -> Vec<Cli> {
+        if let Some(home) = dirs::home_dir() {
+            let config_path = home.join(".canopy/cli_config.json");
+            if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&config_path) {
+                return registry
+                    .available_clis
+                    .iter()
+                    .filter_map(|c| Cli::resolve(Some(&c.name)).ok())
+                    .collect();
+            }
         }
+        Cli::detect_available()
     }
 
     pub fn selected_cli(&self) -> Cli {
@@ -84,36 +112,61 @@ impl NewAgentDialog {
             .unwrap_or(self.available_clis.len() - 1);
     }
 
-    /// Tab-complete the working_dir path.
-    pub fn complete_path(&mut self) {
-        let input = &self.working_dir;
-        let (dir, prefix) = if let Some(pos) = input.rfind('/') {
-            (&input[..=pos], &input[pos + 1..])
-        } else {
+    /// Refresh directory entries for current path
+    pub fn refresh_dir_entries(&mut self) {
+        let Ok(entries) = std::fs::read_dir(&self.current_path) else {
+            self.dir_entries.clear();
             return;
         };
 
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-
-        let mut matches: Vec<String> = entries
+        self.dir_entries.clear();
+        let mut dirs: Vec<String> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with(prefix) {
-                    Some(format!("{dir}{name}/"))
-                } else {
-                    None
-                }
+                e.file_name()
+                    .to_string_lossy()
+                    .to_string()
+                    .strip_prefix('.')
+                    .map(|_| None)
+                    .unwrap_or_else(|| Some(e.file_name().to_string_lossy().to_string()))
             })
             .collect();
 
-        matches.sort();
-        if let Some(first) = matches.first() {
-            self.working_dir = first.clone();
+        dirs.sort();
+        if self.current_path != "/" {
+            dirs.insert(0, "..".to_string());
         }
+
+        self.dir_entries = dirs;
+        self.dir_selected = 0;
+        self.dir_scroll = 0;
+    }
+
+    /// Navigate to selected directory
+    pub fn navigate_to_selected(&mut self) {
+        if self.dir_selected >= self.dir_entries.len() {
+            return;
+        }
+
+        let selected = &self.dir_entries[self.dir_selected];
+        let new_path = if selected == ".." {
+            if let Some(pos) = self.current_path.rfind('/') {
+                if pos == 0 {
+                    "/".to_string()
+                } else {
+                    self.current_path[..pos].to_string()
+                }
+            } else {
+                ".".to_string()
+            }
+        } else {
+            format!("{}/{}", self.current_path.trim_end_matches('/'), selected)
+        };
+
+        self.current_path = new_path;
+        self.working_dir = self.current_path.clone();
+        self.refresh_dir_entries();
     }
 }
 
@@ -208,7 +261,6 @@ impl App {
             self.agents.push(AgentEntry::Interactive(i));
         }
 
-        // Clamp selection
         let total = self.agents.len();
         if total > 0 && self.selected >= total {
             self.selected = total - 1;
@@ -246,7 +298,10 @@ impl App {
             AgentEntry::Interactive(idx) => {
                 let output = self.interactive_agents[*idx].output();
                 self.log_content = if output.is_empty() {
-                    format!("Agent '{}' — waiting for output...", self.interactive_agents[*idx].id)
+                    format!(
+                        "Agent '{}' — waiting for output...",
+                        self.interactive_agents[*idx].id
+                    )
                 } else {
                     output
                 };
@@ -261,8 +316,6 @@ impl App {
             }
         }
     }
-
-    // ── Navigation ───────────────────────────────────────────────
 
     pub fn select_next(&mut self) {
         if !self.agents.is_empty() {
@@ -300,8 +353,6 @@ impl App {
             .unwrap_or_else(|| "—".to_string())
     }
 
-    // ── Actions ──────────────────────────────────────────────────
-
     pub fn toggle_enable(&self) -> Result<()> {
         let Some(agent) = self.agents.get(self.selected) else {
             return Ok(());
@@ -309,7 +360,7 @@ impl App {
         match agent {
             AgentEntry::Task(t) => self.db.update_task_enabled(&t.id, !t.enabled)?,
             AgentEntry::Watcher(w) => self.db.update_watcher_enabled(&w.id, !w.enabled)?,
-            AgentEntry::Interactive(_) => {} // no-op for interactive
+            AgentEntry::Interactive(_) => {}
         }
         Ok(())
     }
@@ -319,7 +370,7 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::Interactive(_) => Ok(()), // can't rerun interactive
+            AgentEntry::Interactive(_) => Ok(()),
             _ => {
                 let port = self
                     .db
@@ -347,10 +398,9 @@ impl App {
         let cli = dialog.selected_cli();
         let dir = dialog.working_dir.clone();
 
-        // Use approximate panel size (total width - sidebar 26, total height - 3)
         let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-        let cols = tw.saturating_sub(28); // sidebar + borders
-        let rows = th.saturating_sub(4);  // header + footer + borders
+        let cols = tw.saturating_sub(28);
+        let rows = th.saturating_sub(4);
 
         let agent = InteractiveAgent::spawn(cli, &dir, cols, rows)?;
         self.interactive_agents.push(agent);
@@ -374,8 +424,6 @@ impl App {
         }
     }
 }
-
-// ── Helpers ──────────────────────────────────────────────────────
 
 pub fn relative_time(dt: &DateTime<Utc>) -> String {
     let delta = Utc::now().signed_duration_since(*dt);
@@ -437,8 +485,7 @@ fn send_mcp_task_run(port: &str, task_id: &str) -> Result<()> {
     );
 
     let addr = format!("127.0.0.1:{port}");
-    let mut stream =
-        TcpStream::connect_timeout(&addr.parse()?, Duration::from_secs(3))?;
+    let mut stream = TcpStream::connect_timeout(&addr.parse()?, Duration::from_secs(3))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.write_all(request.as_bytes())?;
     let mut buf = [0u8; 4096];

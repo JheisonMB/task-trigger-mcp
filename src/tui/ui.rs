@@ -11,20 +11,19 @@ use ratatui::Frame;
 use super::agent::AgentStatus;
 use super::app::{relative_time, AgentEntry, App, Focus};
 
-// ── Colors ───────────────────────────────────────────────────────
-
-const ACCENT: Color = Color::Rgb(76, 175, 80); // green
+const ACCENT: Color = Color::Rgb(76, 175, 80);
 const DIM: Color = Color::DarkGray;
 const ERROR_COLOR: Color = Color::Rgb(229, 57, 53);
 const BG_SELECTED: Color = Color::Rgb(30, 30, 46);
-const INTERACTIVE_COLOR: Color = Color::Rgb(100, 181, 246); // blue
-
-// ── Main draw ────────────────────────────────────────────────────
+const INTERACTIVE_COLOR: Color = Color::Rgb(100, 181, 246);
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [header, body, footer] =
-        Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)])
-            .areas(frame.area());
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
 
     let [sidebar, panel] =
         Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(body);
@@ -38,8 +37,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_new_agent_dialog(frame, app);
     }
 }
-
-// ── Header ───────────────────────────────────────────────────────
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     let status = if app.daemon_running {
@@ -84,8 +81,6 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(line), area);
 }
 
-// ── Sidebar ──────────────────────────────────────────────────────
-
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
     let border_style = if app.focus == Focus::Sidebar {
         Style::default().fg(ACCENT)
@@ -118,20 +113,15 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             break;
         }
 
-        // Draw INTERACTIVE separator before first interactive agent
         let is_interactive = matches!(agent, AgentEntry::Interactive(_));
-        if is_interactive && !prev_was_interactive && y + card_height + 1 <= inner.y + inner.height
-        {
+        if is_interactive && !prev_was_interactive && y + card_height < inner.y + inner.height {
             let sep = Line::from(Span::styled(
                 " ── INTERACTIVE ──",
                 Style::default()
                     .fg(INTERACTIVE_COLOR)
                     .add_modifier(Modifier::BOLD),
             ));
-            frame.render_widget(
-                Paragraph::new(sep),
-                Rect::new(inner.x, y, inner.width, 1),
-            );
+            frame.render_widget(Paragraph::new(sep), Rect::new(inner.x, y, inner.width, 1));
             y += 1;
         }
         prev_was_interactive = is_interactive;
@@ -245,12 +235,14 @@ fn draw_card(frame: &mut Frame, area: Rect, agent: &AgentEntry, app: &App, selec
     }
 }
 
-// ── Log panel ────────────────────────────────────────────────────
-
 fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let is_agent_focused = app.focus == Focus::Agent;
     let border_style = if is_agent_focused || app.focus == Focus::LogPanel {
-        Style::default().fg(if is_agent_focused { INTERACTIVE_COLOR } else { ACCENT })
+        Style::default().fg(if is_agent_focused {
+            INTERACTIVE_COLOR
+        } else {
+            ACCENT
+        })
     } else {
         Style::default().fg(DIM)
     };
@@ -285,7 +277,6 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // Otherwise render log text
     let line_count = app.log_content.lines().count() as u16;
     let max_scroll = line_count.saturating_sub(inner.height);
     let scroll = app.log_scroll.min(max_scroll);
@@ -309,11 +300,7 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Render a vt100 screen snapshot directly into the ratatui buffer.
-fn render_vt_screen(
-    frame: &mut Frame,
-    area: Rect,
-    snap: &super::agent::ScreenSnapshot,
-) {
+fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSnapshot) {
     let buf = frame.buffer_mut();
 
     for (row_idx, row) in snap.cells.iter().enumerate() {
@@ -355,28 +342,30 @@ fn render_vt_screen(
     }
 }
 
-// ── Footer ───────────────────────────────────────────────────────
-
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Sidebar => "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit",
+        Focus::Sidebar => {
+            "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit"
+        }
         Focus::LogPanel => "  ↑↓ scroll  Esc back  q quit",
-        Focus::NewAgentDialog => "  ←→ select CLI  Tab autocomplete dir  ↑ back  Enter launch  Esc cancel",
-        Focus::Agent => "  Esc Esc detach  Shift+↑↓ scroll  PgUp/PgDn  — all other input goes to agent",
+        Focus::NewAgentDialog => {
+            "  ←→ select CLI  Tab switch field  ↑↓ browse dirs  Enter navigate/launch  Esc cancel"
+        }
+        Focus::Agent => {
+            "  Esc Esc detach  Shift+↑↓ scroll  PgUp/PgDn  — all other input goes to agent"
+        }
     };
 
     let line = Line::from(Span::styled(hints, Style::default().fg(DIM)));
     frame.render_widget(Paragraph::new(line), area);
 }
 
-// ── New Agent Dialog ─────────────────────────────────────────────
-
 fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let Some(dialog) = &app.new_agent_dialog else {
         return;
     };
 
-    let area = centered_rect(50, 9, frame.area());
+    let area = centered_rect(60, 18, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -408,7 +397,8 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let cli_name = dialog.selected_cli().as_str();
 
-    let lines = vec![
+    // Build lines for the dialog
+    let mut lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  CLI:  ", Style::default().fg(DIM)),
@@ -420,11 +410,51 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             Span::styled(&dialog.working_dir, dir_style),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Enter to launch · Esc to cancel",
-            Style::default().fg(DIM),
-        )),
     ];
+
+    // Add directory browser list
+    if !dialog.dir_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  Directories (↑↓ navigate, Enter to enter):",
+            Style::default().fg(DIM),
+        )));
+
+        let visible_rows = 6;
+        let scroll = dialog.dir_selected.saturating_sub(visible_rows - 1);
+
+        for (i, entry) in dialog.dir_entries.iter().enumerate().skip(scroll) {
+            if i >= scroll + visible_rows {
+                break;
+            }
+
+            let is_selected = i == dialog.dir_selected;
+            let entry_style = if is_selected && dialog.field == 1 {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(INTERACTIVE_COLOR)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let icon = if entry == ".." { "📁" } else { "📂" };
+
+            lines.push(Line::from(Span::styled(
+                format!("    {} {}", icon, entry),
+                entry_style,
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Tab: switch field · ↑↓: browse dirs · Enter: navigate/launch · Esc: cancel",
+        Style::default().fg(DIM),
+    )));
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -447,8 +477,6 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
 
     center
 }
-
-// ── Helpers ──────────────────────────────────────────────────────
 
 fn status_icon(enabled: bool, running: bool, last_ok: Option<bool>) -> &'static str {
     if !enabled {

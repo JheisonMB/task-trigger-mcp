@@ -59,6 +59,7 @@ impl InteractiveAgent {
                 cmd.arg("--trust-all-tools");
             }
             Cli::Copilot => {}
+            Cli::Qwen => {}
         }
         cmd.cwd(working_dir);
 
@@ -152,7 +153,7 @@ impl InteractiveAgent {
         self.vt
             .lock()
             .ok()
-            .map(|vt| vt.screen().scrollback() as usize)
+            .map(|vt| vt.screen().scrollback())
             .unwrap_or(0)
     }
 
@@ -165,11 +166,7 @@ impl InteractiveAgent {
             .iter()
             .map(|row| {
                 row.iter()
-                    .map(|c| {
-                        c.as_ref()
-                            .map(|c| c.ch.as_str())
-                            .unwrap_or(" ")
-                    })
+                    .map(|c| c.as_ref().map(|c| c.ch.as_str()).unwrap_or(" "))
                     .collect::<String>()
                     .trim_end()
                     .to_string()
@@ -185,8 +182,7 @@ impl InteractiveAgent {
         }
         if let Ok(mut child) = self.child.lock() {
             if let Ok(Some(status)) = child.try_wait() {
-                self.status =
-                    AgentStatus::Exited(status.exit_code().try_into().unwrap_or(-1));
+                self.status = AgentStatus::Exited(status.exit_code().try_into().unwrap_or(-1));
             }
         }
     }

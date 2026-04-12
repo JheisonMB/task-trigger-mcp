@@ -1,6 +1,6 @@
 //! Canopy Agent Hub — TUI for monitoring and managing agents.
 //!
-//! Reads the daemon's SQLite database in read-only mode (WAL allows
+//! Reads the daemon's `SQLite` database in read-only mode (WAL allows
 //! concurrent readers) and displays tasks, watchers, and their logs
 //! in a card-based sidebar with a live log panel.
 
@@ -12,7 +12,7 @@ mod ui;
 use anyhow::{Context, Result};
 use ratatui::crossterm::{
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io;
 use std::sync::Arc;
