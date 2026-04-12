@@ -55,8 +55,7 @@ impl InteractiveAgent {
         match cli {
             Cli::OpenCode => {}
             Cli::Kiro => {
-                cmd.arg("chat");
-                cmd.arg("--trust-all-tools");
+                cmd.arg("--tui");
             }
             Cli::Copilot => {}
             Cli::Qwen => {}

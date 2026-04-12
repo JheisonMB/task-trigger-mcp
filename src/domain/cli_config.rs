@@ -11,8 +11,11 @@ use std::path::Path;
 /// Complete CLI definition from the registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliConfig {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub binary: String,
+    #[serde(default)]
     pub headless_mode: String,
     #[serde(default)]
     pub model_flag: Option<String>,

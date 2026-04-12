@@ -82,7 +82,7 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let border_style = if app.focus == Focus::Sidebar {
+    let border_style = if app.focus == Focus::Home {
         Style::default().fg(ACCENT)
     } else {
         Style::default().fg(DIM)
@@ -364,22 +364,18 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSn
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Sidebar => {
-            "  ↑↓ navigate  Enter attach/view  n new agent  x kill  r rerun  e/d toggle  q quit"
-        }
+        Focus::Home => "  ↑↓ nav  Enter preview  n new  x kill  r rerun  e/d toggle  q quit",
         Focus::Preview => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  ↑↓ scroll  Enter interact  Esc back  q quit"
+                "  ↑↓ scroll  Enter interact  Esc home  q quit"
             } else {
-                "  ↑↓ scroll  Esc back  q quit"
+                "  ↑↓ scroll  Esc home  q quit"
             }
         }
         Focus::NewAgentDialog => {
-            "  ←→ select CLI  Tab switch field  ↑↓ browse dirs  Enter navigate/launch  Esc cancel"
+            "  ←→ select CLI  Tab switch  ↑↓ browse  Enter nav/launch  Esc cancel"
         }
-        Focus::Agent => {
-            "  Esc Esc detach  Shift+↑↓ scroll  PgUp/PgDn  — all other input goes to agent"
-        }
+        Focus::Agent => "  Esc Esc preview  Shift+↑↓ scroll  PgUp/PgDn  — all input goes to agent",
     };
 
     let line = Line::from(Span::styled(hints, Style::default().fg(DIM)));

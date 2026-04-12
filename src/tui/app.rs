@@ -37,11 +37,12 @@ impl AgentEntry {
 /// Which panel has focus.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    Sidebar,
-    /// Preview mode: task details, read-only agent output, or canopy banner.
+    /// Home mode: sidebar navigation, banner or task details in right panel.
+    Home,
+    /// Preview mode: log output for tasks, read-only PTY for agents.
     Preview,
     NewAgentDialog,
-    /// Interactive mode: keys go to PTY.
+    /// Focus mode: interactive PTY for agents, detailed log for tasks.
     Agent,
 }
 
@@ -211,7 +212,7 @@ impl App {
             daemon_pid: None,
             daemon_version: String::new(),
             selected: 0,
-            focus: Focus::Preview,
+            focus: Focus::Home,
             log_content: String::new(),
             log_scroll: 0,
             running: true,
@@ -389,7 +390,7 @@ impl App {
 
     pub fn close_new_agent_dialog(&mut self) {
         self.new_agent_dialog = None;
-        self.focus = Focus::Sidebar;
+        self.focus = Focus::Home;
     }
 
     pub fn launch_new_agent(&mut self) -> Result<()> {
@@ -410,7 +411,7 @@ impl App {
         self.selected = self.agents.len().saturating_sub(1);
 
         self.close_new_agent_dialog();
-        self.focus = Focus::Agent;
+        self.focus = Focus::Preview;
         Ok(())
     }
 

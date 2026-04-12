@@ -43,26 +43,27 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     match app.focus {
-        Focus::Sidebar => handle_sidebar_key(app, code),
+        Focus::Home => handle_home_key(app, code),
         Focus::Preview => handle_preview_key(app, code),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
 }
 
-fn handle_sidebar_key(app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Char('q') => app.running = false,
-        KeyCode::Esc | KeyCode::Char('h') => {
-            // When nothing selected or first selection, show banner
-            if app.agents.is_empty() || app.selected == 0 {
-                app.focus = Focus::Preview;
-            } else {
-                app.running = false;
-            }
+        KeyCode::Esc => {
+            app.running = false;
         }
-        KeyCode::Char('j') | KeyCode::Down => app.select_next(),
-        KeyCode::Char('k') | KeyCode::Up => app.select_prev(),
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.select_next();
+            app.focus = Focus::Home;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.select_prev();
+            app.focus = Focus::Home;
+        }
         KeyCode::Enter | KeyCode::Char('l') => {
             app.focus = Focus::Preview;
         }
@@ -82,7 +83,7 @@ fn handle_sidebar_key(app: &mut App, code: KeyCode) -> Result<()> {
 fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc | KeyCode::Char('h') => {
-            app.focus = Focus::Sidebar;
+            app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
@@ -103,7 +104,6 @@ fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 /// In Agent focus: forward all keys to the PTY, except double-Esc to detach.
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-    // Double Esc = detach back to sidebar
     if code == KeyCode::Esc {
         if app.last_esc.elapsed() < Duration::from_millis(400) {
             app.focus = Focus::Preview;
@@ -114,7 +114,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {
-        app.focus = Focus::Sidebar;
+        app.focus = Focus::Home;
         return Ok(());
     };
     let idx = *idx;
