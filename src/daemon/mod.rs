@@ -154,7 +154,7 @@ impl TaskTriggerHandler {
     /// Register a new scheduled task. The daemon's internal scheduler handles execution.
     #[tool(
         name = "task_add",
-        description = "Register a new scheduled task. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary tasks that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
+        description = "Register a new scheduled task. Use task_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary tasks that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_add(
         &self,
@@ -635,6 +635,50 @@ impl TaskTriggerHandler {
         }
 
         Ok(CallToolResult::success(vec![Content::text(status)]))
+    }
+
+    /// List available AI models that can be used with tasks and watchers.
+    #[tool(
+        name = "task_models",
+        description = "List common AI models available for use with tasks and watchers. Returns provider/model strings that can be passed to the model field of task_add or task_watch."
+    )]
+    async fn task_models(&self) -> Result<CallToolResult, McpError> {
+        let models = [
+            ("OpenAI", "gpt-4.1"),
+            ("OpenAI", "gpt-4o"),
+            ("OpenAI", "gpt-4o-mini"),
+            ("OpenAI", "o1"),
+            ("OpenAI", "o3"),
+            ("OpenAI", "o4-mini"),
+            ("Anthropic", "claude-sonnet-4-20250514"),
+            ("Anthropic", "claude-opus-4-20250514"),
+            ("Anthropic", "claude-3-5-sonnet-20241022"),
+            ("Anthropic", "claude-3-7-sonnet-20250219"),
+            ("Google", "gemini-2.5-pro"),
+            ("Google", "gemini-2.5-flash"),
+            ("Google", "gemini-2.0-flash"),
+            ("Amazon", "nova-pro"),
+            ("Amazon", "nova-lite"),
+            ("Mistral", "mistral-large-2411"),
+            ("Meta", "llama-4-maverick"),
+            ("Meta", "llama-4-scout"),
+        ];
+
+        let output = models
+            .iter()
+            .map(|(provider, model)| format!("  {}  ({})", model, provider))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let result = format!(
+            "Available models (use the second column value as the model field):\n\
+             {}\n\n\
+             Note: Model availability depends on the CLI's configured API keys.\n\
+             If model is omitted, the CLI uses its own default.",
+            output
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get log output for a task or watcher.
