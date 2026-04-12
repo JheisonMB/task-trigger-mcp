@@ -73,6 +73,9 @@ fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Char('r') => {
             let _ = app.rerun_selected();
         }
+        KeyCode::Char('D') => {
+            let _ = app.delete_selected();
+        }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
         KeyCode::Char('x') => app.kill_selected_agent(),
         _ => {}

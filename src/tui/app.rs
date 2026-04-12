@@ -461,6 +461,25 @@ impl App {
         self.interactive_agents[idx].kill();
     }
 
+    pub fn delete_selected(&mut self) -> Result<()> {
+        let Some(agent) = self.agents.get(self.selected) else {
+            return Ok(());
+        };
+        match agent {
+            AgentEntry::Task(t) => {
+                self.db.delete_task(&t.id)?;
+            }
+            AgentEntry::Watcher(w) => {
+                self.db.delete_watcher(&w.id)?;
+            }
+            AgentEntry::Interactive(idx) => {
+                self.interactive_agents[*idx].kill();
+            }
+        }
+        self.refresh_agents()?;
+        Ok(())
+    }
+
     /// Clean up: kill all interactive agents on exit.
     pub fn cleanup(&mut self) {
         for agent in &mut self.interactive_agents {

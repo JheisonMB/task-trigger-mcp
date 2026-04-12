@@ -393,7 +393,9 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSn
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Home => "  ↑↓ nav  Enter preview  n new  x kill  r rerun  e/d toggle  q quit",
+        Focus::Home => {
+            "  ↑↓ nav  Enter preview  D delete  n new  x kill  r rerun  e/d toggle  q quit"
+        }
         Focus::Preview => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                 "  ↑↓ scroll  Enter interact  h/Esc home  q quit"
