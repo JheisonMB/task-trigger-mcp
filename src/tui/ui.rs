@@ -397,7 +397,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::NewAgentDialog => {
             "  ←→ select CLI  Tab switch  ↑↓ browse  Enter nav/launch  Esc cancel"
         }
-        Focus::Agent => "  Esc Esc preview  Shift+↑↓ scroll  PgUp/PgDn  — all input goes to agent",
+        Focus::Agent => {
+            "  h home  Esc Esc preview  Shift+↑↓ scroll  PgUp/PgDn  — all input goes to agent"
+        }
     };
 
     let line = Line::from(Span::styled(hints, Style::default().fg(DIM)));
@@ -581,15 +583,28 @@ fn draw_canopy_banner_preview(frame: &mut Frame, area: Rect) {
         .lines()
         .map(|l| {
             Line::from(Span::styled(
-                format!("  {}", l),
+                l.to_string(),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ))
         })
         .collect();
 
-    let banner = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+    let total_banner = lines.len() as u16;
+    let top_pad = if area.height > total_banner {
+        (area.height - total_banner) / 2
+    } else {
+        0
+    };
 
-    frame.render_widget(banner, area);
+    let banner_area = Rect::new(
+        area.x,
+        area.y + top_pad,
+        area.width,
+        total_banner.min(area.height),
+    );
+
+    let banner = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+    frame.render_widget(banner, banner_area);
 }
 
 fn draw_task_details(frame: &mut Frame, area: Rect, task: &crate::domain::models::Task, app: &App) {
