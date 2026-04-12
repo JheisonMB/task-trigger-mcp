@@ -21,14 +21,13 @@ pub struct RegistryRaw {
 pub struct Platform {
     pub name: String,
     pub config_path: String,
-    /// Path to ALL MCP servers object (e.g., ["mcpServers"])
+    #[serde(alias = "servers_key")]
     pub mcp_servers_key: Vec<String>,
-    /// Key for canopy entry within the servers object (e.g., "canopy")
+    #[serde(default)]
     pub canopy_entry_key: String,
     pub canopy_entry: serde_json::Value,
     #[serde(default)]
     pub deprecated_keys: Vec<String>,
-    /// CLI execution strategy definition
     #[serde(default)]
     pub cli: Option<serde_json::Value>,
 }
@@ -79,7 +78,14 @@ pub fn run_setup() -> Result<()> {
 
     print!("  Fetching platform registry... ");
     io::stdout().flush()?;
-    let registry = fetch_registry()?;
+    let mut registry = fetch_registry()?;
+
+    for p in &mut registry.platforms {
+        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
+            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
+        }
+    }
+
     println!("\x1b[32m✓\x1b[0m {} platform(s)", registry.platforms.len());
     println!();
 

@@ -50,11 +50,13 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// MCP configuration sync (extract, compare, sync across platforms).
-    Config {
+    /// Sync MCP configurations across platforms (extract, compare, apply).
+    Sync {
         #[command(subcommand)]
-        action: ConfigAction,
+        action: SyncAction,
     },
+    /// Diagnose environment and canopy health.
+    Doctor,
     /// Run in stdio MCP transport mode (legacy/fallback for clients without SSE).
     Stdio,
     /// Launch the Agent Hub TUI.
@@ -67,13 +69,13 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum ConfigAction {
+enum SyncAction {
     /// Extract MCP configurations from all platforms.
     Extract,
     /// Compare MCP configurations across platforms.
     Compare,
     /// Sync selected MCPs to target platforms.
-    Sync,
+    Apply,
 }
 
 #[derive(Subcommand)]
@@ -96,7 +98,8 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
-        Some(Commands::Config { action }) => handle_config_action(action).await,
+        Some(Commands::Sync { action }) => handle_sync_action(action).await,
+        Some(Commands::Doctor) => handle_doctor().await,
         Some(Commands::Stdio) => handle_stdio().await,
         Some(Commands::Serve) => handle_http_server(cli.port).await,
         Some(Commands::Tui) => {
@@ -141,7 +144,7 @@ async fn shutdown_signal() {
 }
 
 /// Handle MCP configuration actions.
-async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
+async fn handle_sync_action(action: SyncAction) -> anyhow::Result<()> {
     use anyhow::Context;
     use config::McpConfigRegistry;
     use std::io;
@@ -154,7 +157,7 @@ async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
     println!();
 
     match action {
-        ConfigAction::Extract => {
+        SyncAction::Extract => {
             println!("  Extracting MCP configurations...\n");
 
             let platforms: Vec<_> = registry.platforms.iter().collect();
@@ -177,7 +180,7 @@ async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
             }
         }
 
-        ConfigAction::Compare => {
+        SyncAction::Compare => {
             println!("  Comparing MCP configurations across platforms...\n");
 
             let platforms: Vec<_> = registry.platforms.iter().collect();
@@ -262,11 +265,9 @@ async fn handle_config_action(action: ConfigAction) -> anyhow::Result<()> {
             }
         }
 
-        ConfigAction::Sync => {
+        SyncAction::Apply => {
             println!("  MCP configuration sync — interactive mode\n");
             println!("  This feature will be available in a future release.");
-            println!("  For now, use 'canopy config extract' and 'canopy config compare'");
-            println!("  to manually sync configurations.");
         }
     }
 
@@ -524,6 +525,108 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             }
         }
     }
+
+    Ok(())
+}
+
+async fn handle_doctor() -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    println!("  🌿 canopy doctor\n");
+    println!("  ─────────────────────────────────────────────\n");
+
+    let home = dirs::home_dir().context("No home directory")?;
+    let canopy_dir = home.join(".canopy");
+    let db_path = canopy_dir.join("tasks.db");
+    let cli_config_path = canopy_dir.join("cli_config.json");
+    let configured_marker = canopy_dir.join(".configured");
+
+    let mut issues = Vec::new();
+
+    if canopy_dir.exists() {
+        println!(
+            "  \x1b[32m✓\x1b[0m Data directory: {}",
+            canopy_dir.display()
+        );
+    } else {
+        println!(
+            "  \x1b[31m✗\x1b[0m Data directory not found: {}",
+            canopy_dir.display()
+        );
+        issues.push("Run 'canopy setup' to initialize");
+    }
+
+    if db_path.exists() {
+        println!("  \x1b[32m✓\x1b[0m Database: {}", db_path.display());
+        if let Ok(db) = crate::db::Database::new(&db_path) {
+            if let Ok(tasks) = db.list_tasks() {
+                println!("    Tasks: {}", tasks.len());
+            }
+            if let Ok(watchers) = db.list_watchers() {
+                println!("    Watchers: {}", watchers.len());
+            }
+        }
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  Database not found (will be created on setup)");
+    }
+
+    if cli_config_path.exists() {
+        println!(
+            "  \x1b[32m✓\x1b[0m CLI config: {}",
+            cli_config_path.display()
+        );
+        if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&cli_config_path) {
+            println!("    Available CLIs: {}", registry.names().join(", "));
+        }
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  CLI config not found (run setup)");
+    }
+
+    let pid_path = canopy_dir.join("daemon.pid");
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<u32>() {
+            if is_process_running(pid) {
+                println!("  \x1b[32m✓\x1b[0m Daemon running (PID: {})", pid);
+            } else {
+                println!("  \x1b[31m✗\x1b[0m Daemon not running (stale PID: {})", pid);
+                issues.push("Stale PID file — run 'canopy daemon start'");
+            }
+        }
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  Daemon not running");
+    }
+
+    if configured_marker.exists() {
+        println!("  \x1b[32m✓\x1b[0m Setup completed");
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  Setup not completed");
+        issues.push("Run 'canopy setup'");
+    }
+
+    let available_clis = crate::domain::models::Cli::detect_available();
+    if !available_clis.is_empty() {
+        println!(
+            "  \x1b[32m✓\x1b[0m CLIs in PATH: {}",
+            available_clis
+                .iter()
+                .map(|c| c.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    } else {
+        println!("  \x1b[31m✗\x1b[0m No supported CLIs found in PATH");
+        issues.push("Install at least one: opencode, kiro-cli, copilot, or qwen");
+    }
+
+    if !issues.is_empty() {
+        println!("\n  \x1b[1;33m⚠ Suggestions:\x1b[0m");
+        for issue in &issues {
+            println!("    • {}", issue);
+        }
+    } else {
+        println!("\n  \x1b[32m✅ All checks passed!\x1b[0m");
+    }
+    println!();
 
     Ok(())
 }
