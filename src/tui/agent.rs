@@ -39,6 +39,8 @@ pub struct InteractiveAgent {
     vt: Arc<Mutex<vt100::Parser>>,
     /// Child process handle.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    /// PTY master — needed for resize.
+    master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     /// Scroll offset (0 = bottom/live, positive = scrolled up).
     pub scroll_offset: usize,
     /// Last known PTY dimensions (for resize detection).
@@ -85,6 +87,7 @@ impl InteractiveAgent {
 
         let writer = pair.master.take_writer()?;
         let mut reader = pair.master.try_clone_reader()?;
+        let master = pair.master;
 
         let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let vt_clone = Arc::clone(&vt);
@@ -116,6 +119,7 @@ impl InteractiveAgent {
             writer: Arc::new(Mutex::new(writer)),
             vt,
             child: Arc::new(Mutex::new(child)),
+            master: Arc::new(Mutex::new(master)),
             scroll_offset: 0,
             last_pty_cols: cols,
             last_pty_rows: rows,
@@ -199,10 +203,20 @@ impl InteractiveAgent {
         self.status = AgentStatus::Exited(-9);
     }
 
-    /// Resize the virtual terminal (e.g. on terminal window resize).
+    /// Resize the PTY and virtual terminal (e.g. on terminal window resize).
     pub fn resize(&mut self, cols: u16, rows: u16) {
         self.last_pty_cols = cols;
         self.last_pty_rows = rows;
+        // Resize the actual PTY so the process knows about the new size
+        if let Ok(m) = self.master.lock() {
+            let _ = m.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
+        // Also resize the virtual terminal screen
         if let Ok(mut vt) = self.vt.lock() {
             vt.screen_mut().set_size(rows, cols);
         }

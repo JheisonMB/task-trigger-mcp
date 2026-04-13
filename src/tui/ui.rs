@@ -122,12 +122,12 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Sidebar is highlighted only when focus is Home
     let sidebar_focused = app.focus == Focus::Home;
-    let card_h = 3u16;
+    let row_h = 4u16; // 3 lines + 1 spacer
 
     // Calculate proportional split
     let (bg_area, ix_area) = if has_bg && has_ix {
-        let bg_needed = bg_indices.len() as u16 * card_h + 2;
-        let ix_needed = ix_indices.len() as u16 * card_h + 2;
+        let bg_needed = bg_indices.len() as u16 * row_h + 2;
+        let ix_needed = ix_indices.len() as u16 * row_h + 2;
         let total = bg_needed + ix_needed;
         if total <= area.height {
             let [top, bottom] =
