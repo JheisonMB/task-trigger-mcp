@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use ratatui::style::Color;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -147,6 +148,16 @@ impl NewAgentDialog {
             .and_then(|c| c.interactive_args.clone())
     }
 
+    /// Get the accent color for the currently selected CLI.
+    pub fn selected_accent_color(&self) -> Color {
+        self.cli_configs
+            .get(self.cli_index)
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.accent_color)
+            .map(|[r, g, b]| Color::Rgb(r, g, b))
+            .unwrap_or(Color::Rgb(102, 187, 106)) // fallback green
+    }
+
     pub fn next_cli(&mut self) {
         self.cli_index = (self.cli_index + 1) % self.available_clis.len();
     }
@@ -247,7 +258,7 @@ pub struct App {
     // Brian's Brain automaton
     pub brain: Option<super::brians_brain::BriansBrain>,
 
-    /// Sidebar agent cards layout: (global_idx, y_start, y_end) for click mapping.
+    /// Sidebar agent cards layout: (`global_idx`, `y_start`, `y_end`) for click mapping.
     pub sidebar_click_map: Vec<(usize, u16, u16)>,
     /// Whether the sidebar is visible.
     pub sidebar_visible: bool,
@@ -302,7 +313,9 @@ impl App {
             self.term_width = tw;
             // Auto-hide if: interactive agent focused + terminal < 80 chars wide
             if self.focus == Focus::Agent
-                && self.selected_agent().map_or(false, |a| matches!(a, AgentEntry::Interactive(_)))
+                && self
+                    .selected_agent()
+                    .is_some_and(|a| matches!(a, AgentEntry::Interactive(_)))
                 && tw < 80
             {
                 self.sidebar_visible = false;
@@ -557,11 +570,18 @@ impl App {
                 let cli = dialog.selected_cli();
                 let dir = dialog.working_dir.clone();
                 let interactive_args = dialog.selected_interactive_args();
+                let accent_color = dialog.selected_accent_color();
                 let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
                 let cols = tw.saturating_sub(28);
                 let rows = th.saturating_sub(4);
-                let agent =
-                    InteractiveAgent::spawn(cli, &dir, cols, rows, interactive_args.as_deref())?;
+                let agent = InteractiveAgent::spawn(
+                    cli,
+                    &dir,
+                    cols,
+                    rows,
+                    interactive_args.as_deref(),
+                    accent_color,
+                )?;
                 self.interactive_agents.push(agent);
             }
             NewTaskType::Scheduled => {

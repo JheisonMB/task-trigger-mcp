@@ -37,7 +37,7 @@ pub enum CellState {
 pub struct BannerRow {
     /// Grid row index.
     pub row: usize,
-    /// Characters in this row: (col_index, is_shade).
+    /// Characters in this row: (`col_index`, `is_shade`).
     pub cells: Vec<(usize, bool)>,
 }
 
@@ -134,7 +134,10 @@ impl BriansBrain {
     pub fn should_activate(&self) -> bool {
         // Wait for unfold animation to complete before activating
         self.home_since.elapsed().as_secs() >= UNFOLD_SECONDS
-            && self.reveal_radius >= self.overlay_center.max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center)
+            && self.reveal_radius
+                >= self
+                    .overlay_center
+                    .max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center)
             && !self.active
     }
 
@@ -143,7 +146,9 @@ impl BriansBrain {
         if self.active {
             return false;
         }
-        let max_dist = self.overlay_center.max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center);
+        let max_dist = self
+            .overlay_center
+            .max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center);
         if self.reveal_radius < max_dist {
             self.reveal_radius = (self.reveal_radius + REVEAL_RATE).min(max_dist);
         }
@@ -161,7 +166,9 @@ impl BriansBrain {
             .banner_overlay
             .iter()
             .enumerate()
-            .filter(|(i, _)| (*i as i64 - self.overlay_center as i64).unsigned_abs() <= self.reveal_radius as u64)
+            .filter(|(i, _)| {
+                (*i as i64 - self.overlay_center as i64).unsigned_abs() <= self.reveal_radius as u64
+            })
             .collect();
         visible.sort_by_key(|(i, _)| (*i as i64 - self.overlay_center as i64).unsigned_abs());
         visible.into_iter().map(|(_, r)| r).collect()

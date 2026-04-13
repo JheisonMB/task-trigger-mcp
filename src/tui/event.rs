@@ -9,7 +9,7 @@
 //!   Focus:   background → scroll log, interactive → PTY, `EscEsc` → Preview
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 
 use super::agent::key_to_bytes;
@@ -36,16 +36,10 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
         };
 
         if event::poll(tick)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press {
-                        handle_key(app, key.code, key.modifiers)?;
-                    }
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    handle_key(app, key.code, key.modifiers)?;
                 }
-                Event::Mouse(mouse) => {
-                    handle_mouse(app, mouse.kind, mouse.row, mouse.column)?;
-                }
-                _ => {}
             }
         }
 
@@ -63,52 +57,6 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
-}
-
-// ── Mouse events ─────────────────────────────────────────────────────
-
-fn handle_mouse(app: &mut App, kind: MouseEventKind, _row: u16, _col: u16) -> Result<()> {
-    match kind {
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            let scroll_dir = if matches!(kind, MouseEventKind::ScrollUp) { 1i32 } else { -1i32 };
-            match app.focus {
-                Focus::Agent => {
-                    if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                        let idx = *idx;
-                        let agent = &mut app.interactive_agents[idx];
-                        if scroll_dir > 0 {
-                            let max = agent.max_scroll();
-                            agent.scroll_offset = (agent.scroll_offset + 5).min(max);
-                        } else {
-                            agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
-                        }
-                    } else if scroll_dir > 0 {
-                        app.scroll_log_up();
-                    } else {
-                        app.scroll_log_down();
-                    }
-                }
-                Focus::Preview | Focus::Home => {
-                    if scroll_dir > 0 {
-                        app.select_prev();
-                    } else {
-                        app.select_next();
-                    }
-                }
-                Focus::NewAgentDialog => {
-                    if let Some(dialog) = &mut app.new_agent_dialog {
-                        if scroll_dir > 0 && dialog.dir_selected > 0 {
-                            dialog.dir_selected -= 1;
-                        } else if scroll_dir < 0 && dialog.dir_selected + 1 < dialog.dir_entries.len() {
-                            dialog.dir_selected += 1;
-                        }
-                    }
-                }
-            }
-        }
-        _ => {} // Ignore mouse motion, clicks, etc.
-    }
-    Ok(())
 }
 
 // ── Home: screensaver — arrows enter Preview ────────────────────────
