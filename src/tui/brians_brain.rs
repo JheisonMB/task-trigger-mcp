@@ -234,15 +234,15 @@ impl BriansBrain {
 
     /// Inject random noise at edge cells to reinvigorate the automaton.
     fn inject_edge_noise(&mut self) {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        use rand::prelude::*;
+        let mut rng = rand::rng();
 
         for r in 0..self.rows {
             for c in 0..self.cols {
                 // Only inject noise at edge cells
                 if self.is_edge_cell(r, c)
                     && self.grid[r][c] == CellState::Off
-                    && rng.gen_bool(EDGE_NOISE_PROBABILITY)
+                    && rng.random_bool(EDGE_NOISE_PROBABILITY)
                 {
                     self.grid[r][c] = CellState::On;
                 }

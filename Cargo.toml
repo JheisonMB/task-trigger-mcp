@@ -38,13 +38,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Schema generation for MCP tools
-schemars = { version = "0.8", features = ["derive"] }
+schemars = { version = "0.9", features = ["derive"] }
 
 # SQLite persistence
 rusqlite = { version = "0.39", features = ["bundled"] }
 
 # File watching
-notify = "6.1"
+notify = "8.2"
 
 # Cron expression parsing (internal scheduler)
 cron = "0.16"
@@ -53,7 +53,7 @@ cron = "0.16"
 chrono = { version = "0.4", features = ["serde"] }
 
 # CLI binary discovery
-which = "7.0"
+which = "8.0"
 
 # CLI argument parsing
 clap = { version = "4.6", features = ["derive"] }
@@ -77,16 +77,16 @@ portable-pty = "0.9"
 vt100 = "0.16"
 
 # HTTP client for registry fetch
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 
 # Interactive prompts for setup wizard
-inquire = "0.7"
+inquire = "0.9"
 
 # Shell argument parsing
 shell-words = "1.1"
 
 # Random number generation for automata noise injection
-rand = "0.8"
+rand = "0.10"
 
 # Clipboard for text copy from TUI
 arboard = "3.6"
