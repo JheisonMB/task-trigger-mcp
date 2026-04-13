@@ -384,7 +384,7 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
             {
                 let home = dirs::home_dir().expect("No home directory");
                 let service_path = home.join(".config/systemd/user/canopy.service");
-                if !service_path.exists() {
+                if !service_path.exists() && is_systemd_available() {
                     print!("  Installing system service... ");
                     match service_install::install_service(&exe, port) {
                         Ok(_) => println!("\x1b[32m✅\x1b[0m installed"),
@@ -743,6 +743,23 @@ fn is_process_running(pid: u32) -> bool {
     #[cfg(not(unix))]
     {
         let _ = pid;
+        false
+    }
+}
+
+/// Check if systemd is available and running (important for WSL compatibility).
+fn is_systemd_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // Check if systemctl binary is available and systemd is the init system
+        std::process::Command::new("systemctl")
+            .args(["--user", "is-system-running"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         false
     }
 }

@@ -19,11 +19,26 @@ const MIN_PARTICLE_THRESHOLD: f64 = 0.005; // 0.5% of cells
 /// Probability of injecting noise at edge cells when below threshold.
 const EDGE_NOISE_PROBABILITY: f64 = 0.15; // 15% chance per edge cell
 
+/// Number of banner rows to reveal per side per tick during the unfold animation.
+const REVEAL_RATE: usize = 1;
+
+/// Minimum seconds before the unfold animation completes (at least this long).
+const UNFOLD_SECONDS: u64 = 1;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
     Off,
     On,
     Dying,
+}
+
+/// Banner row data for the overlay.
+#[derive(Clone)]
+pub struct BannerRow {
+    /// Grid row index.
+    pub row: usize,
+    /// Characters in this row: (col_index, is_shade).
+    pub cells: Vec<(usize, bool)>,
 }
 
 pub struct BriansBrain {
@@ -32,6 +47,12 @@ pub struct BriansBrain {
     pub cols: usize,
     pub home_since: Instant,
     pub active: bool,
+    /// Full banner overlay grouped by row for progressive reveal.
+    banner_overlay: Vec<BannerRow>,
+    /// Center row index in the overlay.
+    overlay_center: usize,
+    /// Number of rows revealed from center during unfold animation.
+    reveal_radius: usize,
 }
 
 const BANNER: &[&str] = &[
@@ -48,21 +69,26 @@ const BANNER: &[&str] = &[
 
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize) -> Self {
+        let (grid, overlay, center_idx) = Self::make_banner_grid(rows, cols);
         Self {
-            grid: Self::make_banner_grid(rows, cols),
+            grid,
             rows,
             cols,
             home_since: Instant::now(),
             active: false,
+            banner_overlay: overlay,
+            overlay_center: center_idx,
+            reveal_radius: 0,
         }
     }
 
     /// Seed the grid from the CANOPY banner text.
-    /// Only the solid block characters (`█`) become On cells — these are the
-    /// most prominent characters in the banner.  The automaton rules alone
-    /// create a natural explosion wave radiating outward from the banner shape.
-    fn make_banner_grid(rows: usize, cols: usize) -> Vec<Vec<CellState>> {
+    /// Only full block characters (`█`) become On cells — they drive the explosion.
+    /// Light shade characters (`░`) are recorded in the overlay for pre-activation
+    /// rendering but do NOT participate in the automaton (they fade away).
+    fn make_banner_grid(rows: usize, cols: usize) -> (Vec<Vec<CellState>>, Vec<BannerRow>, usize) {
         let mut grid = vec![vec![CellState::Off; cols]; rows];
+        let mut rows_data: Vec<BannerRow> = Vec::new();
 
         let banner_h = BANNER.len();
         let banner_w = BANNER.iter().map(|l| l.chars().count()).max().unwrap_or(0);
@@ -70,28 +96,75 @@ impl BriansBrain {
         let top = rows.saturating_sub(banner_h) / 2;
         let left = cols.saturating_sub(banner_w) / 2;
 
+        // Center row of the banner relative to the overlay
+        let center = banner_h / 2;
+
         for (br, line) in BANNER.iter().enumerate() {
             let r = top + br;
             if r >= rows {
                 break;
             }
+            let mut cells = Vec::new();
             for (bc, ch) in line.chars().enumerate() {
                 let c = left + bc;
                 if c >= cols {
                     break;
                 }
-                // Only full-block characters seed the automaton
                 if ch == '█' {
                     grid[r][c] = CellState::On;
+                    cells.push((c, false));
+                } else if ch == '░' {
+                    cells.push((c, true));
                 }
+            }
+            if !cells.is_empty() {
+                rows_data.push(BannerRow { row: r, cells });
             }
         }
 
-        grid
+        // Find the center index in rows_data (closest to the actual center row of the banner)
+        let center_idx = rows_data
+            .iter()
+            .position(|rd| rd.row >= top + center)
+            .unwrap_or(rows_data.len().saturating_sub(1));
+
+        (grid, rows_data, center_idx)
     }
 
     pub fn should_activate(&self) -> bool {
-        self.home_since.elapsed().as_secs() >= 2 && !self.active
+        // Wait for unfold animation to complete before activating
+        self.home_since.elapsed().as_secs() >= UNFOLD_SECONDS
+            && self.reveal_radius >= self.overlay_center.max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center)
+            && !self.active
+    }
+
+    /// Advance the unfold animation by one step. Returns true if the animation just completed.
+    pub fn tick(&mut self) -> bool {
+        if self.active {
+            return false;
+        }
+        let max_dist = self.overlay_center.max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center);
+        if self.reveal_radius < max_dist {
+            self.reveal_radius = (self.reveal_radius + REVEAL_RATE).min(max_dist);
+        }
+        self.reveal_radius >= max_dist
+    }
+
+    /// Get the currently visible banner rows based on the reveal radius.
+    /// Returns rows sorted by distance from center (innermost first).
+    pub fn visible_overlay(&self) -> Vec<&BannerRow> {
+        if self.reveal_radius == 0 {
+            return vec![];
+        }
+        // Collect rows within reveal distance from center, sorted by distance
+        let mut visible: Vec<_> = self
+            .banner_overlay
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (*i as i64 - self.overlay_center as i64).unsigned_abs() <= self.reveal_radius as u64)
+            .collect();
+        visible.sort_by_key(|(i, _)| (*i as i64 - self.overlay_center as i64).unsigned_abs());
+        visible.into_iter().map(|(_, r)| r).collect()
     }
 
     pub fn activate(&mut self) {
@@ -101,7 +174,11 @@ impl BriansBrain {
     pub fn reset(&mut self) {
         self.active = false;
         self.home_since = Instant::now();
-        self.grid = Self::make_banner_grid(self.rows, self.cols);
+        let (grid, overlay, center_idx) = Self::make_banner_grid(self.rows, self.cols);
+        self.grid = grid;
+        self.banner_overlay = overlay;
+        self.overlay_center = center_idx;
+        self.reveal_radius = 0;
     }
 
     pub fn step(&mut self) {

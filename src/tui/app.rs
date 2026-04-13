@@ -246,6 +246,13 @@ pub struct App {
 
     // Brian's Brain automaton
     pub brain: Option<super::brians_brain::BriansBrain>,
+
+    /// Sidebar agent cards layout: (global_idx, y_start, y_end) for click mapping.
+    pub sidebar_click_map: Vec<(usize, u16, u16)>,
+    /// Whether the sidebar is visible.
+    pub sidebar_visible: bool,
+    /// Last terminal width (for auto-hide detection).
+    pub term_width: u16,
 }
 
 impl App {
@@ -269,6 +276,9 @@ impl App {
             last_esc: std::time::Instant::now() - std::time::Duration::from_secs(10),
             quit_confirm: false,
             brain: None,
+            sidebar_click_map: Vec::new(),
+            sidebar_visible: true,
+            term_width: 0,
         };
         app.refresh()?;
         Ok(app)
@@ -282,7 +292,22 @@ impl App {
         self.poll_interactive_agents();
         self.tick_brians_brain();
         self.refresh_log();
+        self.auto_hide_sidebar();
         Ok(())
+    }
+
+    /// Auto-hide sidebar when in interactive agent mode with narrow console.
+    fn auto_hide_sidebar(&mut self) {
+        if let Ok((tw, _th)) = ratatui::crossterm::terminal::size() {
+            self.term_width = tw;
+            // Auto-hide if: interactive agent focused + terminal < 80 chars wide
+            if self.focus == Focus::Agent
+                && self.selected_agent().map_or(false, |a| matches!(a, AgentEntry::Interactive(_)))
+                && tw < 80
+            {
+                self.sidebar_visible = false;
+            }
+        }
     }
 
     pub fn tick_brians_brain(&mut self) {
@@ -313,6 +338,9 @@ impl App {
             }
             if brain.active {
                 brain.step();
+            } else {
+                // Advance the unfold animation
+                brain.tick();
             }
         }
     }
@@ -322,6 +350,11 @@ impl App {
         if let Some(ref mut brain) = self.brain {
             brain.reset();
         }
+    }
+
+    /// Toggle sidebar visibility.
+    pub fn toggle_sidebar(&mut self) {
+        self.sidebar_visible = !self.sidebar_visible;
     }
 
     fn refresh_daemon_status(&mut self) {

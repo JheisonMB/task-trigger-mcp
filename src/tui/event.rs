@@ -9,7 +9,7 @@
 //!   Focus:   background → scroll log, interactive → PTY, `EscEsc` → Preview
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use std::time::Duration;
 
 use super::agent::key_to_bytes;
@@ -36,10 +36,16 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
         };
 
         if event::poll(tick)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code, key.modifiers)?;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        handle_key(app, key.code, key.modifiers)?;
+                    }
                 }
+                Event::Mouse(mouse) => {
+                    handle_mouse(app, mouse.kind, mouse.row, mouse.column)?;
+                }
+                _ => {}
             }
         }
 
@@ -57,6 +63,52 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
+}
+
+// ── Mouse events ─────────────────────────────────────────────────────
+
+fn handle_mouse(app: &mut App, kind: MouseEventKind, _row: u16, _col: u16) -> Result<()> {
+    match kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let scroll_dir = if matches!(kind, MouseEventKind::ScrollUp) { 1i32 } else { -1i32 };
+            match app.focus {
+                Focus::Agent => {
+                    if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                        let idx = *idx;
+                        let agent = &mut app.interactive_agents[idx];
+                        if scroll_dir > 0 {
+                            let max = agent.max_scroll();
+                            agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                        } else {
+                            agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                        }
+                    } else if scroll_dir > 0 {
+                        app.scroll_log_up();
+                    } else {
+                        app.scroll_log_down();
+                    }
+                }
+                Focus::Preview | Focus::Home => {
+                    if scroll_dir > 0 {
+                        app.select_prev();
+                    } else {
+                        app.select_next();
+                    }
+                }
+                Focus::NewAgentDialog => {
+                    if let Some(dialog) = &mut app.new_agent_dialog {
+                        if scroll_dir > 0 && dialog.dir_selected > 0 {
+                            dialog.dir_selected -= 1;
+                        } else if scroll_dir < 0 && dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                            dialog.dir_selected += 1;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {} // Ignore mouse motion, clicks, etc.
+    }
+    Ok(())
 }
 
 // ── Home: screensaver — arrows enter Preview ────────────────────────
@@ -164,6 +216,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         app.last_esc = std::time::Instant::now();
     }
 
+    // Tab = toggle sidebar
+    if code == KeyCode::Tab {
+        app.toggle_sidebar();
+        return Ok(());
+    }
+
     let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {
         app.focus = Focus::Home;
         return Ok(());
@@ -176,7 +234,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     match code {
         KeyCode::Up if shift => {
             app.interactive_agents[idx].scroll_offset =
-                (app.interactive_agents[idx].scroll_offset + 3).min(max_scroll + 1);
+                (app.interactive_agents[idx].scroll_offset + 3).min(max_scroll);
             return Ok(());
         }
         KeyCode::Down if shift => {
@@ -186,7 +244,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         }
         KeyCode::PageUp => {
             app.interactive_agents[idx].scroll_offset =
-                (app.interactive_agents[idx].scroll_offset + 15).min(max_scroll + 1);
+                (app.interactive_agents[idx].scroll_offset + 15).min(max_scroll);
             return Ok(());
         }
         KeyCode::PageDown => {
@@ -197,9 +255,16 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         _ => {}
     }
 
-    // Typing resets scroll to live view
+    // Typing resets scroll to live view — but only for printable characters
+    // and Backspace/Enter so that arrow keys can still navigate agent history
     if app.interactive_agents[idx].scroll_offset > 0 {
-        app.interactive_agents[idx].scroll_offset = 0;
+        let resets_scroll = matches!(
+            code,
+            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Tab
+        );
+        if resets_scroll {
+            app.interactive_agents[idx].scroll_offset = 0;
+        }
     }
 
     let bytes = key_to_bytes(code, modifiers);

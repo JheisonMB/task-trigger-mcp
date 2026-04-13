@@ -18,7 +18,7 @@ const ERROR_COLOR: Color = Color::Rgb(229, 57, 53);
 const BG_SELECTED: Color = Color::Rgb(20, 40, 20);
 const INTERACTIVE_COLOR: Color = Color::Rgb(102, 187, 106);
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(0),
@@ -26,12 +26,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ])
     .areas(frame.area());
 
-    let [sidebar, panel] =
-        Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(body);
-
-    draw_header(frame, header, app);
-    draw_sidebar(frame, sidebar, app);
-    draw_log_panel(frame, panel, app);
+    if app.sidebar_visible {
+        let [sidebar, panel] =
+            Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(body);
+        draw_header(frame, header, app);
+        draw_sidebar(frame, sidebar, app);
+        draw_log_panel(frame, panel, app);
+    } else {
+        draw_header_full(frame, header, app);
+        draw_log_panel(frame, body, app);
+    }
     draw_footer(frame, footer, app);
 
     if app.new_agent_dialog.is_some() {
@@ -56,61 +60,76 @@ fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
         )
     };
 
-    let version = if app.daemon_version.is_empty() {
-        String::new()
-    } else {
-        format!(" v{}", app.daemon_version)
-    };
-
-    let interactive_count = app.interactive_agents.len();
-    let interactive_span = if interactive_count > 0 {
-        Span::styled(
-            format!("  {interactive_count} agent(s)"),
-            Style::default().fg(INTERACTIVE_COLOR),
-        )
-    } else {
-        Span::raw("")
-    };
-
     let line = Line::from(vec![
         Span::styled(
-            " 🌿 canopy",
+            " agent-canopy",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         status,
-        Span::styled(version, Style::default().fg(DIM)),
-        interactive_span,
     ]);
 
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
-    let bg_agents: Vec<(usize, &AgentEntry)> = app
+/// Full-width header (sidebar hidden): name left, daemon status right.
+fn draw_header_full(frame: &mut Frame, area: Rect, app: &App) {
+    let status_text = if app.daemon_running {
+        format!(" RUNNING (PID: {}) ", app.daemon_pid.unwrap_or(0))
+    } else {
+        " STOPPED ".to_string()
+    };
+    let status_w = status_text.chars().count() as u16;
+
+    let left = Paragraph::new(Line::from(Span::styled(
+        " agent-canopy",
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(left, area);
+
+    if area.width > status_w {
+        let status = Paragraph::new(Line::from(Span::styled(
+            status_text,
+            Style::default()
+                .fg(Color::Black)
+                .bg(if app.daemon_running { ACCENT } else { ERROR_COLOR }),
+        )));
+        let status_area = Rect::new(
+            area.x + area.width - status_w,
+            area.y,
+            status_w,
+            1,
+        );
+        frame.render_widget(status, status_area);
+    }
+}
+
+fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Clear click map from previous frame
+    app.sidebar_click_map.clear();
+
+    let bg_indices: Vec<usize> = app
         .agents
         .iter()
         .enumerate()
         .filter(|(_, a)| !matches!(a, AgentEntry::Interactive(_)))
+        .map(|(i, _)| i)
         .collect();
-    let ix_agents: Vec<(usize, &AgentEntry)> = app
+    let ix_indices: Vec<usize> = app
         .agents
         .iter()
         .enumerate()
         .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+        .map(|(i, _)| i)
         .collect();
 
-    let has_bg = !bg_agents.is_empty();
-    let has_ix = !ix_agents.is_empty();
+    let has_bg = !bg_indices.is_empty();
+    let has_ix = !ix_indices.is_empty();
 
     if !has_bg && !has_ix {
         let block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(DIM))
-            .title(Span::styled(
-                " Agents ",
-                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
-            ));
+            .border_style(Style::default().fg(DIM));
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let msg = Paragraph::new("  No agents registered").style(Style::default().fg(DIM));
@@ -124,8 +143,8 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
     // Calculate proportional split
     let (bg_area, ix_area) = if has_bg && has_ix {
-        let bg_needed = bg_agents.len() as u16 * card_h + 2;
-        let ix_needed = ix_agents.len() as u16 * card_h + 2;
+        let bg_needed = bg_indices.len() as u16 * card_h + 2;
+        let ix_needed = ix_indices.len() as u16 * card_h + 2;
         let total = bg_needed + ix_needed;
         if total <= area.height {
             let [top, bottom] =
@@ -148,14 +167,14 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         let border_color = if sidebar_focused { ACCENT } else { DIM };
         let block = Block::default()
             .title(Span::styled(
-                format!(" Background ({}) ", bg_agents.len()),
+                format!(" Background ({}) ", bg_indices.len()),
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(bg_area);
         frame.render_widget(block, bg_area);
-        draw_agent_list(frame, inner, &bg_agents, app, sidebar_focused, ACCENT);
+        draw_agent_list(frame, inner, &bg_indices, app, sidebar_focused, ACCENT);
     }
 
     if let Some(ix_area) = ix_area {
@@ -166,7 +185,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         };
         let block = Block::default()
             .title(Span::styled(
-                format!(" Interactive ({}) ", ix_agents.len()),
+                format!(" Interactive ({}) ", ix_indices.len()),
                 Style::default()
                     .fg(INTERACTIVE_COLOR)
                     .add_modifier(Modifier::BOLD),
@@ -178,7 +197,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
         draw_agent_list(
             frame,
             inner,
-            &ix_agents,
+            &ix_indices,
             app,
             sidebar_focused,
             INTERACTIVE_COLOR,
@@ -189,20 +208,23 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 fn draw_agent_list(
     frame: &mut Frame,
     area: Rect,
-    agents: &[(usize, &AgentEntry)],
-    app: &App,
-    show_selection: bool,
+    indices: &[usize],
+    app: &mut App,
+    _sidebar_focused: bool,
     accent: Color,
 ) {
     let card_h = 3u16;
     let mut y = area.y;
-    for (i, agent) in agents {
+    for &idx in indices {
         if y + card_h > area.y + area.height {
             break;
         }
         let card_area = Rect::new(area.x, y, area.width, card_h);
-        let selected = show_selection && *i == app.selected;
+        let agent = &app.agents[idx];
+        // Always show selection regardless of focus mode
+        let selected = idx == app.selected;
         draw_sidebar_card(frame, card_area, agent, app, selected, accent);
+        app.sidebar_click_map.push((idx, y, y + card_h));
         y += card_h;
     }
 }
@@ -330,6 +352,17 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
                         let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
                         frame.set_cursor_position((cx, cy));
                     }
+                    // Scroll indicator when scrolled into history
+                    if snap.scrolled {
+                        let scroll_msg = " ▒ SCROLLED ▒ ";
+                        let scroll_w = scroll_msg.len() as u16;
+                        let sx = inner.x + inner.width.saturating_sub(scroll_w + 1);
+                        let sy = inner.y;
+                        let bar = Paragraph::new(scroll_msg)
+                            .style(Style::default().fg(Color::Yellow).bg(Color::Black));
+                        let scroll_area = ratatui::layout::Rect::new(sx, sy, scroll_w, 1);
+                        frame.render_widget(bar, scroll_area);
+                    }
                     return;
                 }
             }
@@ -416,7 +449,7 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSn
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Home => "  ↑↓ select agent  n new agent  q quit  Esc confirm quit",
+        Focus::Home => "  ↑↓ select agent  n new  q quit  Esc confirm quit  Tab sidebar",
         Focus::Preview => {
             "  ↑↓ nav  Enter focus  D delete  r rerun  e/d toggle  n new  Esc home  q quit"
         }
@@ -425,15 +458,40 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn — all input goes to agent"
+                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn  Tab sidebar"
             } else {
                 "  ↑↓/jk scroll log  Esc back  q quit"
             }
         }
     };
 
-    let line = Line::from(Span::styled(hints, Style::default().fg(DIM)));
-    frame.render_widget(Paragraph::new(line), area);
+    let version = if app.daemon_version.is_empty() {
+        String::new()
+    } else {
+        format!(" agent-canopy v{} ", app.daemon_version)
+    };
+    let version_w = version.len() as u16;
+
+    // Hints on left, version on right
+    let hints_span = Span::styled(hints, Style::default().fg(DIM));
+    let version_span = Span::styled(
+        &version,
+        Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+    );
+
+    let hints_p = Paragraph::new(Line::from(hints_span));
+    frame.render_widget(hints_p, area);
+
+    if version_w > 0 && area.width > version_w {
+        let ver_area = Rect::new(
+            area.x + area.width - version_w,
+            area.y,
+            version_w,
+            1,
+        );
+        let ver_p = Paragraph::new(Line::from(version_span));
+        frame.render_widget(ver_p, ver_area);
+    }
 }
 
 fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
@@ -872,6 +930,25 @@ fn draw_brians_brain(frame: &mut Frame, area: Rect, brain: &super::brians_brain:
             let buf_cell = &mut buf[(x, y)];
             buf_cell.set_symbol(ch);
             buf_cell.set_style(Style::default().fg(color));
+        }
+    }
+    // Overlay the banner progressively during pre-activation (unfold from center row).
+    if !brain.active {
+        let accent_dim = Color::Rgb(80, 140, 80);
+        for br in brain.visible_overlay() {
+            if br.row as u16 >= area.height {
+                continue;
+            }
+            for &(c, is_shade) in &br.cells {
+                if c as u16 >= area.width {
+                    continue;
+                }
+                let x = area.x + c as u16;
+                let y = area.y + br.row as u16;
+                let buf_cell = &mut buf[(x, y)];
+                buf_cell.set_symbol(if is_shade { "░" } else { "█" });
+                buf_cell.set_style(Style::default().fg(if is_shade { accent_dim } else { ACCENT }));
+            }
         }
     }
 }
