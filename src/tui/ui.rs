@@ -247,42 +247,42 @@ fn draw_sidebar_card(
         _ => ACCENT,
     };
 
-    // Determine status info
-    let (status_color, status_label, agent_type, type_detail) = match agent {
+    // Determine status info for accent bar color
+    let (status_color, agent_type, type_detail) = match agent {
         AgentEntry::Task(t) => {
             let has_active = app.active_runs.contains_key(&t.id);
-            let (color, label) = if !t.enabled {
-                (STATUS_DISABLED, "DISABLED")
+            let color = if !t.enabled {
+                STATUS_DISABLED
             } else if has_active {
-                (STATUS_RUNNING, "RUNNING")
+                STATUS_RUNNING
             } else if t.last_run_ok == Some(true) {
-                (STATUS_OK, "OK")
+                STATUS_OK
             } else if t.last_run_ok == Some(false) {
-                (STATUS_FAIL, "FAILED")
+                STATUS_FAIL
             } else {
-                (STATUS_OK, "IDLE")
+                STATUS_OK
             };
-            (color, label, "cron", t.cli.as_str())
+            (color, "cron", t.cli.as_str())
         }
         AgentEntry::Watcher(w) => {
             let has_active = app.active_runs.contains_key(&w.id);
-            let (color, label) = if !w.enabled {
-                (STATUS_DISABLED, "DISABLED")
+            let color = if !w.enabled {
+                STATUS_DISABLED
             } else if has_active {
-                (STATUS_RUNNING, "RUNNING")
+                STATUS_RUNNING
             } else {
-                (STATUS_OK, "WATCHING")
+                STATUS_OK
             };
-            (color, label, "watch", w.cli.as_str())
+            (color, "watch", w.cli.as_str())
         }
         AgentEntry::Interactive(idx) => {
             let a = &app.interactive_agents[*idx];
-            let (color, label) = match &a.status {
-                AgentStatus::Running => (STATUS_RUNNING, "RUNNING"),
-                AgentStatus::Exited(0) => (STATUS_OK, "OK"),
-                AgentStatus::Exited(_) => (STATUS_FAIL, "FAILED"),
+            let color = match &a.status {
+                AgentStatus::Running => STATUS_RUNNING,
+                AgentStatus::Exited(0) => STATUS_OK,
+                AgentStatus::Exited(_) => STATUS_FAIL,
             };
-            (color, label, "pty", a.cli.as_str())
+            (color, "pty", a.cli.as_str())
         }
     };
 
@@ -315,11 +315,17 @@ fn draw_sidebar_card(
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
 
-    // Line 3: ▌ + status label
+    // Line 3: ▌ + working dir (last 2 segments)
     if area.height >= 3 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
-        let status_text = Span::styled(status_label, Style::default().fg(status_color));
-        let line = Line::from(vec![accent_bar, Span::raw(" "), status_text]);
+        let work_dir = match agent {
+            AgentEntry::Task(t) => t.working_dir.as_deref(),
+            AgentEntry::Watcher(w) => Some(w.path.as_str()),
+            AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
+        };
+        let dir_text = work_dir.map(last_two_segments).unwrap_or_default();
+        let dir_span = Span::styled(dir_text, Style::default().fg(DIM));
+        let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);
         let r = Rect::new(area.x, area.y + 2, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
@@ -718,6 +724,19 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         String::new()
     }
+}
+
+/// Extract the last two path segments, e.g. `/a/b/c/d` → `c/d`.
+fn last_two_segments(path: &str) -> String {
+    let trimmed = path.trim_end_matches('/');
+    let parts: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return "/".to_string();
+    }
+    if parts.len() <= 2 {
+        return trimmed.to_string();
+    }
+    format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
 }
 
 fn draw_quit_confirm(frame: &mut Frame) {
