@@ -16,7 +16,7 @@ use crate::application::ports::{
 use crate::db::Database;
 use crate::domain::models::{Cli, RunLog, Task, Watcher};
 
-use super::agent::InteractiveAgent;
+use super::agent::{AgentStatus, InteractiveAgent};
 
 /// Unified entry in the sidebar.
 pub enum AgentEntry {
@@ -394,11 +394,6 @@ impl App {
         }
     }
 
-    /// Toggle sidebar visibility.
-    pub fn toggle_sidebar(&mut self) {
-        self.sidebar_visible = !self.sidebar_visible;
-    }
-
     /// Cycle to the next interactive agent and go to focus mode.
     pub fn next_interactive(&mut self) {
         let interactive_indices: Vec<usize> = self
@@ -476,6 +471,34 @@ impl App {
     fn poll_interactive_agents(&mut self) {
         for agent in &mut self.interactive_agents {
             agent.poll();
+        }
+
+        // Remove exited agents
+        let mut removed_indices = Vec::new();
+        for (i, agent) in self.interactive_agents.iter().enumerate() {
+            if matches!(agent.status, AgentStatus::Exited(_)) {
+                removed_indices.push(i);
+            }
+        }
+        // Remove in reverse order to avoid index shifting
+        removed_indices.sort_unstable();
+        removed_indices.reverse();
+
+        for idx in &removed_indices {
+            self.interactive_agents.remove(*idx);
+        }
+
+        // Rebuild agents list to reflect removals
+        if !removed_indices.is_empty() {
+            let _ = self.refresh_agents();
+
+            // If the currently selected agent was removed, exit focus mode
+            if self.focus == Focus::Agent {
+                self.focus = Focus::Preview;
+                if self.selected >= self.agents.len() && !self.agents.is_empty() {
+                    self.selected = self.agents.len() - 1;
+                }
+            }
         }
     }
 

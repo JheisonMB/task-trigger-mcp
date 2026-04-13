@@ -170,11 +170,6 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     // Tab = cycle to next interactive agent (focus mode)
-    // Shift+Tab = toggle sidebar
-    if code == KeyCode::BackTab {
-        app.toggle_sidebar();
-        return Ok(());
-    }
     if code == KeyCode::Tab {
         app.next_interactive();
         return Ok(());
