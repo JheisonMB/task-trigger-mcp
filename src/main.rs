@@ -103,6 +103,12 @@ async fn main() -> Result<()> {
         Some(Commands::Stdio) => handle_stdio().await,
         Some(Commands::Serve) => handle_http_server(cli.port).await,
         Some(Commands::Tui) => {
+            // Auto-setup if not configured
+            if setup::needs_setup() {
+                setup::run_setup_silent()?;
+            }
+            // Background daily registry refresh
+            setup::maybe_refresh_registry();
             tui::run_tui()?;
             Ok(())
         }
@@ -112,9 +118,12 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            if !setup::is_configured() {
-                setup::run_setup()?;
+            // Auto-setup if not configured
+            if setup::needs_setup() {
+                setup::run_setup_silent()?;
             }
+            // Background daily registry refresh
+            setup::maybe_refresh_registry();
             tui::run_tui()?;
             Ok(())
         }

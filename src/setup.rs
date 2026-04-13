@@ -12,6 +12,9 @@ use std::path::Path;
 const REGISTRY_URL: &str =
     "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/platforms.json";
 
+/// How often to refresh the registry in the background (24 hours).
+const REGISTRY_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
 #[derive(Deserialize, Clone)]
 pub struct RegistryRaw {
     pub platforms: Vec<Platform>,
@@ -60,6 +63,7 @@ impl Platform {
     }
 }
 
+#[allow(dead_code)]
 pub fn is_configured() -> bool {
     dirs::home_dir()
         .map(|h| h.join(".canopy/.configured").exists())
@@ -424,4 +428,127 @@ fn is_process_running(pid: u32) -> bool {
         let _ = pid;
         false
     }
+}
+
+/// Check if auto-setup should run (no CLI config found).
+pub fn needs_setup() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    !home.join(".canopy/cli_config.json").exists()
+}
+
+/// Run setup silently (no prompts, auto-detect all platforms).
+pub fn run_setup_silent() -> Result<()> {
+    let home = dirs::home_dir().context("No home directory")?;
+    let mut registry = fetch_registry()?;
+
+    for p in &mut registry.platforms {
+        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
+            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
+        }
+    }
+
+    // Auto-detect all installed platforms
+    let detected: Vec<&Platform> = registry
+        .platforms
+        .iter()
+        .filter(|p| home.join(&p.config_path).exists())
+        .collect();
+
+    // Configure MCP for all detected platforms
+    for p in &detected {
+        let path = home.join(&p.config_path);
+        let servers_parent = &p.mcp_servers_key[0];
+
+        for old_key in &p.deprecated_keys {
+            let _ = remove_json_key(&path, servers_parent, old_key);
+        }
+
+        let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
+        key_refs.push(&p.canopy_entry_key);
+
+        let _ = upsert_json_key(&path, &key_refs, &p.canopy_entry);
+    }
+
+    // Save CLI config
+    let platforms_with_cli: Vec<PlatformWithCli> = detected
+        .iter()
+        .map(|p| p.to_platform_with_cli())
+        .filter(|p| p.cli.is_some())
+        .collect();
+
+    let cli_registry =
+        crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
+    let canopy_dir = home.join(".canopy");
+    std::fs::create_dir_all(&canopy_dir)?;
+    cli_registry.save(&canopy_dir.join("cli_config.json"))?;
+
+    // Mark configured
+    let marker = home.join(".canopy/.configured");
+    std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
+
+    Ok(())
+}
+
+/// Refresh the registry config in the background if it's older than 24h.
+/// Returns true if a refresh was performed.
+pub fn maybe_refresh_registry() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let config_path = home.join(".canopy/cli_config.json");
+
+    // Check if file exists and when it was last modified
+    let last_modified = match std::fs::metadata(&config_path) {
+        Ok(meta) => meta.modified().ok(),
+        Err(_) => return false,
+    };
+
+    let needs_refresh = match last_modified {
+        Some(time) => time.elapsed().unwrap_or_default() > REGISTRY_REFRESH_INTERVAL,
+        None => true,
+    };
+
+    if !needs_refresh {
+        return false;
+    }
+
+    // Fetch and update in background thread
+    std::thread::spawn(move || {
+        let _ = refresh_registry_inner(&home);
+    });
+
+    true
+}
+
+fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
+    let mut registry = fetch_registry()?;
+
+    for p in &mut registry.platforms {
+        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
+            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
+        }
+    }
+
+    let detected: Vec<&Platform> = registry
+        .platforms
+        .iter()
+        .filter(|p| home.join(&p.config_path).exists())
+        .collect();
+
+    let platforms_with_cli: Vec<PlatformWithCli> = detected
+        .iter()
+        .map(|p| p.to_platform_with_cli())
+        .filter(|p| p.cli.is_some())
+        .collect();
+
+    let cli_registry =
+        crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
+
+    if !cli_registry.available_clis.is_empty() {
+        cli_registry.save(&home.join(".canopy/cli_config.json"))?;
+    }
+
+    Ok(())
 }
