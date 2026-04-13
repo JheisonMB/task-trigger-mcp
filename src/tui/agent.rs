@@ -11,6 +11,8 @@ use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
+use ratatui::style::Color;
+
 use crate::domain::models::Cli;
 
 /// Status of an interactive agent.
@@ -24,10 +26,13 @@ pub enum AgentStatus {
 pub struct InteractiveAgent {
     pub id: String,
     pub cli: Cli,
+    #[allow(dead_code)]
     pub working_dir: String,
     #[allow(dead_code)]
     pub started_at: DateTime<Utc>,
     pub status: AgentStatus,
+    /// Accent color for this agent's TUI elements (from `CliConfig`).
+    pub accent_color: Color,
     /// PTY writer — send bytes to the agent's stdin.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Virtual terminal screen — fed by PTY output (for live rendering with colors).
@@ -49,6 +54,7 @@ impl InteractiveAgent {
         cols: u16,
         rows: u16,
         interactive_args: Option<&str>,
+        accent_color: Color,
     ) -> Result<Self> {
         let pty_system = native_pty_system();
 
@@ -103,6 +109,7 @@ impl InteractiveAgent {
             working_dir: working_dir.to_string(),
             started_at: Utc::now(),
             status: AgentStatus::Running,
+            accent_color,
             writer: Arc::new(Mutex::new(writer)),
             vt,
             child: Arc::new(Mutex::new(child)),

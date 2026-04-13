@@ -28,6 +28,9 @@ pub struct CliConfig {
     /// Arguments to pass when launching in interactive (TUI) mode.
     #[serde(default)]
     pub interactive_args: Option<String>,
+    /// RGB accent color for this CLI's agents in the TUI.
+    #[serde(default)]
+    pub accent_color: Option<[u8; 3]>,
 }
 
 /// Persisted CLI configuration for available CLIs.
