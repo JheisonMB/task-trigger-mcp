@@ -56,31 +56,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
-    let status = if app.daemon_running {
-        Span::styled(
-            format!(" RUNNING (PID: {}) ", app.daemon_pid.unwrap_or(0)),
-            Style::default().fg(Color::Black).bg(ACCENT),
-        )
-    } else {
-        Span::styled(
-            " STOPPED ",
-            Style::default().fg(Color::Black).bg(ERROR_COLOR),
-        )
-    };
-
-    let line = Line::from(vec![
-        Span::styled(
-            " agent-canopy",
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        status,
-    ]);
-
-    frame.render_widget(Paragraph::new(line), area);
+    draw_header_full(frame, area, app);
 }
 
-/// Full-width header (sidebar hidden): name left, daemon status right.
 fn draw_header_full(frame: &mut Frame, area: Rect, app: &App) {
     let status_text = if app.daemon_running {
         format!(" RUNNING (PID: {}) ", app.daemon_pid.unwrap_or(0))
