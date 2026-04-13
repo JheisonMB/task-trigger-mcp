@@ -215,18 +215,23 @@ fn draw_agent_list(
     accent: Color,
 ) {
     let card_h = 3u16;
+    let row_h = 4u16; // 3 lines + 1 spacer
     let mut y = area.y;
-    for &idx in indices {
+    for (i, &idx) in indices.iter().enumerate() {
         if y + card_h > area.y + area.height {
             break;
         }
         let card_area = Rect::new(area.x, y, area.width, card_h);
         let agent = &app.agents[idx];
-        // Always show selection regardless of focus mode
         let selected = idx == app.selected;
         draw_sidebar_card(frame, card_area, agent, app, selected, accent);
         app.sidebar_click_map.push((idx, y, y + card_h));
-        y += card_h;
+        // Add spacer between cards (but not after the last visible one)
+        if i < indices.len() - 1 {
+            y += row_h;
+        } else {
+            y += card_h;
+        }
     }
 }
 
@@ -536,6 +541,8 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         return;
     };
 
+    let accent = dialog.selected_accent_color();
+
     let height = match dialog.task_type {
         super::app::NewTaskType::Interactive => 16,
         super::app::NewTaskType::Scheduled => 16,
@@ -547,7 +554,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let block = Block::default()
         .title(" New Task ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(INTERACTIVE_COLOR))
+        .border_style(Style::default().fg(accent))
         .style(Style::default().bg(Color::Rgb(15, 25, 15)));
 
     let inner = block.inner(area);
@@ -565,7 +572,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         if is_focused(field) {
             Style::default()
                 .fg(Color::Black)
-                .bg(INTERACTIVE_COLOR)
+                .bg(accent)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
@@ -584,7 +591,14 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  CLI:   ", Style::default().fg(DIM)),
-            Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(1)),
+            if is_focused(1) {
+                Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(1))
+            } else {
+                Span::styled(
+                    format!(" ◀ {cli_name} ▶ "),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                )
+            },
         ]),
         Line::from(""),
         Line::from(vec![
