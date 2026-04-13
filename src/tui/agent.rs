@@ -228,10 +228,36 @@ pub struct VtCell {
 }
 
 /// Convert vt100 color to ratatui color.
+///
+/// For the standard 16 ANSI colors (indices 0-15), we map to explicit RGB
+/// values instead of `Color::Indexed`, because ratatui's indexed palette
+/// uses terminal-dependent colors that don't match what the agent expects.
 fn convert_color(color: vt100::Color) -> ratatui::style::Color {
     use ratatui::style::Color;
     match color {
         vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) if i < 16 => {
+            // Standard 16 ANSI colors with explicit RGB values.
+            const ANSI_16: [Color; 16] = [
+                Color::Rgb(0, 0, 0),         // 0  black
+                Color::Rgb(170, 0, 0),       // 1  red
+                Color::Rgb(0, 170, 0),       // 2  green
+                Color::Rgb(170, 85, 0),      // 3  yellow
+                Color::Rgb(0, 0, 170),       // 4  blue
+                Color::Rgb(170, 0, 170),     // 5  magenta
+                Color::Rgb(0, 170, 170),     // 6  cyan
+                Color::Rgb(170, 170, 170),   // 7  white (dark white = light gray)
+                Color::Rgb(85, 85, 85),      // 8  bright black (gray)
+                Color::Rgb(255, 85, 85),     // 9  bright red
+                Color::Rgb(85, 255, 85),     // 10 bright green
+                Color::Rgb(255, 255, 85),    // 11 bright yellow
+                Color::Rgb(85, 85, 255),     // 12 bright blue
+                Color::Rgb(255, 85, 255),    // 13 bright magenta
+                Color::Rgb(85, 255, 255),    // 14 bright cyan
+                Color::Rgb(255, 255, 255),   // 15 bright white
+            ];
+            ANSI_16[i as usize]
+        }
         vt100::Color::Idx(i) => Color::Indexed(i),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
