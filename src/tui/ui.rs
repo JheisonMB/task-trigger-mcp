@@ -333,14 +333,13 @@ fn draw_sidebar_card(
 
 fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let border_color = match app.focus {
-        Focus::Agent => app
+        Focus::Agent | Focus::Preview => app
             .selected_agent()
-            .and_then(|a| match a {
-                AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].accent_color),
-                _ => None,
+            .map(|a| match a {
+                AgentEntry::Interactive(idx) => app.interactive_agents[*idx].accent_color,
+                _ => ACCENT,
             })
-            .unwrap_or(INTERACTIVE_COLOR),
-        Focus::Preview => ACCENT,
+            .unwrap_or(DIM),
         _ => DIM,
     };
 
