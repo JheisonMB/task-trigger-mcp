@@ -17,6 +17,10 @@ const DIM: Color = Color::Rgb(150, 150, 170);
 const ERROR_COLOR: Color = Color::Rgb(229, 57, 53);
 const BG_SELECTED: Color = Color::Rgb(20, 40, 20);
 const INTERACTIVE_COLOR: Color = Color::Rgb(102, 187, 106);
+const STATUS_DISABLED: Color = Color::Rgb(120, 120, 120);
+const STATUS_RUNNING: Color = Color::Rgb(76, 175, 80);
+const STATUS_OK: Color = Color::Rgb(66, 165, 245);
+const STATUS_FAIL: Color = Color::Rgb(229, 57, 53);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [header, body, footer] = Layout::vertical([
@@ -90,16 +94,13 @@ fn draw_header_full(frame: &mut Frame, area: Rect, app: &App) {
     if area.width > status_w {
         let status = Paragraph::new(Line::from(Span::styled(
             status_text,
-            Style::default()
-                .fg(Color::Black)
-                .bg(if app.daemon_running { ACCENT } else { ERROR_COLOR }),
+            Style::default().fg(Color::Black).bg(if app.daemon_running {
+                ACCENT
+            } else {
+                ERROR_COLOR
+            }),
         )));
-        let status_area = Rect::new(
-            area.x + area.width - status_w,
-            area.y,
-            status_w,
-            1,
-        );
+        let status_area = Rect::new(area.x + area.width - status_w, area.y, status_w, 1);
         frame.render_widget(status, status_area);
     }
 }
@@ -235,68 +236,99 @@ fn draw_sidebar_card(
     agent: &AgentEntry,
     app: &App,
     selected: bool,
-    accent: Color,
+    _accent: Color,
 ) {
-    let (icon, id, info) = match agent {
+    let w = area.width as usize;
+    let bg = if selected { BG_SELECTED } else { Color::Reset };
+
+    // Resolve accent color per-agent type
+    let accent = match agent {
+        AgentEntry::Interactive(idx) => app.interactive_agents[*idx].accent_color,
+        _ => ACCENT,
+    };
+
+    // Determine status info
+    let (status_color, status_label, agent_type, type_detail) = match agent {
         AgentEntry::Task(t) => {
             let has_active = app.active_runs.contains_key(&t.id);
-            let icon = status_icon(t.enabled, has_active, t.last_run_ok);
-            let info = format!("cron · {}", t.cli);
-            (icon, t.id.as_str(), info)
+            let (color, label) = if !t.enabled {
+                (STATUS_DISABLED, "DISABLED")
+            } else if has_active {
+                (STATUS_RUNNING, "RUNNING")
+            } else if t.last_run_ok == Some(true) {
+                (STATUS_OK, "OK")
+            } else if t.last_run_ok == Some(false) {
+                (STATUS_FAIL, "FAILED")
+            } else {
+                (STATUS_OK, "IDLE")
+            };
+            (color, label, "cron", t.cli.as_str())
         }
         AgentEntry::Watcher(w) => {
             let has_active = app.active_runs.contains_key(&w.id);
-            let icon = if !w.enabled {
-                "⚫"
+            let (color, label) = if !w.enabled {
+                (STATUS_DISABLED, "DISABLED")
             } else if has_active {
-                "🟢"
+                (STATUS_RUNNING, "RUNNING")
             } else {
-                "👁"
+                (STATUS_OK, "WATCHING")
             };
-            let info = format!("watch · {}", w.cli);
-            (icon, w.id.as_str(), info)
+            (color, label, "watch", w.cli.as_str())
         }
         AgentEntry::Interactive(idx) => {
             let a = &app.interactive_agents[*idx];
-            let icon = match a.status {
-                AgentStatus::Running => "🟢",
-                AgentStatus::Exited(0) => "✅",
-                AgentStatus::Exited(_) => "🔴",
+            let (color, label) = match &a.status {
+                AgentStatus::Running => (STATUS_RUNNING, "RUNNING"),
+                AgentStatus::Exited(0) => (STATUS_OK, "OK"),
+                AgentStatus::Exited(_) => (STATUS_FAIL, "FAILED"),
             };
-            let info = format!("{} · {}", a.cli, truncate_path(&a.working_dir));
-            (icon, a.id.as_str(), info)
+            (color, label, "pty", a.cli.as_str())
         }
     };
 
-    let bg = if selected { BG_SELECTED } else { Color::Reset };
-    let w = area.width as usize;
-
+    // Line 1: ▌ + id
     if area.height >= 1 {
-        let line = Line::from(vec![
-            Span::raw(format!(" {icon} ")),
-            Span::styled(
-                truncate_str(id, w.saturating_sub(4)),
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(if selected { accent } else { Color::White }),
-            ),
-        ]);
+        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
+        let id_text = Span::styled(
+            truncate_str(agent.id(app), w.saturating_sub(3)),
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .fg(if selected { accent } else { Color::White }),
+        );
+        let line = Line::from(vec![accent_bar, Span::raw(" "), id_text]);
         let r = Rect::new(area.x, area.y, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
+
+    // Line 2: type + detail
     if area.height >= 2 {
         let line = Line::from(Span::styled(
-            format!("    {}", truncate_str(&info, w.saturating_sub(4))),
+            format!("  {} · {}", agent_type, truncate_str(type_detail, w.saturating_sub(6))),
             Style::default().fg(DIM),
         ));
         let r = Rect::new(area.x, area.y + 1, area.width, 1);
+        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
+    }
+
+    // Line 3: ▌ + status label
+    if area.height >= 3 {
+        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
+        let status_text = Span::styled(status_label, Style::default().fg(status_color));
+        let line = Line::from(vec![accent_bar, Span::raw(" "), status_text]);
+        let r = Rect::new(area.x, area.y + 2, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
 }
 
 fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let border_color = match app.focus {
-        Focus::Agent => INTERACTIVE_COLOR,
+        Focus::Agent => app
+            .selected_agent()
+            .and_then(|a| match a {
+                AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].accent_color),
+                _ => None,
+            })
+            .unwrap_or(INTERACTIVE_COLOR),
         Focus::Preview => ACCENT,
         _ => DIM,
     };
@@ -468,7 +500,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let version = if app.daemon_version.is_empty() {
         String::new()
     } else {
-        format!(" agent-canopy v{} ", app.daemon_version)
+        format!(" v{} ", app.daemon_version)
     };
     let version_w = version.len() as u16;
 
@@ -483,12 +515,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(hints_p, area);
 
     if version_w > 0 && area.width > version_w {
-        let ver_area = Rect::new(
-            area.x + area.width - version_w,
-            area.y,
-            version_w,
-            1,
-        );
+        let ver_area = Rect::new(area.x + area.width - version_w, area.y, version_w, 1);
         let ver_p = Paragraph::new(Line::from(version_span));
         frame.render_widget(ver_p, ver_area);
     }
@@ -505,11 +532,13 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         super::app::NewTaskType::Watcher => 14,
     };
     let area = centered_rect(65, height, frame.area());
+    frame.render_widget(Clear, area);
 
     let block = Block::default()
         .title(" New Task ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(INTERACTIVE_COLOR));
+        .border_style(Style::default().fg(INTERACTIVE_COLOR))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -628,7 +657,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 Style::default().fg(Color::White)
             };
 
-            let icon = if entry == ".." { "📁" } else { "📂" };
+            let icon = if entry == ".." { ".." } else { ">" };
             lines.push(Line::from(Span::styled(
                 format!("    {} {}", icon, entry),
                 entry_style,
@@ -676,29 +705,6 @@ fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     center
 }
 
-fn status_icon(enabled: bool, running: bool, last_ok: Option<bool>) -> &'static str {
-    if !enabled {
-        return "⚫";
-    }
-    if running {
-        return "🟢";
-    }
-    match last_ok {
-        Some(true) => "🔵",
-        Some(false) => "🔴",
-        None => "🔵",
-    }
-}
-
-#[allow(dead_code)]
-fn run_result_icon(last_ok: Option<bool>) -> &'static str {
-    match last_ok {
-        Some(true) => "✅",
-        Some(false) => "❌",
-        None => "",
-    }
-}
-
 fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
@@ -707,16 +713,6 @@ fn truncate_str(s: &str, max: usize) -> String {
     } else {
         String::new()
     }
-}
-
-fn truncate_path(path: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        let home_str = home.to_string_lossy();
-        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
-            return format!("~{rest}");
-        }
-    }
-    path.to_string()
 }
 
 fn draw_quit_confirm(frame: &mut Frame) {
@@ -780,22 +776,22 @@ fn draw_canopy_banner_preview(frame: &mut Frame, area: Rect) {
 
 fn draw_task_details(frame: &mut Frame, area: Rect, task: &crate::domain::models::Task, app: &App) {
     let has_active = app.active_runs.contains_key(&task.id);
-    let status = if !task.enabled {
-        "⚫ Disabled"
+    let (status_text, status_color) = if !task.enabled {
+        ("DISABLED", STATUS_DISABLED)
     } else if has_active {
-        "🟢 Running"
+        ("RUNNING", STATUS_RUNNING)
     } else if task.last_run_ok == Some(true) {
-        "🔵 OK"
+        ("OK", STATUS_OK)
     } else if task.last_run_ok == Some(false) {
-        "🔴 Failed"
+        ("FAILED", STATUS_FAIL)
     } else {
-        "🔵 Never run"
+        ("IDLE", STATUS_OK)
     };
 
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Status:  ", Style::default().fg(DIM)),
-            Span::styled(status, Style::default().fg(ACCENT)),
+            Span::styled(status_text, Style::default().fg(status_color)),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -851,17 +847,16 @@ fn draw_task_details(frame: &mut Frame, area: Rect, task: &crate::domain::models
 }
 
 fn draw_watcher_details(frame: &mut Frame, area: Rect, watcher: &crate::domain::models::Watcher) {
+    let (status_text, status_color) = if watcher.enabled {
+        ("ACTIVE", STATUS_RUNNING)
+    } else {
+        ("DISABLED", STATUS_DISABLED)
+    };
+
     let lines = vec![
         Line::from(vec![
             Span::styled("Status:  ", Style::default().fg(DIM)),
-            Span::styled(
-                if watcher.enabled {
-                    "🟢 Active"
-                } else {
-                    "⚫ Disabled"
-                },
-                Style::default().fg(ACCENT),
-            ),
+            Span::styled(status_text, Style::default().fg(status_color)),
         ]),
         Line::from(""),
         Line::from(vec![
