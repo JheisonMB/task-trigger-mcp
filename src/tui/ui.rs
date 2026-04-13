@@ -290,7 +290,7 @@ fn draw_sidebar_card(
     if area.height >= 1 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
         let id_text = Span::styled(
-            truncate_str(agent.id(app), w.saturating_sub(3)),
+            agent.id(app),
             Style::default()
                 .add_modifier(Modifier::BOLD)
                 .fg(if selected { accent } else { Color::White }),
@@ -300,12 +300,17 @@ fn draw_sidebar_card(
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
 
-    // Line 2: type + detail
+    // Line 2: ▌ + type + detail
     if area.height >= 2 {
-        let line = Line::from(Span::styled(
-            format!("  {} · {}", agent_type, truncate_str(type_detail, w.saturating_sub(6))),
-            Style::default().fg(DIM),
-        ));
+        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
+        let line = Line::from(vec![
+            accent_bar,
+            Span::raw(" "),
+            Span::styled(
+                format!("{} · {}", agent_type, truncate_str(type_detail, w.saturating_sub(6))),
+                Style::default().fg(DIM),
+            ),
+        ]);
         let r = Rect::new(area.x, area.y + 1, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
