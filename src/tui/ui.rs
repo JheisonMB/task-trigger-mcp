@@ -328,7 +328,10 @@ fn draw_sidebar_card(
             AgentEntry::Watcher(w) => Some(w.path.as_str()),
             AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
         };
-        let dir_text = work_dir.map(last_two_segments).unwrap_or_default();
+        let dir_text = work_dir
+            .filter(|d| !d.is_empty())
+            .map(last_two_segments)
+            .unwrap_or_else(|| "/".to_string());
         let dir_span = Span::styled(dir_text, Style::default().fg(DIM));
         let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);
         let r = Rect::new(area.x, area.y + 2, area.width, 1);

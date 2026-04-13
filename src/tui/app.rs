@@ -590,17 +590,20 @@ impl App {
                 }
                 let cli = dialog.selected_cli();
                 let id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let working_dir = if dialog.working_dir.is_empty() {
+                    std::env::current_dir()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| "/".to_string())
+                } else {
+                    dialog.working_dir.clone()
+                };
                 let task = crate::domain::models::Task {
                     id,
                     prompt: dialog.prompt.clone(),
                     schedule_expr: dialog.cron_expr.clone(),
                     cli,
                     model,
-                    working_dir: if dialog.working_dir.is_empty() {
-                        None
-                    } else {
-                        Some(dialog.working_dir.clone())
-                    },
+                    working_dir: Some(working_dir),
                     enabled: true,
                     created_at: Utc::now(),
                     last_run_at: None,
