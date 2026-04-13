@@ -264,6 +264,8 @@ pub struct App {
     pub sidebar_visible: bool,
     /// Last terminal width (for auto-hide detection).
     pub term_width: u16,
+    /// Show color legend overlay.
+    pub show_legend: bool,
 }
 
 impl App {
@@ -290,6 +292,7 @@ impl App {
             sidebar_click_map: Vec::new(),
             sidebar_visible: true,
             term_width: 0,
+            show_legend: false,
         };
         app.refresh()?;
         Ok(app)
@@ -304,21 +307,47 @@ impl App {
         self.tick_brians_brain();
         self.refresh_log();
         self.auto_hide_sidebar();
+        self.resize_interactive_agents();
         Ok(())
     }
 
     /// Auto-hide sidebar when in interactive agent mode with narrow console.
+    /// Auto-show when terminal is wide enough again.
     fn auto_hide_sidebar(&mut self) {
         if let Ok((tw, _th)) = ratatui::crossterm::terminal::size() {
             self.term_width = tw;
-            // Auto-hide if: interactive agent focused + terminal < 80 chars wide
-            if self.focus == Focus::Agent
+            let should_hide = self.focus == Focus::Agent
                 && self
                     .selected_agent()
                     .is_some_and(|a| matches!(a, AgentEntry::Interactive(_)))
-                && tw < 80
-            {
+                && tw < 80;
+            let should_show = tw >= 80 && !self.sidebar_visible;
+            if should_hide {
                 self.sidebar_visible = false;
+            } else if should_show {
+                self.sidebar_visible = true;
+            }
+        }
+    }
+
+    /// Resize interactive agents' PTY to match current terminal dimensions.
+    fn resize_interactive_agents(&mut self) {
+        let Ok((tw, th)) = ratatui::crossterm::terminal::size() else {
+            return;
+        };
+        let sidebar_w = if self.sidebar_visible { 26 } else { 0 };
+        // Account for borders: left border + right border = 2 chars
+        let cols = tw.saturating_sub(sidebar_w).saturating_sub(2);
+        // Account for header + footer borders = 2 rows
+        let rows = th.saturating_sub(2);
+
+        if cols == 0 || rows == 0 {
+            return;
+        }
+
+        for agent in &mut self.interactive_agents {
+            if agent.last_pty_cols != cols || agent.last_pty_rows != rows {
+                agent.resize(cols, rows);
             }
         }
     }
@@ -368,6 +397,30 @@ impl App {
     /// Toggle sidebar visibility.
     pub fn toggle_sidebar(&mut self) {
         self.sidebar_visible = !self.sidebar_visible;
+    }
+
+    /// Cycle to the next interactive agent and go to focus mode.
+    pub fn next_interactive(&mut self) {
+        let interactive_indices: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+            .map(|(i, _)| i)
+            .collect();
+
+        if interactive_indices.is_empty() {
+            return;
+        }
+
+        let current_pos = interactive_indices
+            .iter()
+            .position(|&i| i == self.selected)
+            .unwrap_or(0);
+
+        let next_pos = (current_pos + 1) % interactive_indices.len();
+        self.selected = interactive_indices[next_pos];
+        self.focus = Focus::Agent;
     }
 
     fn refresh_daemon_status(&mut self) {
@@ -665,6 +718,8 @@ impl App {
         if self.selected >= self.agents.len() && !self.agents.is_empty() {
             self.selected = self.agents.len() - 1;
         }
+        // Exit focus mode after kill
+        self.focus = Focus::Preview;
     }
 
     pub fn delete_selected(&mut self) -> Result<()> {
@@ -687,6 +742,8 @@ impl App {
         if self.selected >= self.agents.len() && !self.agents.is_empty() {
             self.selected = self.agents.len() - 1;
         }
+        // Exit focus mode after delete
+        self.focus = Focus::Preview;
         Ok(())
     }
 

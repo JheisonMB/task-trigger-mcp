@@ -41,6 +41,9 @@ pub struct InteractiveAgent {
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     /// Scroll offset (0 = bottom/live, positive = scrolled up).
     pub scroll_offset: usize,
+    /// Last known PTY dimensions (for resize detection).
+    pub last_pty_cols: u16,
+    pub last_pty_rows: u16,
 }
 
 impl InteractiveAgent {
@@ -114,6 +117,8 @@ impl InteractiveAgent {
             vt,
             child: Arc::new(Mutex::new(child)),
             scroll_offset: 0,
+            last_pty_cols: cols,
+            last_pty_rows: rows,
         })
     }
 
@@ -192,6 +197,15 @@ impl InteractiveAgent {
             let _ = child.wait();
         }
         self.status = AgentStatus::Exited(-9);
+    }
+
+    /// Resize the virtual terminal (e.g. on terminal window resize).
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.last_pty_cols = cols;
+        self.last_pty_rows = rows;
+        if let Ok(mut vt) = self.vt.lock() {
+            vt.screen_mut().set_size(rows, cols);
+        }
     }
 
     /// Maximum scroll offset — try setting a large value and read back

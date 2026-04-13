@@ -49,6 +49,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.quit_confirm {
         draw_quit_confirm(frame);
     }
+
+    if app.show_legend {
+        draw_legend(frame);
+    }
 }
 
 fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
@@ -351,9 +355,25 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
         _ => DIM,
     };
 
-    let block = Block::default()
+    let mode_label = match app.focus {
+        Focus::Preview => " Preview ",
+        Focus::Agent => " Focus ",
+        _ => "",
+    };
+
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
+
+    if !mode_label.is_empty() {
+        block = block.title(Span::styled(
+            mode_label,
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -508,9 +528,9 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn  Tab sidebar"
+                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn  Tab next agent  Shift+Tab sidebar  ? legend"
             } else {
-                "  ↑↓/jk scroll log  Esc back  q quit"
+                "  ↑↓/jk scroll log  Esc back  ? legend"
             }
         }
     };
@@ -771,6 +791,47 @@ fn draw_quit_confirm(frame: &mut Frame) {
         .style(Style::default().fg(ACCENT))
         .alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(msg, inner);
+}
+
+fn draw_legend(frame: &mut Frame) {
+    let area = centered_rect(32, 10, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Color Legend ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("▌ ", Style::default().fg(STATUS_RUNNING)),
+            Span::styled("RUNNING  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Agent is executing", Style::default().fg(DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("▌ ", Style::default().fg(STATUS_OK)),
+            Span::styled("OK/IDLE  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Agent ready / last run OK", Style::default().fg(DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("▌ ", Style::default().fg(STATUS_FAIL)),
+            Span::styled("FAILED   ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Last run failed / error exit", Style::default().fg(DIM)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("▌ ", Style::default().fg(STATUS_DISABLED)),
+            Span::styled("DISABLED ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("Agent is paused", Style::default().fg(DIM)),
+        ]),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn draw_canopy_banner_preview(frame: &mut Frame, area: Rect) {

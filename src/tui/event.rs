@@ -142,6 +142,11 @@ fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
 // ── Focus: PTY interaction or log scroll ────────────────────────────
 
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Color legend toggle
+    if code == KeyCode::Char('?') {
+        app.show_legend = !app.show_legend;
+    }
+
     // Background agents: simple log-scrolling, single Esc → Preview
     if !matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
         match code {
@@ -164,9 +169,14 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         app.last_esc = std::time::Instant::now();
     }
 
-    // Tab = toggle sidebar
-    if code == KeyCode::Tab {
+    // Tab = cycle to next interactive agent (focus mode)
+    // Shift+Tab = toggle sidebar
+    if code == KeyCode::BackTab {
         app.toggle_sidebar();
+        return Ok(());
+    }
+    if code == KeyCode::Tab {
+        app.next_interactive();
         return Ok(());
     }
 
