@@ -61,8 +61,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // Top-level overlays rendered last so they appear above all content
     if app.show_copied {
         let full = frame.area();
-        let msg = " ▒ COPIED ▒ ";
-        let w = msg.len() as u16;
+        let msg = " \u{2592} COPIED \u{2592} "; // ▒ COPIED ▒
+        let w = msg.chars().count() as u16; // display width (char count, not bytes)
         if full.width > w + 2 {
             let x = full.x + full.width - w - 1;
             let y = full.y + 1; // just below header

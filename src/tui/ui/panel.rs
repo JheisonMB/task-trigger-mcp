@@ -121,8 +121,8 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, _app: &App) {
     if snap.scrolled {
-        let msg = " ▒ SCROLLED ▒ ";
-        let w = msg.len() as u16;
+        let msg = " \u{2592} SCROLLED \u{2592} "; // ▒ SCROLLED ▒
+        let w = msg.chars().count() as u16; // display width (char count, not bytes)
         let x = inner.x + inner.width.saturating_sub(w + 1);
         let area = Rect::new(x, inner.y, w, 1);
         let widget = Paragraph::new(msg).style(Style::default().fg(Color::Yellow).bg(Color::Black));
