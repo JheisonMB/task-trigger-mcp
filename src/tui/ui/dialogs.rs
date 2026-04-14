@@ -115,7 +115,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         Span::styled("  Model: ", Style::default().fg(DIM)),
         Span::styled(
             if dialog.model.is_empty() {
-                "(press space to select)".to_string()
+                "(optional — Space to browse)".to_string()
             } else {
                 format!("{}▏", dialog.model)
             },
@@ -170,7 +170,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         }
         if total > max_visible {
             lines.push(Line::from(Span::styled(
-                format!("    … {total} models (↑↓ scroll, → or Tab accept)"),
+                format!("    … {total} models  ↑↓ scroll  → accept  Esc close"),
                 Style::default().fg(DIM),
             )));
         }

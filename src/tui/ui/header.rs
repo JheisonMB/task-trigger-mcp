@@ -67,7 +67,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
                     .bg(Color::Rgb(102, 187, 106)),
             ),
             Span::styled(
-                format!("{} ", visible_text),
+                format!(" {} ", visible_text),
                 Style::default()
                     .fg(Color::Rgb(140, 140, 140))
                     .add_modifier(Modifier::ITALIC),
@@ -85,7 +85,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.width > 2 {
         let status = Paragraph::new(Line::from(Span::styled(
             status_char,
-            Style::default().fg(Color::Black).bg(status_color),
+            Style::default().fg(status_color),
         )));
         let status_area = Rect::new(area.x + area.width - 1, area.y, 1, 1);
         frame.render_widget(status, status_area);

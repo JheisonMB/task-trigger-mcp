@@ -384,8 +384,8 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             let is_interactive =
                 matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let cli_field: usize = if is_interactive { 2 } else { 1 };
-            let dir_field: usize = if is_interactive { 3 } else { 2 };
-            let model_field: usize = if is_interactive { 4 } else { 3 };
+            let model_field: usize = if is_interactive { 3 } else { 2 };
+            let dir_field: usize = if is_interactive { 4 } else { 3 };
             let prompt_field: usize = if is_interactive { 5 } else { 4 };
             let extra_field: usize = if is_interactive { 6 } else { 5 };
             let max_field: usize = match dialog.task_type {
@@ -393,6 +393,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 super::app::NewTaskType::Scheduled => 5,
                 super::app::NewTaskType::Watcher => 5,
             };
+            let _ = max_field; // used for bounds checking
 
             match dialog.field {
                 // Task type selector
@@ -444,35 +445,19 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         dialog.next_cli();
                         dialog.refresh_model_suggestions();
                     }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = dir_field,
+                    KeyCode::Down | KeyCode::Tab => dialog.field = model_field,
                     KeyCode::Up | KeyCode::BackTab => {
                         dialog.field = if is_interactive { 1 } else { 0 };
                     }
                     _ => {}
                 },
-                // Directory browser — ↑↓ navigate list, ↑ at top exits upward
-                n if n == dir_field => match code {
-                    KeyCode::Up => {
-                        if dialog.dir_selected > 0 {
-                            dialog.dir_selected -= 1;
-                        } else {
-                            dialog.field = cli_field;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
-                            dialog.dir_selected += 1;
-                        }
-                    }
-                    KeyCode::Tab => dialog.field = model_field,
-                    KeyCode::BackTab => dialog.field = cli_field,
-                    KeyCode::Char(' ') => {
-                        dialog.navigate_to_selected();
-                    }
-                    _ => {}
-                },
-                // Model input — with autocomplete picker
+                // Model field — Space opens picker, ↑↓ navigate suggestions
                 n if n == model_field => match code {
+                    KeyCode::Char(' ') => {
+                        dialog.model_picker_open = true;
+                        dialog.model_suggestion_idx = 0;
+                        dialog.refresh_model_suggestions();
+                    }
                     KeyCode::Char(c) => {
                         dialog.model.push(c);
                         dialog.model_picker_open = true;
@@ -507,26 +492,49 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Tab => {
                         if dialog.model_picker_open {
                             dialog.accept_model_suggestion();
-                        } else if dialog.field < max_field {
-                            dialog.field = prompt_field;
                         }
-                    }
-                    KeyCode::BackTab => {
                         dialog.model_picker_open = false;
                         dialog.field = dir_field;
                     }
-                    KeyCode::Left if dialog.model_picker_open => {
+                    KeyCode::BackTab => {
+                        dialog.model_picker_open = false;
+                        dialog.field = cli_field;
+                    }
+                    KeyCode::Esc | KeyCode::Left if dialog.model_picker_open => {
                         dialog.model_picker_open = false;
                     }
                     KeyCode::Up => {
                         dialog.model_picker_open = false;
-                        dialog.field = dir_field;
+                        dialog.field = cli_field;
                     }
                     KeyCode::Down => {
                         dialog.model_picker_open = false;
-                        if dialog.field < max_field {
+                        dialog.field = dir_field;
+                    }
+                    _ => {}
+                },
+                // Directory browser — ↑↓ navigate list, ↑ at top exits upward
+                n if n == dir_field => match code {
+                    KeyCode::Up => {
+                        if dialog.dir_selected > 0 {
+                            dialog.dir_selected -= 1;
+                        } else {
+                            dialog.field = model_field;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                            dialog.dir_selected += 1;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        if !is_interactive {
                             dialog.field = prompt_field;
                         }
+                    }
+                    KeyCode::BackTab => dialog.field = model_field,
+                    KeyCode::Char(' ') => {
+                        dialog.navigate_to_selected();
                     }
                     _ => {}
                 },
