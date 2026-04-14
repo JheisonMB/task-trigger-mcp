@@ -57,6 +57,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.show_legend {
         dialogs::draw_legend(frame);
     }
+
+    // Top-level overlays rendered last so they appear above all content
+    if app.show_copied {
+        let full = frame.area();
+        let msg = " ▒ COPIED ▒ ";
+        let w = msg.len() as u16;
+        if full.width > w + 2 {
+            let x = full.x + full.width - w - 1;
+            let y = full.y + 1; // just below header
+            let area = ratatui::layout::Rect::new(x, y, w, 1);
+            let widget = ratatui::widgets::Paragraph::new(msg).style(
+                ratatui::style::Style::default()
+                    .fg(ACCENT)
+                    .bg(Color::Black),
+            );
+            frame.render_widget(widget, area);
+        }
+    }
 }
 
 // ── Shared helpers ──────────────────────────────────────────────

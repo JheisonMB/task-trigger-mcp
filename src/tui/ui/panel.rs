@@ -122,7 +122,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
 // ── Indicators (SCROLLED / COPIED) ──────────────────────────────
 
-fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, app: &App) {
+fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, _app: &App) {
     if snap.scrolled {
         let msg = " ▒ SCROLLED ▒ ";
         let w = msg.len() as u16;
@@ -130,16 +130,6 @@ fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, app:
         let area = Rect::new(x, inner.y, w, 1);
         let widget = Paragraph::new(msg)
             .style(Style::default().fg(Color::Yellow).bg(Color::Black));
-        frame.render_widget(widget, area);
-    }
-    if app.show_copied {
-        let msg = " ▒ COPIED ▒ ";
-        let w = msg.len() as u16;
-        let x = inner.x + inner.width.saturating_sub(w + 1);
-        let y = inner.y + u16::from(snap.scrolled);
-        let area = Rect::new(x, y, w, 1);
-        let widget = Paragraph::new(msg)
-            .style(Style::default().fg(ACCENT).bg(Color::Black));
         frame.render_widget(widget, area);
     }
 }

@@ -20,20 +20,23 @@ fn first_n_chars(s: &str, n: usize) -> &str {
     &s[..end]
 }
 
+const SPINNER: [&str; 8] = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"];
+
 pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Daemon status: blinking █ character
-    let status_char = if app.daemon_running { "█" } else { "▓" };
-    
-    // Blinking effect: show/hide based on time
-    let blink_on = (std::time::SystemTime::now()
+    let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() / 500) % 2 == 0;
-    
-    let status_color = if app.daemon_running {
-        if blink_on { ACCENT } else { Color::Rgb(60, 120, 60) }
+        .as_millis();
+
+    let (status_char, status_color) = if app.daemon_running {
+        // Smooth spinner in green, no blink
+        let frame_idx = ((millis / 125) % 8) as usize;
+        (SPINNER[frame_idx], ACCENT)
     } else {
-        if blink_on { ERROR_COLOR } else { Color::Rgb(120, 60, 60) }
+        // Blinking █ in red when stopped
+        let blink_on = (millis / 500) % 2 == 0;
+        let color = if blink_on { ERROR_COLOR } else { Color::Rgb(120, 60, 60) };
+        ("█", color)
     };
 
     let wf = app.whimsg.tick();

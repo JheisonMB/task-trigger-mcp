@@ -328,23 +328,18 @@ impl App {
             }
         }
 
-        // Restore dialog briefly for close logic
         let prev_focus = dialog.prev_focus;
-        // Don't put it back — close_new_agent_dialog expects it but we already took it
-        if let Some(prev) = prev_focus {
-            self.focus = prev;
-        } else {
-            self.focus = Focus::Home;
-        }
         self.new_agent_dialog = None;
 
         self.refresh_agents()?;
         self.selected = self.agents.len().saturating_sub(1);
 
+        // Interactive tasks go to full agent focus; background tasks restore
+        // to whatever focus was active before the dialog opened.
         self.focus = if was_interactive {
             Focus::Agent
         } else {
-            Focus::Preview
+            prev_focus.unwrap_or(Focus::Home)
         };
         Ok(())
     }
