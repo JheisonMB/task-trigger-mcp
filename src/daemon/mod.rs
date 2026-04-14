@@ -18,9 +18,9 @@ use rmcp::ServerHandler;
 use serde::Deserialize;
 use tokio::sync::Notify;
 
-use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
+use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
 use crate::db::Database;
-use crate::domain::models::{Cli, Task, WatchEvent, Watcher};
+use crate::domain::models::{BackgroundAgent, Cli, WatchEvent, Watcher};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
 use crate::watchers::WatcherEngine;
@@ -41,7 +41,7 @@ pub struct TaskAddParams {
     pub duration_minutes: Option<i64>,
     /// Working directory for the CLI.
     pub working_dir: Option<String>,
-    /// Timeout in minutes for execution locking. If the agent doesn't report back within this time, the task is unlocked. Default: 15.
+    /// Timeout in minutes for execution locking. If the agent doesn't report back within this time, the background_agent is unlocked. Default: 15.
     pub timeout_minutes: Option<u32>,
 }
 
@@ -69,19 +69,19 @@ pub struct TaskWatchParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TaskUpdateParams {
-    /// ID of the task or watcher to update.
+    /// ID of the background_agent or watcher to update.
     pub id: String,
-    /// New prompt/instruction (applies to both tasks and watchers).
+    /// New prompt/instruction (applies to both background_agents and watchers).
     pub prompt: Option<String>,
     /// New CLI: "opencode", "kiro", "copilot", "qwen", "gemini", "claude", or "codex" (applies to both).
     pub cli: Option<String>,
     /// New provider/model string, or null to clear (applies to both).
     pub model: Option<Option<String>>,
-    /// New 5-field cron expression (task only).
+    /// New 5-field cron expression (background_agent only).
     pub schedule: Option<String>,
-    /// New working directory, or null to clear (task only).
+    /// New working directory, or null to clear (background_agent only).
     pub working_dir: Option<Option<String>>,
-    /// New duration in minutes from now, or null to clear expiration (task only).
+    /// New duration in minutes from now, or null to clear expiration (background_agent only).
     pub duration_minutes: Option<Option<i64>>,
     /// New absolute path to watch (watcher only).
     pub path: Option<String>,
@@ -95,7 +95,7 @@ pub struct TaskUpdateParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TaskLogsParams {
-    /// Task or watcher ID.
+    /// BackgroundAgent or watcher ID.
     pub id: String,
     /// Last N lines to return (default: 50).
     pub lines: Option<usize>,
@@ -105,13 +105,13 @@ pub struct TaskLogsParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct IdParam {
-    /// Task or watcher ID.
+    /// BackgroundAgent or watcher ID.
     pub id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TaskReportParams {
-    /// The run ID (UUID) provided in the task execution prompt.
+    /// The run ID (UUID) provided in the background_agent execution prompt.
     pub run_id: String,
     /// Execution status: `in_progress`, `success`, or `error`.
     pub status: String,
@@ -151,10 +151,10 @@ impl TaskTriggerHandler {
         }
     }
 
-    /// Register a new scheduled task. The daemon's internal scheduler handles execution.
+    /// Register a new scheduled background_agent. The daemon's internal scheduler handles execution.
     #[tool(
         name = "task_add",
-        description = "Register a new scheduled task. Use task_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary tasks that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
+        description = "Register a new scheduled background_agent. Use task_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary background_agents that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_add(
         &self,
@@ -190,7 +190,7 @@ impl TaskTriggerHandler {
             .duration_minutes
             .map(|mins| Utc::now() + chrono::Duration::minutes(mins));
 
-        let task = Task {
+        let background_agent = BackgroundAgent {
             id: params.id.clone(),
             prompt: params.prompt,
             schedule_expr: schedule_expr.clone(),
@@ -207,14 +207,14 @@ impl TaskTriggerHandler {
         };
 
         self.db
-            .insert_or_update_task(&task)
+            .insert_or_update_background_agent(&background_agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         self.scheduler_notify.notify_one();
 
         Ok(success_result(&format!(
-            "Task '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this task automatically.",
-            task.id,
+            "BackgroundAgent '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this background_agent automatically.",
+            background_agent.id,
             schedule_expr,
             expires_at
                 .map(|e| format!(" (expires: {})", e.to_rfc3339()))
@@ -285,24 +285,27 @@ impl TaskTriggerHandler {
         )))
     }
 
-    /// List all registered scheduled tasks with status.
+    /// List all registered scheduled background_agents with status.
     #[tool(
         name = "task_list",
-        description = "List all registered scheduled tasks with their current status"
+        description = "List all registered scheduled background_agents with their current status"
     )]
     async fn task_list(&self) -> Result<CallToolResult, McpError> {
-        let tasks = self
+        let background_agents = self
             .db
-            .list_tasks()
+            .list_background_agents()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        if tasks.is_empty() {
-            return Ok(success_result("No tasks registered."));
+        if background_agents.is_empty() {
+            return Ok(success_result("No background_agents registered."));
         }
 
-        let mut lines = vec![format!("Found {} task(s):\n", tasks.len())];
+        let mut lines = vec![format!(
+            "Found {} background_agent(s):\n",
+            background_agents.len()
+        )];
 
-        for t in &tasks {
+        for t in &background_agents {
             let prompt_preview = if t.prompt.len() > 80 {
                 format!("{}...", &t.prompt[..80])
             } else {
@@ -397,10 +400,10 @@ impl TaskTriggerHandler {
         )]))
     }
 
-    /// Remove a task or watcher completely.
+    /// Remove a background_agent or watcher completely.
     #[tool(
         name = "task_remove",
-        description = "Remove a task or watcher completely — deletes from database and stops any active watcher"
+        description = "Remove a background_agent or watcher completely — deletes from database and stops any active watcher"
     )]
     async fn task_remove(
         &self,
@@ -409,7 +412,7 @@ impl TaskTriggerHandler {
         let _ = self.watcher_engine.stop_watcher(&id).await;
 
         self.db
-            .delete_task(&id)
+            .delete_background_agent(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let _ = self.db.delete_watcher(&id);
 
@@ -434,26 +437,26 @@ impl TaskTriggerHandler {
         Ok(success_result(&format!("Watcher '{}' paused", id)))
     }
 
-    /// Enable a disabled task or watcher.
+    /// Enable a disabled background_agent or watcher.
     #[tool(
         name = "task_enable",
-        description = "Enable a disabled scheduled task or watcher"
+        description = "Enable a disabled scheduled background_agent or watcher"
     )]
     async fn task_enable(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        if let Ok(Some(task)) = self.db.get_task(&id) {
-            if task.is_expired() {
-                let clear_expiry = crate::application::ports::TaskFieldsUpdate {
+        if let Ok(Some(background_agent)) = self.db.get_background_agent(&id) {
+            if background_agent.is_expired() {
+                let clear_expiry = crate::application::ports::BackgroundAgentFieldsUpdate {
                     expires_at: Some(None),
                     ..Default::default()
                 };
-                let _ = self.db.update_task_fields(&id, &clear_expiry);
+                let _ = self.db.update_background_agent_fields(&id, &clear_expiry);
             }
         }
 
-        let _ = self.db.update_task_enabled(&id, true);
+        let _ = self.db.update_background_agent_enabled(&id, true);
 
         self.scheduler_notify.notify_one();
 
@@ -467,16 +470,16 @@ impl TaskTriggerHandler {
         Ok(success_result(&format!("'{}' enabled", id)))
     }
 
-    /// Disable a task without removing it.
+    /// Disable a background_agent without removing it.
     #[tool(
         name = "task_disable",
-        description = "Disable a scheduled task or watcher without removing it"
+        description = "Disable a scheduled background_agent or watcher without removing it"
     )]
     async fn task_disable(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = self.db.update_task_enabled(&id, false);
+        let _ = self.db.update_background_agent_enabled(&id, false);
 
         if self.db.get_watcher(&id).ok().flatten().is_some() {
             self.db
@@ -488,18 +491,18 @@ impl TaskTriggerHandler {
         Ok(success_result(&format!("'{}' disabled", id)))
     }
 
-    /// Execute a task immediately, outside its schedule.
+    /// Execute a background_agent immediately, outside its schedule.
     #[tool(
-        name = "task_run",
-        description = "Execute a task immediately outside its schedule — useful for testing"
+        name = "agent_run",
+        description = "Execute a background_agent immediately outside its schedule — useful for testing"
     )]
-    async fn task_run(
+    async fn agent_run(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
         let is_task = self
             .db
-            .get_task(&id)
+            .get_background_agent(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
             .is_some();
         let is_watcher = self
@@ -510,23 +513,31 @@ impl TaskTriggerHandler {
 
         if !is_task && !is_watcher {
             return Ok(error_result(&format!(
-                "No task or watcher found with ID '{}'",
+                "No background_agent or watcher found with ID '{}'",
                 id
             )));
         }
 
         let executor = Arc::clone(&self.executor);
-        let task_id = id.clone();
+        let background_agent_id = id.clone();
 
         if is_task {
-            let task = self.db.get_task(&id).unwrap().unwrap();
+            let background_agent = self.db.get_background_agent(&id).unwrap().unwrap();
             tokio::spawn(async move {
                 match executor
-                    .execute_task(&task, crate::domain::models::TriggerType::Manual, true)
+                    .execute_task(
+                        &background_agent,
+                        crate::domain::models::TriggerType::Manual,
+                        true,
+                    )
                     .await
                 {
-                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
-                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                    Ok(code) => tracing::info!(
+                        "Manual run '{}' finished (exit {})",
+                        background_agent_id,
+                        code
+                    ),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", background_agent_id, e),
                 }
             });
         } else {
@@ -536,14 +547,18 @@ impl TaskTriggerHandler {
                     .execute_watcher_task(&watcher, "manual", "manual")
                     .await
                 {
-                    Ok(code) => tracing::info!("Manual run '{}' finished (exit {})", task_id, code),
-                    Err(e) => tracing::error!("Manual run '{}' failed: {}", task_id, e),
+                    Ok(code) => tracing::info!(
+                        "Manual run '{}' finished (exit {})",
+                        background_agent_id,
+                        code
+                    ),
+                    Err(e) => tracing::error!("Manual run '{}' failed: {}", background_agent_id, e),
                 }
             });
         }
 
         Ok(success_result(&format!(
-            "Task '{}' launched in background. Use task_logs to check progress.",
+            "BackgroundAgent '{}' launched in background. Use task_logs to check progress.",
             id
         )))
     }
@@ -554,16 +569,16 @@ impl TaskTriggerHandler {
         description = "Get overall daemon health, scheduler state, and statistics"
     )]
     async fn task_status(&self) -> Result<CallToolResult, McpError> {
-        let tasks = self
+        let background_agents = self
             .db
-            .list_tasks()
+            .list_background_agents()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let watchers = self
             .db
             .list_watchers()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let active_tasks = tasks
+        let active_tasks = background_agents
             .iter()
             .filter(|t| t.enabled && !t.is_expired())
             .count();
@@ -586,7 +601,7 @@ impl TaskTriggerHandler {
             .map(|d| d.join("logs").to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        let temporal: Vec<String> = tasks
+        let temporal: Vec<String> = background_agents
             .iter()
             .filter(|t| t.expires_at.is_some() && t.enabled)
             .map(|t| {
@@ -611,7 +626,7 @@ impl TaskTriggerHandler {
              Transport: {}\n\
              Port: {}\n\
              Scheduler: internal (tokio)\n\
-             Active tasks: {} / {}\n\
+             Active background_agents: {} / {}\n\
              Active watchers: {} / {}\n\
              Log directory: {}",
             env!("CARGO_PKG_VERSION"),
@@ -623,24 +638,24 @@ impl TaskTriggerHandler {
                 "N/A".to_string()
             },
             active_tasks,
-            tasks.len(),
+            background_agents.len(),
             active_watchers,
             watchers.len(),
             log_dir,
         );
 
         if !temporal.is_empty() {
-            status.push_str("\n\nTemporal tasks:\n");
+            status.push_str("\n\nTemporal background_agents:\n");
             status.push_str(&temporal.join("\n"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(status)]))
     }
 
-    /// List available AI models that can be used with tasks and watchers.
+    /// List available AI models that can be used with background_agents and watchers.
     #[tool(
         name = "task_models",
-        description = "List common AI models available for use with tasks and watchers. Returns provider/model strings that can be passed to the model field of task_add or task_watch."
+        description = "List common AI models available for use with background_agents and watchers. Returns provider/model strings that can be passed to the model field of task_add or task_watch."
     )]
     async fn task_models(&self) -> Result<CallToolResult, McpError> {
         let models = [
@@ -681,10 +696,10 @@ impl TaskTriggerHandler {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    /// Get log output for a task or watcher.
+    /// Get log output for a background_agent or watcher.
     #[tool(
         name = "task_logs",
-        description = "Get the log output for a task or watcher with optional line and time filters"
+        description = "Get the log output for a background_agent or watcher with optional line and time filters"
     )]
     async fn task_logs(
         &self,
@@ -692,8 +707,9 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
-        let log_path = if let Ok(Some(task)) = self.db.get_task(&params.id) {
-            task.log_path
+        let log_path = if let Ok(Some(background_agent)) = self.db.get_background_agent(&params.id)
+        {
+            background_agent.log_path
         } else {
             let dir = data_dir().map_err(|e| McpError::internal_error(e.to_string(), None))?;
             dir.join("logs")
@@ -706,7 +722,7 @@ impl TaskTriggerHandler {
         let path = std::path::Path::new(&log_path);
         if !path.exists() {
             return Ok(success_result(&format!(
-                "No logs found for '{}'. The task has not been executed yet.",
+                "No logs found for '{}'. The background_agent has not been executed yet.",
                 params.id
             )));
         }
@@ -787,10 +803,10 @@ impl TaskTriggerHandler {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    /// Update fields of an existing task or watcher without recreating it.
+    /// Update fields of an existing background_agent or watcher without recreating it.
     #[tool(
         name = "task_update",
-        description = "Modify an existing scheduled task or file watcher. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the ID belongs to a task or watcher. For tasks: schedule, prompt, cli, model, working_dir, duration_minutes. For watchers: path, events, prompt, cli, model, debounce_seconds, recursive."
+        description = "Modify an existing scheduled background_agent or file watcher. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the ID belongs to a background_agent or watcher. For background_agents: schedule, prompt, cli, model, working_dir, duration_minutes. For watchers: path, events, prompt, cli, model, debounce_seconds, recursive."
     )]
     async fn task_update(
         &self,
@@ -804,7 +820,7 @@ impl TaskTriggerHandler {
 
         let is_task = self
             .db
-            .get_task(&params.id)
+            .get_background_agent(&params.id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
             .is_some();
         let is_watcher = self
@@ -815,7 +831,7 @@ impl TaskTriggerHandler {
 
         if !is_task && !is_watcher {
             return Ok(error_result(&format!(
-                "No task or watcher found with ID '{}'",
+                "No background_agent or watcher found with ID '{}'",
                 params.id
             )));
         }
@@ -887,7 +903,7 @@ impl TaskTriggerHandler {
 
             let schedule_trimmed = params.schedule.as_deref().map(|s| s.trim());
 
-            let task_fields = crate::application::ports::TaskFieldsUpdate {
+            let task_fields = crate::application::ports::BackgroundAgentFieldsUpdate {
                 prompt: params.prompt.as_deref(),
                 schedule_expr: schedule_trimmed,
                 cli: cli_str,
@@ -898,7 +914,7 @@ impl TaskTriggerHandler {
 
             let updated = self
                 .db
-                .update_task_fields(&params.id, &task_fields)
+                .update_background_agent_fields(&params.id, &task_fields)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
             if !updated {
@@ -907,7 +923,7 @@ impl TaskTriggerHandler {
 
             self.scheduler_notify.notify_one();
 
-            let mut msg = format!("Task '{}' updated successfully.", params.id);
+            let mut msg = format!("BackgroundAgent '{}' updated successfully.", params.id);
             if params.schedule.is_some() {
                 msg.push_str(" Schedule change will take effect immediately.");
             }
@@ -998,17 +1014,17 @@ impl TaskTriggerHandler {
         }
         if !ignored.is_empty() {
             msg.push_str(&format!(
-                " Note: task-only fields ignored: {}",
+                " Note: background_agent-only fields ignored: {}",
                 ignored.join(", ")
             ));
         }
         Ok(success_result(&msg))
     }
 
-    /// Report execution status from within a running task.
+    /// Report execution status from within a running background_agent.
     #[tool(
         name = "task_report",
-        description = "Report execution status for a running task. The run_id is provided in the task execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
+        description = "Report execution status for a running background_agent. The run_id is provided in the background_agent execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
     )]
     async fn task_report(
         &self,
@@ -1090,7 +1106,9 @@ impl TaskTriggerHandler {
 
         if matches!(status, RunStatus::Success | RunStatus::Error) {
             let success = status == RunStatus::Success;
-            let _ = self.db.update_task_last_run(&run.task_id, success);
+            let _ = self
+                .db
+                .update_background_agent_last_run(&run.background_agent_id, success);
         }
 
         Ok(success_result(&format!(
@@ -1109,9 +1127,9 @@ impl ServerHandler for TaskTriggerHandler {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "MCP server for registering, managing, and executing scheduled and event-driven tasks. \
-                 Use task_add to create scheduled tasks, task_watch for file watchers, \
-                 task_run to test immediately, and task_status for daemon health."
+                "MCP server for registering, managing, and executing scheduled and event-driven background_agents. \
+                 Use task_add to create scheduled background_agents, task_watch for file watchers, \
+                 agent_run to test immediately, and task_status for daemon health."
                     .to_string(),
             )
     }

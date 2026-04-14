@@ -1,4 +1,5 @@
-//! canopy — MCP server for AI agent task scheduling and file watching.
+#![allow(clippy::doc_markdown)]
+//! canopy — MCP server for AI agent background_agent scheduling and file watching.
 //!
 //! Binary modes:
 //! - `daemon start` — start the MCP server as a persistent background process
@@ -24,14 +25,14 @@ use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
 use std::sync::Arc;
 
-use application::ports::{StateRepository, TaskRepository, WatcherRepository};
+use application::ports::{BackgroundAgentRepository, StateRepository, WatcherRepository};
 use daemon::TaskTriggerHandler;
 use db::Database;
 use executor::Executor;
 use scheduler::cron_scheduler::CronScheduler;
 use watchers::WatcherEngine;
 
-/// canopy: A self-contained MCP server for AI agent task scheduling.
+/// canopy: A self-contained MCP server for AI agent background_agent scheduling.
 #[derive(Parser)]
 #[command(name = "canopy", version, about)]
 struct Cli {
@@ -289,7 +290,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
 
     let port = resolve_port(port_override);
     let data_dir = ensure_data_dir()?;
-    let db = Arc::new(Database::new(&data_dir.join("tasks.db"))?);
+    let db = Arc::new(Database::new(&data_dir.join("background_agents.db"))?);
     let executor = Arc::new(Executor::new(Arc::clone(&db)));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
@@ -498,7 +499,7 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
             if running {
                 let pid = pid_info.expect("pid checked above");
-                if let Ok(db) = Database::new(&data_dir.join("tasks.db")) {
+                if let Ok(db) = Database::new(&data_dir.join("background_agents.db")) {
                     let port = db.get_state("port")?.unwrap_or_else(|| "7755".to_string());
                     let version = db
                         .get_state("version")?
@@ -506,13 +507,13 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                     let last_start = db
                         .get_state("last_start")?
                         .unwrap_or_else(|| "unknown".to_string());
-                    let tasks = db.list_tasks()?.len();
+                    let background_agents = db.list_background_agents()?.len();
                     let watchers = db.list_watchers()?.len();
                     println!("Daemon: RUNNING (PID: {pid})");
                     println!("Version: {version}");
                     println!("Port: {port}");
                     println!("Started: {last_start}");
-                    println!("Tasks: {tasks}");
+                    println!("Tasks: {background_agents}");
                     println!("Watchers: {watchers}");
                 } else {
                     println!("Daemon: RUNNING (PID: {pid})");
@@ -570,7 +571,7 @@ async fn handle_doctor() -> anyhow::Result<()> {
 
     let home = dirs::home_dir().context("No home directory")?;
     let canopy_dir = home.join(".canopy");
-    let db_path = canopy_dir.join("tasks.db");
+    let db_path = canopy_dir.join("background_agents.db");
     let cli_config_path = canopy_dir.join("cli_config.json");
     let configured_marker = canopy_dir.join(".configured");
 
@@ -592,8 +593,8 @@ async fn handle_doctor() -> anyhow::Result<()> {
     if db_path.exists() {
         println!("  \x1b[32m✓\x1b[0m Database: {}", db_path.display());
         if let Ok(db) = crate::db::Database::new(&db_path) {
-            if let Ok(tasks) = db.list_tasks() {
-                println!("    Tasks: {}", tasks.len());
+            if let Ok(background_agents) = db.list_background_agents() {
+                println!("    Tasks: {}", background_agents.len());
             }
             if let Ok(watchers) = db.list_watchers() {
                 println!("    Watchers: {}", watchers.len());
@@ -670,7 +671,7 @@ async fn handle_stdio() -> Result<()> {
     tracing::info!("Starting in stdio MCP transport mode");
 
     let data_dir = ensure_data_dir()?;
-    let db = Arc::new(Database::new(&data_dir.join("tasks.db"))?);
+    let db = Arc::new(Database::new(&data_dir.join("background_agents.db"))?);
     let executor = Arc::new(Executor::new(Arc::clone(&db)));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 

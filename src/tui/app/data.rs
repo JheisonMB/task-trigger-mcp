@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use crate::application::ports::{
-    RunRepository, StateRepository, TaskRepository, WatcherRepository,
+    BackgroundAgentRepository, RunRepository, StateRepository, WatcherRepository,
 };
 
 use super::{is_process_running, relative_time, tail_lines, AgentEntry, App};
@@ -24,12 +24,12 @@ impl App {
     }
 
     pub(super) fn refresh_agents(&mut self) -> Result<()> {
-        let tasks = self.db.list_tasks()?;
+        let background_agents = self.db.list_background_agents()?;
         let watchers = self.db.list_watchers()?;
 
         self.agents.clear();
-        for t in tasks {
-            self.agents.push(AgentEntry::Task(t));
+        for t in background_agents {
+            self.agents.push(AgentEntry::BackgroundAgent(t));
         }
         for w in watchers {
             self.agents.push(AgentEntry::Watcher(w));
@@ -111,7 +111,7 @@ impl App {
     }
 }
 
-pub(crate) fn send_mcp_task_run(port: &str, task_id: &str) -> Result<()> {
+pub(crate) fn send_mcp_task_run(port: &str, background_agent_id: &str) -> Result<()> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
@@ -121,8 +121,8 @@ pub(crate) fn send_mcp_task_run(port: &str, task_id: &str) -> Result<()> {
         "id": 1,
         "method": "tools/call",
         "params": {
-            "name": "task_run",
-            "arguments": { "id": task_id }
+            "name": "agent_run",
+            "arguments": { "id": background_agent_id }
         }
     })
     .to_string();

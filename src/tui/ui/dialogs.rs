@@ -18,7 +18,11 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let picker_rows = if dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
         let visible = dialog.model_suggestions.len().min(5);
-        let overflow_line = if dialog.model_suggestions.len() > 5 { 1 } else { 0 };
+        let overflow_line = if dialog.model_suggestions.len() > 5 {
+            1
+        } else {
+            0
+        };
         visible + overflow_line
     } else {
         0
@@ -36,8 +40,9 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
     let base_height: u16 = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => 13 + dir_rows,
-        crate::tui::app::NewTaskType::Scheduled
-        | crate::tui::app::NewTaskType::Watcher => 15 + dir_rows,
+        crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher => {
+            15 + dir_rows
+        }
     };
     let height = base_height + picker_rows as u16;
     let area = centered_rect(65, height, frame.area());
@@ -118,7 +123,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let model_field = if is_interactive { 3 } else { 2 };
     let prompt_field = 3usize; // non-interactive only (field 3)
-    let extra_field = 4usize;  // non-interactive only (field 4)
+    let extra_field = 4usize; // non-interactive only (field 4)
     let dir_field = if is_interactive { 4 } else { 5 };
 
     lines.push(Line::from(vec![
@@ -134,8 +139,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ]));
 
     // Model suggestions dropdown
-    if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty()
-    {
+    if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
         let max_visible = 5;
         let total = dialog.model_suggestions.len();
         let sel = dialog.model_suggestion_idx;
@@ -163,10 +167,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             };
             let provider_tag = format!(" [{}]", entry.provider);
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {} ", if is_sel { "›" } else { " " }),
-                    style,
-                ),
+                Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
                 Span::styled(truncate_str(&entry.id, 38), style),
                 Span::styled(
                     provider_tag,
@@ -188,7 +189,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
 
-    // Prompt + extra fields for non-interactive tasks (before Dir)
+    // Prompt + extra fields for non-interactive background_agents (before Dir)
     if matches!(
         dialog.task_type,
         crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher
@@ -197,7 +198,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             Span::styled("  Prompt:", Style::default().fg(DIM)),
             Span::styled(
                 if dialog.prompt.is_empty() {
-                    " enter task prompt...".to_string()
+                    " enter background_agent prompt...".to_string()
                 } else {
                     format!(" {}▏", dialog.prompt)
                 },

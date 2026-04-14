@@ -1,4 +1,4 @@
-//! Task executor — spawns CLI subprocesses headlessly.
+//! BackgroundAgent executor — spawns CLI subprocesses headlessly.
 //!
 //! Resolves the CLI binary path via `which`, spawns the process with
 //! the appropriate flags, captures output to log files, and records
@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 
-use crate::application::ports::{RunRepository, TaskRepository, WatcherRepository};
+use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
 use crate::db::Database;
-use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, Watcher};
+use crate::domain::models::{BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, Watcher};
 use crate::scheduler::substitute_variables;
 
 /// Maximum log file size before rotation (5 MB).
@@ -36,7 +36,7 @@ struct CliRunResult {
     success: bool,
 }
 
-/// Task execution engine.
+/// BackgroundAgent execution engine.
 pub struct Executor {
     db: Arc<Database>,
 }
@@ -48,58 +48,74 @@ impl Executor {
 
     /// Resolve a timed-out active run by marking it as timeout.
     /// Called lazily before checking the lock.
-    fn resolve_timeout(&self, task_id: &str) {
-        if let Ok(Some(run)) = self.db.get_active_run(task_id) {
+    fn resolve_timeout(&self, background_agent_id: &str) {
+        if let Ok(Some(run)) = self.db.get_active_run(background_agent_id) {
             if let Some(timeout_at) = run.timeout_at {
                 if Utc::now() > timeout_at {
-                    tracing::info!("Run '{}' for '{}' timed out, unlocking", run.id, task_id);
+                    tracing::info!(
+                        "Run '{}' for '{}' timed out, unlocking",
+                        run.id,
+                        background_agent_id
+                    );
                     let _ = self.db.update_run_status(
                         &run.id,
                         RunStatus::Timeout,
                         Some("Execution timed out"),
                     );
-                    let _ = self.db.update_task_last_run(task_id, false);
+                    let _ = self
+                        .db
+                        .update_background_agent_last_run(background_agent_id, false);
                 }
             }
         }
     }
 
-    /// Execute a scheduled task.
+    /// Execute a scheduled background_agent.
     ///
     /// When `force` is true (manual runs), expiry and enabled checks are skipped.
     /// Returns the `run_id` if execution started, or None if skipped.
     pub async fn execute_task(
         &self,
-        task: &Task,
+        background_agent: &BackgroundAgent,
         trigger: TriggerType,
         force: bool,
     ) -> Result<i32> {
         if !force {
-            if task.is_expired() {
-                tracing::info!("Task '{}' has expired, disabling", task.id);
-                self.db.update_task_enabled(&task.id, false)?;
+            if background_agent.is_expired() {
+                tracing::info!(
+                    "BackgroundAgent '{}' has expired, disabling",
+                    background_agent.id
+                );
+                self.db
+                    .update_background_agent_enabled(&background_agent.id, false)?;
                 return Ok(-1);
             }
 
-            if !task.enabled {
-                tracing::info!("Task '{}' is disabled, skipping", task.id);
+            if !background_agent.enabled {
+                tracing::info!(
+                    "BackgroundAgent '{}' is disabled, skipping",
+                    background_agent.id
+                );
                 return Ok(-1);
             }
         }
 
-        self.resolve_timeout(&task.id);
-        if let Ok(Some(active)) = self.db.get_active_run(&task.id) {
+        self.resolve_timeout(&background_agent.id);
+        if let Ok(Some(active)) = self.db.get_active_run(&background_agent.id) {
             tracing::info!(
-                "Task '{}' is locked (run {}), recording as missed",
-                task.id,
+                "BackgroundAgent '{}' is locked (run {}), recording as missed",
+                background_agent.id,
                 active.id
             );
             let missed = RunLog {
                 id: uuid::Uuid::new_v4().to_string(),
-                task_id: task.id.clone(),
+                background_agent_id: background_agent.id.clone(),
                 status: RunStatus::Missed,
                 trigger_type: trigger,
-                summary: Some(format!("Skipped: task locked by run {}", active.id)),
+                summary: Some(format!(
+                    "Skipped: background_agent locked by run {}",
+                    active.id
+                )),
                 started_at: Utc::now(),
                 finished_at: Some(Utc::now()),
                 exit_code: None,
@@ -111,11 +127,12 @@ impl Executor {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
-        let timeout_at = now + chrono::Duration::minutes(i64::from(task.timeout_minutes));
+        let timeout_at =
+            now + chrono::Duration::minutes(i64::from(background_agent.timeout_minutes));
 
         let run = RunLog {
             id: run_id.clone(),
-            task_id: task.id.clone(),
+            background_agent_id: background_agent.id.clone(),
             status: RunStatus::Pending,
             trigger_type: trigger,
             summary: None,
@@ -126,16 +143,22 @@ impl Executor {
         };
         self.db.insert_run(&run)?;
 
-        let user_prompt = substitute_variables(&task.prompt, &task.id, &task.log_path, None, None);
-        let wrapped = wrap_prompt(&user_prompt, &task.id, &run_id);
+        let user_prompt = substitute_variables(
+            &background_agent.prompt,
+            &background_agent.id,
+            &background_agent.log_path,
+            None,
+            None,
+        );
+        let wrapped = wrap_prompt(&user_prompt, &background_agent.id, &run_id);
 
         let params = CliRunParams {
-            id: &task.id,
-            cli: &task.cli,
+            id: &background_agent.id,
+            cli: &background_agent.cli,
             prompt: wrapped,
-            model: task.model.as_deref(),
-            working_dir: task.working_dir.as_deref(),
-            log_path: task.log_path.clone(),
+            model: background_agent.model.as_deref(),
+            working_dir: background_agent.working_dir.as_deref(),
+            log_path: background_agent.log_path.clone(),
             trigger,
         };
 
@@ -160,14 +183,21 @@ impl Executor {
         }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
-        if let Err(e) = self.db.update_task_last_run(&task.id, result.success) {
-            tracing::error!("Failed to update last_run for task '{}': {}", task.id, e);
+        if let Err(e) = self
+            .db
+            .update_background_agent_last_run(&background_agent.id, result.success)
+        {
+            tracing::error!(
+                "Failed to update last_run for background_agent '{}': {}",
+                background_agent.id,
+                e
+            );
         }
 
         Ok(result.exit_code)
     }
 
-    /// Execute a watcher-triggered task.
+    /// Execute a watcher-triggered background_agent.
     pub async fn execute_watcher_task(
         &self,
         watcher: &Watcher,
@@ -187,7 +217,7 @@ impl Executor {
             );
             let missed = RunLog {
                 id: uuid::Uuid::new_v4().to_string(),
-                task_id: watcher.id.clone(),
+                background_agent_id: watcher.id.clone(),
                 status: RunStatus::Missed,
                 trigger_type: TriggerType::Watch,
                 summary: Some(format!("Skipped: locked by run {}", active.id)),
@@ -215,7 +245,7 @@ impl Executor {
 
         let run = RunLog {
             id: run_id.clone(),
-            task_id: watcher.id.clone(),
+            background_agent_id: watcher.id.clone(),
             status: RunStatus::Pending,
             trigger_type: TriggerType::Watch,
             summary: None,
@@ -366,10 +396,10 @@ fn build_cli_command(
     cmd
 }
 
-/// Append execution output to a task's log file with rotation.
+/// Append execution output to a background_agent's log file with rotation.
 fn append_to_log(
     log_path: &str,
-    task_id: &str,
+    background_agent_id: &str,
     trigger: &TriggerType,
     started_at: &chrono::DateTime<Utc>,
     exit_code: i32,
@@ -391,7 +421,10 @@ fn append_to_log(
         .append(true)
         .open(path)?;
 
-    writeln!(file, "--- [{trigger}] {task_id} at {started_at} ---")?;
+    writeln!(
+        file,
+        "--- [{trigger}] {background_agent_id} at {started_at} ---"
+    )?;
     writeln!(file, "exit_code: {exit_code}")?;
 
     if !stdout.is_empty() {
@@ -428,16 +461,16 @@ fn rotate_log_if_needed(path: &Path) -> Result<()> {
 }
 
 /// Wrap the user's prompt with structured `task_report` instructions.
-fn wrap_prompt(user_prompt: &str, task_id: &str, run_id: &str) -> String {
+fn wrap_prompt(user_prompt: &str, background_agent_id: &str, run_id: &str) -> String {
     format!(
         "[SYSTEM INSTRUCTIONS]\n\
-         You are executing a managed task. You MUST follow these steps:\n\
+         You are executing a managed background_agent. You MUST follow these steps:\n\
          1. IMMEDIATELY call the task_report tool: task_report(run_id=\"{run_id}\", status=\"in_progress\")\n\
-         2. Execute the user's task below\n\
+         2. Execute the user's background_agent below\n\
          3. When finished, call: task_report(run_id=\"{run_id}\", status=\"success\", summary=\"<brief summary of what happened>\")\n\
-            If the task failed: task_report(run_id=\"{run_id}\", status=\"error\", summary=\"<what went wrong>\")\n\
+            If the background_agent failed: task_report(run_id=\"{run_id}\", status=\"error\", summary=\"<what went wrong>\")\n\
          \n\
-         Task ID: {task_id}\n\
+         BackgroundAgent ID: {background_agent_id}\n\
          Run ID: {run_id}\n\
          [/SYSTEM INSTRUCTIONS]\n\
          \n\

@@ -7,7 +7,7 @@ use crate::domain::models_db::{self, ModelCatalog, ModelEntry};
 
 use super::Focus;
 
-/// Type of task to create.
+/// Type of background_agent to create.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NewTaskType {
     Interactive,
@@ -175,7 +175,11 @@ impl NewAgentDialog {
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') { None } else { Some(format!("📁 {name}")) }
+                if name.starts_with('.') {
+                    None
+                } else {
+                    Some(format!("📁 {name}"))
+                }
             })
             .collect();
 
@@ -184,7 +188,11 @@ impl NewAgentDialog {
                 .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
                 .filter_map(|e| {
                     let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') { None } else { Some(format!("  {name}")) }
+                    if name.starts_with('.') {
+                        None
+                    } else {
+                        Some(format!("  {name}"))
+                    }
                 })
                 .collect()
         } else {
@@ -216,7 +224,11 @@ impl NewAgentDialog {
         // ".." — go up one level
         if selected == ".." {
             let new_path = if let Some(pos) = self.current_path.rfind('/') {
-                if pos == 0 { "/".to_string() } else { self.current_path[..pos].to_string() }
+                if pos == 0 {
+                    "/".to_string()
+                } else {
+                    self.current_path[..pos].to_string()
+                }
             } else {
                 ".".to_string()
             };
@@ -230,12 +242,12 @@ impl NewAgentDialog {
         }
 
         // Strip prefix icons to get actual name
-        let name = selected
-            .trim_start_matches("📁 ")
-            .trim_start_matches("  ");
+        let name = selected.trim_start_matches("📁 ").trim_start_matches("  ");
 
         let full_path = format!("{}/{}", self.current_path.trim_end_matches('/'), name);
-        let is_dir = std::fs::metadata(&full_path).map(|m| m.is_dir()).unwrap_or(false);
+        let is_dir = std::fs::metadata(&full_path)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
 
         if is_dir {
             // Navigate into directory
@@ -278,8 +290,8 @@ impl NewAgentDialog {
 // ── Dialog methods on App ───────────────────────────────────────
 
 use super::App;
+use crate::application::ports::{BackgroundAgentRepository, WatcherRepository};
 use anyhow::Result;
-use crate::application::ports::{TaskRepository, WatcherRepository};
 
 impl App {
     pub fn open_new_agent_dialog(&mut self) {
@@ -334,7 +346,7 @@ impl App {
         self.refresh_agents()?;
         self.selected = self.agents.len().saturating_sub(1);
 
-        // Interactive tasks go to full agent focus; background tasks restore
+        // Interactive background_agents go to full agent focus; background background_agents restore
         // to whatever focus was active before the dialog opened.
         self.focus = if was_interactive {
             Focus::Agent
@@ -378,7 +390,10 @@ impl App {
             return Ok(());
         }
         let cli = dialog.selected_cli();
-        let id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let id = format!(
+            "background_agent-{}",
+            &uuid::Uuid::new_v4().to_string()[..8]
+        );
         let working_dir = if dialog.working_dir.is_empty() {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -386,7 +401,7 @@ impl App {
         } else {
             dialog.working_dir.clone()
         };
-        let task = crate::domain::models::Task {
+        let background_agent = crate::domain::models::BackgroundAgent {
             id,
             prompt: dialog.prompt.clone(),
             schedule_expr: dialog.cron_expr.clone(),
@@ -401,7 +416,8 @@ impl App {
             timeout_minutes: 15,
             expires_at: None,
         };
-        self.db.insert_or_update_task(&task)?;
+        self.db
+            .insert_or_update_background_agent(&background_agent)?;
         Ok(())
     }
 

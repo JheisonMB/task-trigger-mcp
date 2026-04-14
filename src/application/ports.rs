@@ -5,13 +5,13 @@
 
 use anyhow::Result;
 
-use crate::domain::models::{RunLog, RunStatus, Task, Watcher};
+use crate::domain::models::{BackgroundAgent, RunLog, RunStatus, Watcher};
 
 // ── Partial-update DTOs ──────────────────────────────────────────────
 
-/// Fields to update on a task. Only `Some` values are written.
+/// Fields to update on a background_agent. Only `Some` values are written.
 #[derive(Default)]
-pub struct TaskFieldsUpdate<'a> {
+pub struct BackgroundAgentFieldsUpdate<'a> {
     pub prompt: Option<&'a str>,
     pub schedule_expr: Option<&'a str>,
     pub cli: Option<&'a str>,
@@ -34,15 +34,19 @@ pub struct WatcherFieldsUpdate<'a> {
 
 // ── Repository traits ────────────────────────────────────────────────
 
-/// Persistence operations for scheduled tasks.
-pub trait TaskRepository {
-    fn insert_or_update_task(&self, task: &Task) -> Result<()>;
-    fn get_task(&self, id: &str) -> Result<Option<Task>>;
-    fn list_tasks(&self) -> Result<Vec<Task>>;
-    fn delete_task(&self, id: &str) -> Result<()>;
-    fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()>;
-    fn update_task_fields(&self, id: &str, fields: &TaskFieldsUpdate<'_>) -> Result<bool>;
-    fn update_task_last_run(&self, id: &str, success: bool) -> Result<()>;
+/// Persistence operations for scheduled background_agents.
+pub trait BackgroundAgentRepository {
+    fn insert_or_update_background_agent(&self, background_agent: &BackgroundAgent) -> Result<()>;
+    fn get_background_agent(&self, id: &str) -> Result<Option<BackgroundAgent>>;
+    fn list_background_agents(&self) -> Result<Vec<BackgroundAgent>>;
+    fn delete_background_agent(&self, id: &str) -> Result<()>;
+    fn update_background_agent_enabled(&self, id: &str, enabled: bool) -> Result<()>;
+    fn update_background_agent_fields(
+        &self,
+        id: &str,
+        fields: &BackgroundAgentFieldsUpdate<'_>,
+    ) -> Result<bool>;
+    fn update_background_agent_last_run(&self, id: &str, success: bool) -> Result<()>;
 }
 
 /// Persistence operations for file watchers.
@@ -60,9 +64,9 @@ pub trait WatcherRepository {
 /// Persistence operations for execution run logs.
 pub trait RunRepository {
     fn insert_run(&self, run: &RunLog) -> Result<()>;
-    fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>>;
+    fn list_runs(&self, background_agent_id: &str, limit: usize) -> Result<Vec<RunLog>>;
     fn list_all_recent_runs(&self, limit: usize) -> Result<Vec<RunLog>>;
-    fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>>;
+    fn get_active_run(&self, background_agent_id: &str) -> Result<Option<RunLog>>;
     fn update_run_status(
         &self,
         run_id: &str,

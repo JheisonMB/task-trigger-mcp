@@ -13,21 +13,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::application::ports::{TaskRepository, WatcherRepository};
+use crate::application::ports::{BackgroundAgentRepository, WatcherRepository};
 use crate::db::Database;
-use crate::domain::models::{RunLog, Task, Watcher};
+use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
 
 use super::agent::InteractiveAgent;
 
+pub(crate) use data::send_mcp_task_run;
 pub use dialog::NewAgentDialog;
 pub use dialog::{NewTaskMode, NewTaskType};
-pub(crate) use data::send_mcp_task_run;
 
 // ── Types ───────────────────────────────────────────────────────
 
 /// Unified entry in the sidebar.
 pub enum AgentEntry {
-    Task(Task),
+    BackgroundAgent(BackgroundAgent),
     Watcher(Watcher),
     Interactive(usize), // index into App::interactive_agents
 }
@@ -35,7 +35,7 @@ pub enum AgentEntry {
 impl AgentEntry {
     pub fn id<'a>(&'a self, app: &'a App) -> &'a str {
         match self {
-            Self::Task(t) => &t.id,
+            Self::BackgroundAgent(t) => &t.id,
             Self::Watcher(w) => &w.id,
             Self::Interactive(idx) => &app.interactive_agents[*idx].id,
         }
@@ -186,8 +186,12 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::Task(t) => self.db.update_task_enabled(&t.id, !t.enabled)?,
-            AgentEntry::Watcher(w) => self.db.update_watcher_enabled(&w.id, !w.enabled)?,
+            AgentEntry::BackgroundAgent(t) => {
+                self.db.update_background_agent_enabled(&t.id, !t.enabled)?;
+            }
+            AgentEntry::Watcher(w) => {
+                self.db.update_watcher_enabled(&w.id, !w.enabled)?;
+            }
             AgentEntry::Interactive(_) => {}
         }
         Ok(())

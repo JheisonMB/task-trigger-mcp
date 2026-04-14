@@ -1,7 +1,7 @@
 //! Canopy Agent Hub — TUI for monitoring and managing agents.
 //!
 //! Reads the daemon's `SQLite` database in read-only mode (WAL allows
-//! concurrent readers) and displays tasks, watchers, and their logs
+//! concurrent readers) and displays background_agents, watchers, and their logs
 //! in a card-based sidebar with a live log panel.
 
 mod agent;
@@ -28,7 +28,7 @@ use event::run_event_loop;
 /// Entry point for `canopy tui`.
 pub fn run_tui() -> Result<()> {
     let data_dir = crate::ensure_data_dir()?;
-    let db_path = data_dir.join("tasks.db");
+    let db_path = data_dir.join("background_agents.db");
 
     if !db_path.exists() {
         eprintln!("Daemon not running — starting it automatically…");
@@ -100,7 +100,6 @@ fn auto_start_daemon(data_dir: &std::path::Path) -> Result<()> {
         }
     }
 
-    cmd.spawn()
-        .context("Failed to spawn daemon process")?;
+    cmd.spawn().context("Failed to spawn daemon process")?;
     Ok(())
 }

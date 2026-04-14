@@ -67,11 +67,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let x = full.x + full.width - w - 1;
             let y = full.y + 1; // just below header
             let area = ratatui::layout::Rect::new(x, y, w, 1);
-            let widget = ratatui::widgets::Paragraph::new(msg).style(
-                ratatui::style::Style::default()
-                    .fg(ACCENT)
-                    .bg(Color::Black),
-            );
+            let widget = ratatui::widgets::Paragraph::new(msg)
+                .style(ratatui::style::Style::default().fg(ACCENT).bg(Color::Black));
             frame.render_widget(widget, area);
         }
     }

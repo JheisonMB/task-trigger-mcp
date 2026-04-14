@@ -1,4 +1,4 @@
-//! Right panel rendering — PTY output, brain automaton, banner, task/watcher details, log.
+//! Right panel rendering — PTY output, brain automaton, banner, background_agent/watcher details, log.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -8,7 +8,9 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
-use super::{ACCENT, DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
+use super::{
+    ACCENT, DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING,
+};
 use crate::tui::agent::ScreenSnapshot;
 use crate::tui::app::{relative_time, AgentEntry, App, Focus};
 use crate::tui::brians_brain::CellState;
@@ -60,26 +62,24 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             return;
         }
 
-        Focus::Preview => {
-            match app.selected_agent() {
-                Some(AgentEntry::Task(t)) => {
-                    draw_task_details(frame, inner, t, app);
-                    return;
-                }
-                Some(AgentEntry::Watcher(w)) => {
-                    draw_watcher_details(frame, inner, w);
-                    return;
-                }
-                Some(AgentEntry::Interactive(idx)) => {
-                    let agent = &app.interactive_agents[*idx];
-                    if let Some(snap) = agent.screen_snapshot() {
-                        render_vt_screen(frame, inner, &snap);
-                        return;
-                    }
-                }
-                _ => {}
+        Focus::Preview => match app.selected_agent() {
+            Some(AgentEntry::BackgroundAgent(t)) => {
+                draw_task_details(frame, inner, t, app);
+                return;
             }
-        }
+            Some(AgentEntry::Watcher(w)) => {
+                draw_watcher_details(frame, inner, w);
+                return;
+            }
+            Some(AgentEntry::Interactive(idx)) => {
+                let agent = &app.interactive_agents[*idx];
+                if let Some(snap) = agent.screen_snapshot() {
+                    render_vt_screen(frame, inner, &snap);
+                    return;
+                }
+            }
+            _ => {}
+        },
 
         Focus::Agent => {
             if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
@@ -98,10 +98,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         Focus::NewAgentDialog => {
-            let prev = app
-                .new_agent_dialog
-                .as_ref()
-                .and_then(|d| d.prev_focus);
+            let prev = app.new_agent_dialog.as_ref().and_then(|d| d.prev_focus);
             match prev {
                 Some(Focus::Home) | None => {
                     if let Some(ref brain) = app.brain {
@@ -128,8 +125,7 @@ fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, _app
         let w = msg.len() as u16;
         let x = inner.x + inner.width.saturating_sub(w + 1);
         let area = Rect::new(x, inner.y, w, 1);
-        let widget = Paragraph::new(msg)
-            .style(Style::default().fg(Color::Yellow).bg(Color::Black));
+        let widget = Paragraph::new(msg).style(Style::default().fg(Color::Yellow).bg(Color::Black));
         frame.render_widget(widget, area);
     }
 }
@@ -262,29 +258,28 @@ pub(crate) fn draw_brians_brain(
                 let y = area.y + br.row as u16;
                 let buf_cell = &mut buf[(x, y)];
                 buf_cell.set_symbol(if is_shade { "░" } else { "█" });
-                buf_cell
-                    .set_style(Style::default().fg(if is_shade { accent_dim } else { ACCENT }));
+                buf_cell.set_style(Style::default().fg(if is_shade { accent_dim } else { ACCENT }));
             }
         }
     }
 }
 
-// ── Task details (preview) ──────────────────────────────────────
+// ── BackgroundAgent details (preview) ──────────────────────────────────────
 
 fn draw_task_details(
     frame: &mut Frame,
     area: Rect,
-    task: &crate::domain::models::Task,
+    background_agent: &crate::domain::models::BackgroundAgent,
     app: &App,
 ) {
-    let has_active = app.active_runs.contains_key(&task.id);
-    let (status_text, status_color) = if !task.enabled {
+    let has_active = app.active_runs.contains_key(&background_agent.id);
+    let (status_text, status_color) = if !background_agent.enabled {
         ("DISABLED", STATUS_DISABLED)
     } else if has_active {
         ("RUNNING", STATUS_RUNNING)
-    } else if task.last_run_ok == Some(true) {
+    } else if background_agent.last_run_ok == Some(true) {
         ("OK", STATUS_OK)
-    } else if task.last_run_ok == Some(false) {
+    } else if background_agent.last_run_ok == Some(false) {
         ("FAILED", STATUS_FAIL)
     } else {
         ("IDLE", STATUS_OK)
@@ -298,27 +293,30 @@ fn draw_task_details(
         Line::from(""),
         Line::from(vec![
             Span::styled("Prompt:  ", Style::default().fg(DIM)),
-            Span::raw(&task.prompt),
+            Span::raw(&background_agent.prompt),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("Cron:    ", Style::default().fg(DIM)),
-            Span::styled(&task.schedule_expr, Style::default().fg(INTERACTIVE_COLOR)),
+            Span::styled(
+                &background_agent.schedule_expr,
+                Style::default().fg(INTERACTIVE_COLOR),
+            ),
         ]),
         Line::from(vec![
             Span::styled("CLI:     ", Style::default().fg(DIM)),
-            Span::raw(task.cli.as_str()),
+            Span::raw(background_agent.cli.as_str()),
         ]),
     ];
 
-    if let Some(ref model) = task.model {
+    if let Some(ref model) = background_agent.model {
         lines.push(Line::from(vec![
             Span::styled("Model:   ", Style::default().fg(DIM)),
             Span::raw(model),
         ]));
     }
 
-    if let Some(ref dir) = task.working_dir {
+    if let Some(ref dir) = background_agent.working_dir {
         lines.push(Line::from(vec![
             Span::styled("Dir:     ", Style::default().fg(DIM)),
             Span::raw(dir),
@@ -327,17 +325,17 @@ fn draw_task_details(
 
     lines.push(Line::from(vec![
         Span::styled("Timeout: ", Style::default().fg(DIM)),
-        Span::raw(format!("{} min", task.timeout_minutes)),
+        Span::raw(format!("{} min", background_agent.timeout_minutes)),
     ]));
 
-    if let Some(ref exp) = task.expires_at {
+    if let Some(ref exp) = background_agent.expires_at {
         lines.push(Line::from(vec![
             Span::styled("Expires: ", Style::default().fg(DIM)),
             Span::raw(relative_time(exp)),
         ]));
     }
 
-    if let Some(ref lr) = task.last_run_at {
+    if let Some(ref lr) = background_agent.last_run_at {
         lines.push(Line::from(vec![
             Span::styled("Last run:", Style::default().fg(DIM)),
             Span::raw(relative_time(lr)),
@@ -350,11 +348,7 @@ fn draw_task_details(
 
 // ── Watcher details (preview) ───────────────────────────────────
 
-fn draw_watcher_details(
-    frame: &mut Frame,
-    area: Rect,
-    watcher: &crate::domain::models::Watcher,
-) {
+fn draw_watcher_details(frame: &mut Frame, area: Rect, watcher: &crate::domain::models::Watcher) {
     let (status_text, status_color) = if watcher.enabled {
         ("ACTIVE", STATUS_RUNNING)
     } else {

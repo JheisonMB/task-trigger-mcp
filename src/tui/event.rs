@@ -385,8 +385,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 return Ok(());
             };
 
-            let is_interactive =
-                matches!(dialog.task_type, super::app::NewTaskType::Interactive);
+            let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let cli_field: usize = if is_interactive { 2 } else { 1 };
             let model_field: usize = if is_interactive { 3 } else { 2 };
             // Non-interactive only fields (prompt=3, extra=4 are before dir)
@@ -404,7 +403,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             let _ = (prompt_field, extra_field); // used in non-interactive branches below
 
             match dialog.field {
-                // Task type selector
+                // BackgroundAgent type selector
                 0 => match code {
                     KeyCode::Left => {
                         dialog.task_type = match dialog.task_type {
@@ -483,8 +482,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Down if dialog.model_picker_open => {
                         let len = dialog.model_suggestions.len();
                         if len > 0 {
-                            dialog.model_suggestion_idx =
-                                (dialog.model_suggestion_idx + 1) % len;
+                            dialog.model_suggestion_idx = (dialog.model_suggestion_idx + 1) % len;
                         }
                     }
                     KeyCode::Up if dialog.model_picker_open => {
@@ -512,7 +510,8 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => {
                         dialog.model_picker_open = false;
-                        dialog.field = if is_interactive { dir_field } else { 3 }; // prompt or dir
+                        dialog.field = if is_interactive { dir_field } else { 3 };
+                        // prompt or dir
                     }
                     _ => {}
                 },

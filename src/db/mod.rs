@@ -1,6 +1,6 @@
 //! `SQLite` database layer for persistent storage.
 //!
-//! Handles all CRUD operations for tasks, watchers, execution logs,
+//! Handles all CRUD operations for background_agents, watchers, execution logs,
 //! and daemon state using a single persistent connection.
 
 use anyhow::Result;
@@ -10,10 +10,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use crate::application::ports::{
-    RunRepository, StateRepository, TaskFieldsUpdate, TaskRepository, WatcherFieldsUpdate,
-    WatcherRepository,
+    BackgroundAgentFieldsUpdate, BackgroundAgentRepository, RunRepository, StateRepository,
+    WatcherFieldsUpdate, WatcherRepository,
 };
-use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, WatchEvent, Watcher};
+use crate::domain::models::{
+    BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, WatchEvent, Watcher,
+};
 
 /// Thread-safe `SQLite` database wrapper.
 ///
@@ -44,7 +46,7 @@ impl Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
 
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tasks (
+            "CREATE TABLE IF NOT EXISTS background_agents (
                 id TEXT PRIMARY KEY,
                 prompt TEXT NOT NULL,
                 schedule_expr TEXT NOT NULL,
@@ -78,7 +80,7 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS runs (
                 id TEXT PRIMARY KEY,
-                task_id TEXT NOT NULL,
+                background_agent_id TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'pending',
                 trigger_type TEXT NOT NULL,
                 summary TEXT,
@@ -102,13 +104,13 @@ impl Database {
 
     /// Run schema migrations for existing databases.
     fn migrate(&self, conn: &Connection) -> Result<()> {
-        // Add timeout_minutes to tasks if missing
+        // Add timeout_minutes to background_agents if missing
         let has_timeout = conn
-            .prepare("SELECT timeout_minutes FROM tasks LIMIT 0")
+            .prepare("SELECT timeout_minutes FROM background_agents LIMIT 0")
             .is_ok();
         if !has_timeout {
             conn.execute_batch(
-                "ALTER TABLE tasks ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
+                "ALTER TABLE background_agents ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
             )?;
         }
 
@@ -129,7 +131,7 @@ impl Database {
                 "ALTER TABLE runs RENAME TO runs_old;
                  CREATE TABLE runs (
                      id TEXT PRIMARY KEY,
-                     task_id TEXT NOT NULL,
+                     background_agent_id TEXT NOT NULL,
                      status TEXT NOT NULL DEFAULT 'pending',
                      trigger_type TEXT NOT NULL,
                      summary TEXT,
@@ -138,8 +140,8 @@ impl Database {
                      exit_code INTEGER,
                      timeout_at TEXT
                  );
-                 INSERT INTO runs (id, task_id, status, trigger_type, started_at, finished_at, exit_code)
-                     SELECT CAST(id AS TEXT), task_id, 'success', trigger_type, started_at, finished_at, exit_code
+                 INSERT INTO runs (id, background_agent_id, status, trigger_type, started_at, finished_at, exit_code)
+                     SELECT CAST(id AS TEXT), background_agent_id, 'success', trigger_type, started_at, finished_at, exit_code
                      FROM runs_old;
                  DROP TABLE runs_old;",
             )?;
@@ -159,7 +161,7 @@ impl Database {
                 "ALTER TABLE runs RENAME TO runs_old;
                  CREATE TABLE runs (
                      id TEXT PRIMARY KEY,
-                     task_id TEXT NOT NULL,
+                     background_agent_id TEXT NOT NULL,
                      status TEXT NOT NULL DEFAULT 'pending',
                      trigger_type TEXT NOT NULL,
                      summary TEXT,
@@ -177,36 +179,36 @@ impl Database {
     }
 }
 
-// ── Task operations ──────────────────────────────────────────────
+// ── BackgroundAgent operations ──────────────────────────────────────────────
 
-impl TaskRepository for Database {
-    fn insert_or_update_task(&self, task: &Task) -> Result<()> {
+impl BackgroundAgentRepository for Database {
+    fn insert_or_update_background_agent(&self, background_agent: &BackgroundAgent) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "INSERT OR REPLACE INTO tasks
+            "INSERT OR REPLACE INTO background_agents
             (id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, log_path, timeout_minutes)
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
-                &task.id,
-                &task.prompt,
-                &task.schedule_expr,
-                task.cli.as_str(),
-                &task.model,
-                &task.working_dir,
-                task.enabled,
-                task.created_at.to_rfc3339(),
-                task.expires_at.map(|t| t.to_rfc3339()),
-                &task.log_path,
-                task.timeout_minutes as i64,
+                &background_agent.id,
+                &background_agent.prompt,
+                &background_agent.schedule_expr,
+                background_agent.cli.as_str(),
+                &background_agent.model,
+                &background_agent.working_dir,
+                background_agent.enabled,
+                background_agent.created_at.to_rfc3339(),
+                background_agent.expires_at.map(|t| t.to_rfc3339()),
+                &background_agent.log_path,
+                background_agent.timeout_minutes as i64,
             ],
         )?;
         Ok(())
     }
 
-    fn get_task(&self, id: &str) -> Result<Option<Task>> {
+    fn get_background_agent(&self, id: &str) -> Result<Option<BackgroundAgent>> {
         let conn = self
             .conn
             .lock()
@@ -214,10 +216,10 @@ impl TaskRepository for Database {
         let mut stmt = conn.prepare(
             "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
                     created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
-             FROM tasks WHERE id = ?1",
+             FROM background_agents WHERE id = ?1",
         )?;
 
-        let task = stmt
+        let background_agent = stmt
             .query_row(params![id], |row| {
                 Ok(TaskRow {
                     id: row.get(0)?,
@@ -237,13 +239,13 @@ impl TaskRepository for Database {
             })
             .optional()?;
 
-        match task {
+        match background_agent {
             Some(row) => Ok(Some(row.into_task()?)),
             None => Ok(None),
         }
     }
 
-    fn list_tasks(&self) -> Result<Vec<Task>> {
+    fn list_background_agents(&self) -> Result<Vec<BackgroundAgent>> {
         let conn = self
             .conn
             .lock()
@@ -251,7 +253,7 @@ impl TaskRepository for Database {
         let mut stmt = conn.prepare(
             "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
                     created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
-             FROM tasks ORDER BY created_at DESC",
+             FROM background_agents ORDER BY created_at DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -272,37 +274,44 @@ impl TaskRepository for Database {
             })
         })?;
 
-        let mut tasks = Vec::new();
+        let mut background_agents = Vec::new();
         for row_result in rows {
-            tasks.push(row_result?.into_task()?);
+            background_agents.push(row_result?.into_task()?);
         }
-        Ok(tasks)
+        Ok(background_agents)
     }
 
-    fn delete_task(&self, id: &str) -> Result<()> {
+    fn delete_background_agent(&self, id: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         // Delete associated runs first (FK constraint)
-        conn.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
-        conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM runs WHERE background_agent_id = ?1",
+            params![id],
+        )?;
+        conn.execute("DELETE FROM background_agents WHERE id = ?1", params![id])?;
         Ok(())
     }
 
-    fn update_task_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    fn update_background_agent_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "UPDATE tasks SET enabled = ?1 WHERE id = ?2",
+            "UPDATE background_agents SET enabled = ?1 WHERE id = ?2",
             params![enabled, id],
         )?;
         Ok(())
     }
 
-    fn update_task_fields(&self, id: &str, fields: &TaskFieldsUpdate<'_>) -> Result<bool> {
+    fn update_background_agent_fields(
+        &self,
+        id: &str,
+        fields: &BackgroundAgentFieldsUpdate<'_>,
+    ) -> Result<bool> {
         let conn = self
             .conn
             .lock()
@@ -348,7 +357,7 @@ impl TaskRepository for Database {
 
         let id_param = sets.len() + 1;
         let sql = format!(
-            "UPDATE tasks SET {} WHERE id = ?{}",
+            "UPDATE background_agents SET {} WHERE id = ?{}",
             placeholders.join(", "),
             id_param
         );
@@ -359,13 +368,13 @@ impl TaskRepository for Database {
         Ok(rows > 0)
     }
 
-    fn update_task_last_run(&self, id: &str, success: bool) -> Result<()> {
+    fn update_background_agent_last_run(&self, id: &str, success: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "UPDATE tasks SET last_run_at = ?1, last_run_ok = ?2 WHERE id = ?3",
+            "UPDATE background_agents SET last_run_at = ?1, last_run_ok = ?2 WHERE id = ?3",
             params![Utc::now().to_rfc3339(), success, id],
         )?;
         Ok(())
@@ -486,7 +495,10 @@ impl WatcherRepository for Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute("DELETE FROM runs WHERE task_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM runs WHERE background_agent_id = ?1",
+            params![id],
+        )?;
         conn.execute("DELETE FROM watchers WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -586,11 +598,11 @@ impl RunRepository for Database {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "INSERT INTO runs (id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at)
+            "INSERT INTO runs (id, background_agent_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 &run.id,
-                &run.task_id,
+                &run.background_agent_id,
                 run.status.as_str(),
                 run.trigger_type.as_str(),
                 &run.summary,
@@ -603,20 +615,20 @@ impl RunRepository for Database {
         Ok(())
     }
 
-    fn list_runs(&self, task_id: &str, limit: usize) -> Result<Vec<RunLog>> {
+    fn list_runs(&self, background_agent_id: &str, limit: usize) -> Result<Vec<RunLog>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
-             FROM runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2",
+            "SELECT id, background_agent_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+             FROM runs WHERE background_agent_id = ?1 ORDER BY started_at DESC LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(params![task_id, limit as i64], |row| {
+        let rows = stmt.query_map(params![background_agent_id, limit as i64], |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                task_id: row.get(1)?,
+                background_agent_id: row.get(1)?,
                 status_str: row.get(2)?,
                 trigger_str: row.get(3)?,
                 summary: row.get(4)?,
@@ -640,14 +652,14 @@ impl RunRepository for Database {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+            "SELECT id, background_agent_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
              FROM runs ORDER BY started_at DESC LIMIT ?1",
         )?;
 
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok(RunRow {
                 id: row.get(0)?,
-                task_id: row.get(1)?,
+                background_agent_id: row.get(1)?,
                 status_str: row.get(2)?,
                 trigger_str: row.get(3)?,
                 summary: row.get(4)?,
@@ -665,21 +677,21 @@ impl RunRepository for Database {
         Ok(runs)
     }
 
-    fn get_active_run(&self, task_id: &str) -> Result<Option<RunLog>> {
+    fn get_active_run(&self, background_agent_id: &str) -> Result<Option<RunLog>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
-             FROM runs WHERE task_id = ?1 AND status IN ('pending', 'in_progress') LIMIT 1",
+            "SELECT id, background_agent_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+             FROM runs WHERE background_agent_id = ?1 AND status IN ('pending', 'in_progress') LIMIT 1",
         )?;
 
         let run = stmt
-            .query_row(params![task_id], |row| {
+            .query_row(params![background_agent_id], |row| {
                 Ok(RunRow {
                     id: row.get(0)?,
-                    task_id: row.get(1)?,
+                    background_agent_id: row.get(1)?,
                     status_str: row.get(2)?,
                     trigger_str: row.get(3)?,
                     summary: row.get(4)?,
@@ -738,7 +750,7 @@ impl RunRepository for Database {
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, task_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
+            "SELECT id, background_agent_id, status, trigger_type, summary, started_at, finished_at, exit_code, timeout_at
              FROM runs WHERE id = ?1",
         )?;
 
@@ -746,7 +758,7 @@ impl RunRepository for Database {
             .query_row(params![run_id], |row| {
                 Ok(RunRow {
                     id: row.get(0)?,
-                    task_id: row.get(1)?,
+                    background_agent_id: row.get(1)?,
                     status_str: row.get(2)?,
                     trigger_str: row.get(3)?,
                     summary: row.get(4)?,
@@ -810,7 +822,7 @@ struct TaskRow {
 }
 
 impl TaskRow {
-    fn into_task(self) -> Result<Task> {
+    fn into_task(self) -> Result<BackgroundAgent> {
         let cli = Cli::from_str(&self.cli_str);
         let created_at =
             chrono::DateTime::parse_from_rfc3339(&self.created_at_str)?.with_timezone(&Utc);
@@ -825,7 +837,7 @@ impl TaskRow {
             .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
             .transpose()?;
 
-        Ok(Task {
+        Ok(BackgroundAgent {
             id: self.id,
             prompt: self.prompt,
             schedule_expr: self.schedule_expr,
@@ -891,7 +903,7 @@ impl WatcherRow {
 
 struct RunRow {
     id: String,
-    task_id: String,
+    background_agent_id: String,
     status_str: String,
     trigger_str: String,
     summary: Option<String>,
@@ -918,7 +930,7 @@ impl RunRow {
 
         Ok(RunLog {
             id: self.id,
-            task_id: self.task_id,
+            background_agent_id: self.background_agent_id,
             status: RunStatus::from_str(&self.status_str),
             trigger_type: TriggerType::from_str(&self.trigger_str),
             summary: self.summary,
@@ -933,7 +945,9 @@ impl RunRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::models::{Cli, RunLog, RunStatus, Task, TriggerType, WatchEvent, Watcher};
+    use crate::domain::models::{
+        BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, WatchEvent, Watcher,
+    };
     use chrono::{Duration, Utc};
     use tempfile::NamedTempFile;
 
@@ -946,8 +960,8 @@ mod tests {
         Database::new(&path).expect("create test db")
     }
 
-    fn sample_task(id: &str) -> Task {
-        Task {
+    fn sample_task(id: &str) -> BackgroundAgent {
+        BackgroundAgent {
             id: id.to_string(),
             prompt: "Run tests".to_string(),
             schedule_expr: "0 9 * * *".to_string(),
@@ -982,15 +996,19 @@ mod tests {
         }
     }
 
-    // ── Task CRUD ─────────────────────────────────────────────────
+    // ── BackgroundAgent CRUD ─────────────────────────────────────────────────
 
     #[test]
     fn test_insert_and_get_task() {
         let db = test_db();
-        let task = sample_task("build-daily");
-        db.insert_or_update_task(&task).unwrap();
+        let background_agent = sample_task("build-daily");
+        db.insert_or_update_background_agent(&background_agent)
+            .unwrap();
 
-        let retrieved = db.get_task("build-daily").unwrap().expect("task exists");
+        let retrieved = db
+            .get_background_agent("build-daily")
+            .unwrap()
+            .expect("background_agent exists");
         assert_eq!(retrieved.id, "build-daily");
         assert_eq!(retrieved.prompt, "Run tests");
         assert_eq!(retrieved.schedule_expr, "0 9 * * *");
@@ -1002,21 +1020,26 @@ mod tests {
     #[test]
     fn test_get_nonexistent_task() {
         let db = test_db();
-        let result = db.get_task("does-not-exist").unwrap();
+        let result = db.get_background_agent("does-not-exist").unwrap();
         assert!(result.is_none());
     }
 
     #[test]
     fn test_upsert_task_overwrites() {
         let db = test_db();
-        let mut task = sample_task("my-task");
-        db.insert_or_update_task(&task).unwrap();
+        let mut background_agent = sample_task("my-background_agent");
+        db.insert_or_update_background_agent(&background_agent)
+            .unwrap();
 
-        task.prompt = "Updated prompt".to_string();
-        task.schedule_expr = "*/10 * * * *".to_string();
-        db.insert_or_update_task(&task).unwrap();
+        background_agent.prompt = "Updated prompt".to_string();
+        background_agent.schedule_expr = "*/10 * * * *".to_string();
+        db.insert_or_update_background_agent(&background_agent)
+            .unwrap();
 
-        let retrieved = db.get_task("my-task").unwrap().unwrap();
+        let retrieved = db
+            .get_background_agent("my-background_agent")
+            .unwrap()
+            .unwrap();
         assert_eq!(retrieved.prompt, "Updated prompt");
         assert_eq!(retrieved.schedule_expr, "*/10 * * * *");
     }
@@ -1032,64 +1055,71 @@ mod tests {
         let mut t3 = sample_task("third");
         t3.created_at = Utc::now();
 
-        db.insert_or_update_task(&t1).unwrap();
-        db.insert_or_update_task(&t2).unwrap();
-        db.insert_or_update_task(&t3).unwrap();
+        db.insert_or_update_background_agent(&t1).unwrap();
+        db.insert_or_update_background_agent(&t2).unwrap();
+        db.insert_or_update_background_agent(&t3).unwrap();
 
-        let tasks = db.list_tasks().unwrap();
-        assert_eq!(tasks.len(), 3);
-        assert_eq!(tasks[0].id, "third");
-        assert_eq!(tasks[1].id, "second");
-        assert_eq!(tasks[2].id, "first");
+        let background_agents = db.list_background_agents().unwrap();
+        assert_eq!(background_agents.len(), 3);
+        assert_eq!(background_agents[0].id, "third");
+        assert_eq!(background_agents[1].id, "second");
+        assert_eq!(background_agents[2].id, "first");
     }
 
     #[test]
     fn test_delete_task() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("to-delete")).unwrap();
-        assert!(db.get_task("to-delete").unwrap().is_some());
+        db.insert_or_update_background_agent(&sample_task("to-delete"))
+            .unwrap();
+        assert!(db.get_background_agent("to-delete").unwrap().is_some());
 
-        db.delete_task("to-delete").unwrap();
-        assert!(db.get_task("to-delete").unwrap().is_none());
+        db.delete_background_agent("to-delete").unwrap();
+        assert!(db.get_background_agent("to-delete").unwrap().is_none());
     }
 
     #[test]
     fn test_update_task_enabled() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("toggle-me")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("toggle-me"))
+            .unwrap();
 
-        db.update_task_enabled("toggle-me", false).unwrap();
-        let task = db.get_task("toggle-me").unwrap().unwrap();
-        assert!(!task.enabled);
+        db.update_background_agent_enabled("toggle-me", false)
+            .unwrap();
+        let background_agent = db.get_background_agent("toggle-me").unwrap().unwrap();
+        assert!(!background_agent.enabled);
 
-        db.update_task_enabled("toggle-me", true).unwrap();
-        let task = db.get_task("toggle-me").unwrap().unwrap();
-        assert!(task.enabled);
+        db.update_background_agent_enabled("toggle-me", true)
+            .unwrap();
+        let background_agent = db.get_background_agent("toggle-me").unwrap().unwrap();
+        assert!(background_agent.enabled);
     }
 
     #[test]
     fn test_update_task_last_run() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("run-me")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("run-me"))
+            .unwrap();
 
-        db.update_task_last_run("run-me", true).unwrap();
-        let task = db.get_task("run-me").unwrap().unwrap();
-        assert!(task.last_run_at.is_some());
-        assert_eq!(task.last_run_ok, Some(true));
+        db.update_background_agent_last_run("run-me", true).unwrap();
+        let background_agent = db.get_background_agent("run-me").unwrap().unwrap();
+        assert!(background_agent.last_run_at.is_some());
+        assert_eq!(background_agent.last_run_ok, Some(true));
 
-        db.update_task_last_run("run-me", false).unwrap();
-        let task = db.get_task("run-me").unwrap().unwrap();
-        assert_eq!(task.last_run_ok, Some(false));
+        db.update_background_agent_last_run("run-me", false)
+            .unwrap();
+        let background_agent = db.get_background_agent("run-me").unwrap().unwrap();
+        assert_eq!(background_agent.last_run_ok, Some(false));
     }
 
     #[test]
     fn test_task_with_expiration() {
         let db = test_db();
-        let mut task = sample_task("expiring");
-        task.expires_at = Some(Utc::now() + Duration::hours(1));
-        db.insert_or_update_task(&task).unwrap();
+        let mut background_agent = sample_task("expiring");
+        background_agent.expires_at = Some(Utc::now() + Duration::hours(1));
+        db.insert_or_update_background_agent(&background_agent)
+            .unwrap();
 
-        let retrieved = db.get_task("expiring").unwrap().unwrap();
+        let retrieved = db.get_background_agent("expiring").unwrap().unwrap();
         assert!(retrieved.expires_at.is_some());
         assert!(!retrieved.is_expired());
     }
@@ -1184,12 +1214,13 @@ mod tests {
     #[test]
     fn test_insert_and_list_runs() {
         let db = test_db();
-        // Need a task first for FK
-        db.insert_or_update_task(&sample_task("run-task")).unwrap();
+        // Need a background_agent first for FK
+        db.insert_or_update_background_agent(&sample_task("run-background_agent"))
+            .unwrap();
 
         let run = RunLog {
             id: uuid::Uuid::new_v4().to_string(),
-            task_id: "run-task".to_string(),
+            background_agent_id: "run-background_agent".to_string(),
             status: RunStatus::Success,
             trigger_type: TriggerType::Scheduled,
             summary: None,
@@ -1200,9 +1231,9 @@ mod tests {
         };
         db.insert_run(&run).unwrap();
 
-        let runs = db.list_runs("run-task", 10).unwrap();
+        let runs = db.list_runs("run-background_agent", 10).unwrap();
         assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].task_id, "run-task");
+        assert_eq!(runs[0].background_agent_id, "run-background_agent");
         assert_eq!(runs[0].exit_code, Some(0));
         assert!(matches!(runs[0].trigger_type, TriggerType::Scheduled));
     }
@@ -1210,12 +1241,13 @@ mod tests {
     #[test]
     fn test_list_runs_limit() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("many-runs")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("many-runs"))
+            .unwrap();
 
         for i in 0..10 {
             let run = RunLog {
                 id: uuid::Uuid::new_v4().to_string(),
-                task_id: "many-runs".to_string(),
+                background_agent_id: "many-runs".to_string(),
                 status: RunStatus::Success,
                 trigger_type: TriggerType::Manual,
                 summary: None,
@@ -1234,11 +1266,11 @@ mod tests {
     #[test]
     fn test_delete_task_cascades_runs() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("cascade-task"))
+        db.insert_or_update_background_agent(&sample_task("cascade-background_agent"))
             .unwrap();
         let run = RunLog {
             id: uuid::Uuid::new_v4().to_string(),
-            task_id: "cascade-task".to_string(),
+            background_agent_id: "cascade-background_agent".to_string(),
             status: RunStatus::Pending,
             trigger_type: TriggerType::Watch,
             summary: None,
@@ -1248,26 +1280,39 @@ mod tests {
             timeout_at: None,
         };
         db.insert_run(&run).unwrap();
-        assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 1);
+        assert_eq!(
+            db.list_runs("cascade-background_agent", 10).unwrap().len(),
+            1
+        );
 
-        db.delete_task("cascade-task").unwrap();
-        assert_eq!(db.list_runs("cascade-task", 10).unwrap().len(), 0);
+        db.delete_background_agent("cascade-background_agent")
+            .unwrap();
+        assert_eq!(
+            db.list_runs("cascade-background_agent", 10).unwrap().len(),
+            0
+        );
     }
 
-    // ── Task field updates ────────────────────────────────────────
+    // ── BackgroundAgent field updates ────────────────────────────────────────
 
     #[test]
     fn test_update_task_fields_prompt() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("upd-task")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("upd-background_agent"))
+            .unwrap();
 
-        let fields = TaskFieldsUpdate {
+        let fields = BackgroundAgentFieldsUpdate {
             prompt: Some("New prompt"),
             ..Default::default()
         };
-        assert!(db.update_task_fields("upd-task", &fields).unwrap());
+        assert!(db
+            .update_background_agent_fields("upd-background_agent", &fields)
+            .unwrap());
 
-        let t = db.get_task("upd-task").unwrap().unwrap();
+        let t = db
+            .get_background_agent("upd-background_agent")
+            .unwrap()
+            .unwrap();
         assert_eq!(t.prompt, "New prompt");
         assert_eq!(t.schedule_expr, "0 9 * * *"); // unchanged
     }
@@ -1275,18 +1320,21 @@ mod tests {
     #[test]
     fn test_update_task_fields_multiple() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("upd-multi")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("upd-multi"))
+            .unwrap();
 
-        let fields = TaskFieldsUpdate {
+        let fields = BackgroundAgentFieldsUpdate {
             prompt: Some("Updated prompt"),
             schedule_expr: Some("*/10 * * * *"),
             cli: Some("kiro"),
             model: Some(Some("gpt-5")),
             ..Default::default()
         };
-        assert!(db.update_task_fields("upd-multi", &fields).unwrap());
+        assert!(db
+            .update_background_agent_fields("upd-multi", &fields)
+            .unwrap());
 
-        let t = db.get_task("upd-multi").unwrap().unwrap();
+        let t = db.get_background_agent("upd-multi").unwrap().unwrap();
         assert_eq!(t.prompt, "Updated prompt");
         assert_eq!(t.schedule_expr, "*/10 * * * *");
         assert!(matches!(t.cli, Cli::Kiro));
@@ -1296,38 +1344,46 @@ mod tests {
     #[test]
     fn test_update_task_fields_clear_optional() {
         let db = test_db();
-        let mut task = sample_task("upd-clear");
-        task.model = Some("claude-4".to_string());
-        db.insert_or_update_task(&task).unwrap();
+        let mut background_agent = sample_task("upd-clear");
+        background_agent.model = Some("claude-4".to_string());
+        db.insert_or_update_background_agent(&background_agent)
+            .unwrap();
 
-        let fields = TaskFieldsUpdate {
+        let fields = BackgroundAgentFieldsUpdate {
             model: Some(None), // clear model
             ..Default::default()
         };
-        assert!(db.update_task_fields("upd-clear", &fields).unwrap());
+        assert!(db
+            .update_background_agent_fields("upd-clear", &fields)
+            .unwrap());
 
-        let t = db.get_task("upd-clear").unwrap().unwrap();
+        let t = db.get_background_agent("upd-clear").unwrap().unwrap();
         assert!(t.model.is_none());
     }
 
     #[test]
     fn test_update_task_fields_no_fields_returns_false() {
         let db = test_db();
-        db.insert_or_update_task(&sample_task("upd-noop")).unwrap();
+        db.insert_or_update_background_agent(&sample_task("upd-noop"))
+            .unwrap();
 
-        let fields = TaskFieldsUpdate::default();
-        assert!(!db.update_task_fields("upd-noop", &fields).unwrap());
+        let fields = BackgroundAgentFieldsUpdate::default();
+        assert!(!db
+            .update_background_agent_fields("upd-noop", &fields)
+            .unwrap());
     }
 
     #[test]
     fn test_update_task_fields_nonexistent_returns_false() {
         let db = test_db();
 
-        let fields = TaskFieldsUpdate {
+        let fields = BackgroundAgentFieldsUpdate {
             prompt: Some("ghost"),
             ..Default::default()
         };
-        assert!(!db.update_task_fields("nonexistent", &fields).unwrap());
+        assert!(!db
+            .update_background_agent_fields("nonexistent", &fields)
+            .unwrap());
     }
 
     // ── Watcher field updates ─────────────────────────────────────

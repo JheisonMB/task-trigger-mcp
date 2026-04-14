@@ -296,9 +296,7 @@ impl InteractiveAgent {
                 let col: u16 = cols / 2;
                 let row: u16 = 10;
                 let single = match encoding {
-                    MPE::Sgr => {
-                        format!("\x1b[<{};{};{}M", button, col + 1, row + 1).into_bytes()
-                    }
+                    MPE::Sgr => format!("\x1b[<{};{};{}M", button, col + 1, row + 1).into_bytes(),
                     _ => {
                         vec![
                             0x1b,

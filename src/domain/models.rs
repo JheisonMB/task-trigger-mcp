@@ -1,14 +1,14 @@
 //! Core domain models for the canopy daemon.
 //!
-//! Defines tasks, watchers, execution logs, and all supporting types.
+//! Defines background_agents, watchers, execution logs, and all supporting types.
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A scheduled task that runs on a cron schedule.
+/// A scheduled background_agent that runs on a cron schedule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
+pub struct BackgroundAgent {
     pub id: String,
     pub prompt: String,
     pub schedule_expr: String,
@@ -25,14 +25,14 @@ pub struct Task {
     pub timeout_minutes: u32,
 }
 
-impl Task {
-    /// Check if this task has expired.
+impl BackgroundAgent {
+    /// Check if this background_agent has expired.
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|exp| Utc::now() > exp)
     }
 }
 
-/// A file system watcher that triggers tasks on file changes.
+/// A file system watcher that triggers background_agents on file changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Watcher {
     pub id: String,
@@ -111,7 +111,7 @@ impl std::fmt::Display for WatchEvent {
     }
 }
 
-/// Supported CLI tools for task execution.
+/// Supported CLI tools for background_agent execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum Cli {
     #[serde(rename = "opencode")]
@@ -339,11 +339,11 @@ impl std::fmt::Display for RunStatus {
     }
 }
 
-/// Record of a single task execution.
+/// Record of a single background_agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
     pub id: String,
-    pub task_id: String,
+    pub background_agent_id: String,
     pub status: RunStatus,
     pub trigger_type: TriggerType,
     pub summary: Option<String>,
@@ -353,7 +353,7 @@ pub struct RunLog {
     pub timeout_at: Option<DateTime<Utc>>,
 }
 
-/// How a task was triggered.
+/// How a background_agent was triggered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerType {
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn test_task_not_expired_no_expiry() {
-        let task = Task {
+        let background_agent = BackgroundAgent {
             id: "t1".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
@@ -408,12 +408,12 @@ mod tests {
             log_path: "/tmp/t.log".to_string(),
             timeout_minutes: 15,
         };
-        assert!(!task.is_expired());
+        assert!(!background_agent.is_expired());
     }
 
     #[test]
     fn test_task_not_expired_future() {
-        let task = Task {
+        let background_agent = BackgroundAgent {
             id: "t2".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
@@ -428,12 +428,12 @@ mod tests {
             log_path: "/tmp/t.log".to_string(),
             timeout_minutes: 15,
         };
-        assert!(!task.is_expired());
+        assert!(!background_agent.is_expired());
     }
 
     #[test]
     fn test_task_expired_past() {
-        let task = Task {
+        let background_agent = BackgroundAgent {
             id: "t3".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
@@ -448,7 +448,7 @@ mod tests {
             log_path: "/tmp/t.log".to_string(),
             timeout_minutes: 15,
         };
-        assert!(task.is_expired());
+        assert!(background_agent.is_expired());
     }
 
     #[test]

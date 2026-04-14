@@ -23,112 +23,221 @@ const EVENT_DECAY_SECS: u64 = 30;
 // ── Kaomojis ──────────────────────────────────────────────────────
 
 const KAO_LOADING: &[&str] = &[
-    "(Ծ‸ Ծ)", "( ≖.≖)", "(◡̀_◡́)", "(ㆆ_ㆆ)",
-    "(◉̃_᷅◉)", "(͠◉_◉᷅ )", "(◑_◑)",
+    "(Ծ‸ Ծ)",
+    "( ≖.≖)",
+    "(◡̀_◡́)",
+    "(ㆆ_ㆆ)",
+    "(◉̃_᷅◉)",
+    "(͠◉_◉᷅ )",
+    "(◑_◑)",
 ];
 const KAO_SUCCESS: &[&str] = &[
-    "(♥‿♥)", "(◕‿◕)", "(っ▀¯▀)つ", "ヾ(´〇`)ﾉ♪♪♪",
-    "(◠﹏◠)", "٩(˘◡˘)۶", "ᕙ(`▿´)ᕗ",
+    "(♥‿♥)",
+    "(◕‿◕)",
+    "(っ▀¯▀)つ",
+    "ヾ(´〇`)ﾉ♪♪♪",
+    "(◠﹏◠)",
+    "٩(˘◡˘)۶",
+    "ᕙ(`▿´)ᕗ",
 ];
 const KAO_ERROR: &[&str] = &[
-    "ಥ_ಥ", "◔_◔", "(҂◡_◡)", "♨_♨", "(Ծ‸ Ծ)",
-    "¯\\_(ツ)_/¯", "¿ⓧ_ⓧﮌ", "(╥﹏╥)", "( ˘︹˘ )",
+    "ಥ_ಥ",
+    "◔_◔",
+    "(҂◡_◡)",
+    "♨_♨",
+    "(Ծ‸ Ծ)",
+    "¯\\_(ツ)_/¯",
+    "¿ⓧ_ⓧﮌ",
+    "(╥﹏╥)",
+    "( ˘︹˘ )",
 ];
-const KAO_THINKING: &[&str] = &[
-    "(ʘ_ʘ)", "(º_º)", "(￢_￢)", "(._.)", "ఠ_ఠ", "(⊙_◎)",
-];
+const KAO_THINKING: &[&str] = &["(ʘ_ʘ)", "(º_º)", "(￢_￢)", "(._.)", "ఠ_ఠ", "(⊙_◎)"];
 
 // ── Actions ───────────────────────────────────────────────────────
 
 const ACT_LOADING: &[&str] = &[
-    "Calibrating", "Aligning", "Resolving", "Processing", "Exploring",
-    "Parsing", "Synchronizing", "Mapping", "Scanning", "Warming up",
+    "Calibrating",
+    "Aligning",
+    "Resolving",
+    "Processing",
+    "Exploring",
+    "Parsing",
+    "Synchronizing",
+    "Mapping",
+    "Scanning",
+    "Warming up",
 ];
 const ACT_SUCCESS: &[&str] = &[
-    "Completed", "Done", "Stabilized", "Resolved", "Deployed",
-    "Confirmed", "Verified", "Shipped", "Unlocked",
+    "Completed",
+    "Done",
+    "Stabilized",
+    "Resolved",
+    "Deployed",
+    "Confirmed",
+    "Verified",
+    "Shipped",
+    "Unlocked",
 ];
 const ACT_ERROR: &[&str] = &[
-    "Something broke", "Signal lost", "Unexpected anomaly",
-    "Collision detected", "Entropy overflow", "Segfault in",
+    "Something broke",
+    "Signal lost",
+    "Unexpected anomaly",
+    "Collision detected",
+    "Entropy overflow",
+    "Segfault in",
 ];
 const ACT_THINKING: &[&str] = &[
-    "Evaluating", "Considering", "Weighing", "Simulating",
-    "Modeling", "Questioning", "Investigating",
+    "Evaluating",
+    "Considering",
+    "Weighing",
+    "Simulating",
+    "Modeling",
+    "Questioning",
+    "Investigating",
 ];
 
 // ── Objects ───────────────────────────────────────────────────────
 
 const OBJ_DEV: &[&str] = &[
-    "the build pipeline", "memory leaks", "all dependencies",
-    "the event loop", "parallel threads", "null references",
-    "the type system", "edge cases", "async chaos",
+    "the build pipeline",
+    "memory leaks",
+    "all dependencies",
+    "the event loop",
+    "parallel threads",
+    "null references",
+    "the type system",
+    "edge cases",
+    "async chaos",
 ];
 const OBJ_SPACE: &[&str] = &[
-    "cosmic background noise", "the event horizon", "orbital parameters",
-    "dark matter traces", "parallel universes", "the observable scope",
-    "stellar coordinates", "quantum foam", "spacetime curvature",
+    "cosmic background noise",
+    "the event horizon",
+    "orbital parameters",
+    "dark matter traces",
+    "parallel universes",
+    "the observable scope",
+    "stellar coordinates",
+    "quantum foam",
+    "spacetime curvature",
 ];
 const OBJ_SCIENCE: &[&str] = &[
-    "entropy levels", "wave functions", "energy states",
-    "the hypothesis", "controlled variables", "molecular noise",
-    "the signal", "quantum states", "unknown constants",
+    "entropy levels",
+    "wave functions",
+    "energy states",
+    "the hypothesis",
+    "controlled variables",
+    "molecular noise",
+    "the signal",
+    "quantum states",
+    "unknown constants",
 ];
 const OBJ_ABSURD: &[&str] = &[
-    "the rubber duck", "coffee levels", "the cat on keyboard",
-    "semicolons", "the D20", "stack overflow",
-    "the intern", "the void", "common sense",
+    "the rubber duck",
+    "coffee levels",
+    "the cat on keyboard",
+    "semicolons",
+    "the D20",
+    "stack overflow",
+    "the intern",
+    "the void",
+    "common sense",
 ];
 const OBJ_NATURE: &[&str] = &[
-    "the root system", "fallen branches", "the undergrowth",
-    "moss patterns", "the tree rings", "canopy layers",
-    "mycelium networks", "wind currents", "leaf patterns",
+    "the root system",
+    "fallen branches",
+    "the undergrowth",
+    "moss patterns",
+    "the tree rings",
+    "canopy layers",
+    "mycelium networks",
+    "wind currents",
+    "leaf patterns",
 ];
 
 // ── Twists ────────────────────────────────────────────────────────
 
 const TWIST_FUNNY: &[&str] = &[
-    "(probably)", "(don't panic)", "(it works on my machine)",
-    "(send help)", "(this is fine)", "(might explode)",
-    "(no guarantees)", "(fingers crossed)",
+    "(probably)",
+    "(don't panic)",
+    "(it works on my machine)",
+    "(send help)",
+    "(this is fine)",
+    "(might explode)",
+    "(no guarantees)",
+    "(fingers crossed)",
 ];
 const TWIST_POETIC: &[&str] = &[
-    "across dimensions", "in the void", "beyond observable limits",
-    "through the event horizon", "between the stars",
-    "at the edge of reason", "in silence", "beyond the known",
+    "across dimensions",
+    "in the void",
+    "beyond observable limits",
+    "through the event horizon",
+    "between the stars",
+    "at the edge of reason",
+    "in silence",
+    "beyond the known",
 ];
 const TWIST_ADVICE: &[&str] = &[
-    "— keep it simple", "— read the logs", "— don't overthink it",
-    "— ship small changes", "— test before trusting",
-    "— name things properly", "— fail fast", "— question assumptions",
+    "— keep it simple",
+    "— read the logs",
+    "— don't overthink it",
+    "— ship small changes",
+    "— test before trusting",
+    "— name things properly",
+    "— fail fast",
+    "— question assumptions",
 ];
 
 // ── Direct phrases (context-driven) ──────────────────────────────
 
 const PH_IDLE: &[&str] = &[
-    "the canopy rests", "leaves settling", "photosynthesis mode",
-    "listening to the forest", "roots are deep",
-    "quiet among the branches", "the understory hums", "dappled sunlight",
+    "the canopy rests",
+    "leaves settling",
+    "photosynthesis mode",
+    "listening to the forest",
+    "roots are deep",
+    "quiet among the branches",
+    "the understory hums",
+    "dappled sunlight",
 ];
 const PH_SPAWN: &[&str] = &[
-    "new growth detected", "a seedling emerges", "branches extending",
-    "the forest expands", "fresh leaves unfurling", "welcome to the grove",
+    "new growth detected",
+    "a seedling emerges",
+    "branches extending",
+    "the forest expands",
+    "fresh leaves unfurling",
+    "welcome to the grove",
 ];
 const PH_SUCCESS: &[&str] = &[
-    "sunlight breaks through", "the forest hums", "equilibrium restored",
-    "another ring in the trunk", "the canopy thrives", "fruits of labor",
+    "sunlight breaks through",
+    "the forest hums",
+    "equilibrium restored",
+    "another ring in the trunk",
+    "the canopy thrives",
+    "fruits of labor",
 ];
 const PH_ERROR: &[&str] = &[
-    "storm damage reported", "a branch gave way", "the wind picks up",
-    "lightning struck nearby", "roots need attention", "the canopy sways hard",
+    "storm damage reported",
+    "a branch gave way",
+    "the wind picks up",
+    "lightning struck nearby",
+    "roots need attention",
+    "the canopy sways hard",
 ];
 const PH_SCROLL: &[&str] = &[
-    "exploring the layers", "scanning tree rings", "tracing the bark",
-    "reading the growth", "deeper into the forest", "following the grain",
+    "exploring the layers",
+    "scanning tree rings",
+    "tracing the bark",
+    "reading the growth",
+    "deeper into the forest",
+    "following the grain",
 ];
 const PH_BUSY: &[&str] = &[
-    "the forest is alive", "all branches active", "ecosystem in full swing",
-    "photosynthesis overload", "the canopy buzzes", "biodiversity peak",
+    "the forest is alive",
+    "all branches active",
+    "ecosystem in full swing",
+    "photosynthesis overload",
+    "the canopy buzzes",
+    "biodiversity peak",
 ];
 
 // ── Types ─────────────────────────────────────────────────────────

@@ -95,13 +95,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn draw_agent_list(
-    frame: &mut Frame,
-    area: Rect,
-    indices: &[usize],
-    app: &mut App,
-    accent: Color,
-) {
+fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut App, accent: Color) {
     let card_h = 3u16;
     let row_h = 4u16;
     let mut y = area.y;
@@ -139,7 +133,7 @@ fn draw_sidebar_card(
     };
 
     let (status_color, agent_type, type_detail) = match agent {
-        AgentEntry::Task(t) => {
+        AgentEntry::BackgroundAgent(t) => {
             let has_active = app.active_runs.contains_key(&t.id);
             let color = if !t.enabled {
                 STATUS_DISABLED
@@ -213,7 +207,7 @@ fn draw_sidebar_card(
     if area.height >= 3 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
         let work_dir = match agent {
-            AgentEntry::Task(t) => t.working_dir.as_deref(),
+            AgentEntry::BackgroundAgent(t) => t.working_dir.as_deref(),
             AgentEntry::Watcher(w) => Some(w.path.as_str()),
             AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
         };

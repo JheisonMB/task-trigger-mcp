@@ -44,13 +44,10 @@ impl App {
     }
 
     pub(super) fn dismiss_copied(&mut self) {
-        if self.show_copied
-            && self.copied_at.elapsed() > std::time::Duration::from_secs(2)
-        {
+        if self.show_copied && self.copied_at.elapsed() > std::time::Duration::from_secs(2) {
             self.show_copied = false;
         }
     }
-
 
     pub fn next_interactive(&mut self) {
         let interactive_indices: Vec<usize> = self
@@ -189,9 +186,9 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::Task(t) => {
-                use crate::application::ports::TaskRepository;
-                self.db.delete_task(&t.id)?;
+            AgentEntry::BackgroundAgent(t) => {
+                use crate::application::ports::BackgroundAgentRepository;
+                self.db.delete_background_agent(&t.id)?;
             }
             AgentEntry::Watcher(w) => {
                 use crate::application::ports::WatcherRepository;

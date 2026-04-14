@@ -12,11 +12,7 @@ use crate::tui::whimsg::TITLE;
 
 /// Return the first `n` chars of `s`, respecting char boundaries.
 fn first_n_chars(s: &str, n: usize) -> &str {
-    let end = s
-        .char_indices()
-        .nth(n)
-        .map(|(i, _)| i)
-        .unwrap_or(s.len());
+    let end = s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len());
     &s[..end]
 }
 
@@ -35,7 +31,11 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         // Blinking █ in red when stopped
         let blink_on = (millis / 500) % 2 == 0;
-        let color = if blink_on { ERROR_COLOR } else { Color::Rgb(120, 60, 60) };
+        let color = if blink_on {
+            ERROR_COLOR
+        } else {
+            Color::Rgb(120, 60, 60)
+        };
         ("█", color)
     };
 
@@ -81,7 +81,6 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     } else {
         // Blank phase — leading space already present
     }
-
 
     let left = Paragraph::new(Line::from(spans));
     frame.render_widget(left, area);

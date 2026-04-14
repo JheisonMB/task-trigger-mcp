@@ -42,7 +42,14 @@ pub fn providers_for_cli(cli: &str) -> &[&str] {
     match cli {
         "claude" => &["anthropic"],
         "codex" => &["openai"],
-        "copilot" => &["openai", "anthropic", "google", "mistral", "xai", "deepseek"],
+        "copilot" => &[
+            "openai",
+            "anthropic",
+            "google",
+            "mistral",
+            "xai",
+            "deepseek",
+        ],
         "gemini" => &["google"],
         "qwen" => &["alibaba"],
         "kiro" => &["anthropic", "amazon", "google"],
@@ -179,7 +186,10 @@ mod timestamp_serde {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     pub fn serialize<S: Serializer>(time: &SystemTime, ser: S) -> Result<S::Ok, S::Error> {
-        let secs = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let secs = time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         secs.serialize(ser)
     }
 
