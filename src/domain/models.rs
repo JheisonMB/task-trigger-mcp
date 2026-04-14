@@ -111,90 +111,55 @@ impl std::fmt::Display for WatchEvent {
     }
 }
 
-/// Supported CLI tools for background_agent execution.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub enum Cli {
-    #[serde(rename = "opencode")]
-    OpenCode,
-    #[serde(rename = "kiro")]
-    Kiro,
-    #[serde(rename = "copilot")]
-    Copilot,
-    #[serde(rename = "qwen")]
-    Qwen,
-    #[serde(rename = "gemini")]
-    Gemini,
-    #[serde(rename = "claude")]
-    Claude,
-    #[serde(rename = "codex")]
-    Codex,
-}
+/// A CLI platform identifier, backed by the canopy registry.
+///
+/// Stored as a plain string (e.g. `"opencode"`, `"kiro"`). Adding support for a new CLI
+/// only requires updating the `canopy-registry/platforms.json` — no Rust code changes needed.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct Cli(pub String);
 
 impl Cli {
-    /// Parse from string (defaults to `OpenCode` for unknown values).
+    /// Construct from any platform name.
+    pub fn new(name: impl Into<String>) -> Self {
+        Cli(name.into())
+    }
+
+    /// Parse from a DB/JSON string. Accepts any non-empty value; empty strings default to `"opencode"`.
     pub fn from_str(s: &str) -> Self {
-        match s {
-            "kiro" => Self::Kiro,
-            "copilot" => Self::Copilot,
-            "qwen" => Self::Qwen,
-            "gemini" => Self::Gemini,
-            "claude" => Self::Claude,
-            "codex" => Self::Codex,
-            _ => Self::OpenCode,
+        if s.is_empty() {
+            Cli("opencode".to_string())
+        } else {
+            Cli(s.to_string())
         }
     }
 
-    /// Return the string representation used for DB storage.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::OpenCode => "opencode",
-            Self::Kiro => "kiro",
-            Self::Copilot => "copilot",
-            Self::Qwen => "qwen",
-            Self::Gemini => "gemini",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
+    /// Return the platform name used for DB storage and display.
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 
-    /// Return the CLI command name (the actual binary name in PATH).
-    pub fn command_name(&self) -> &'static str {
-        match self {
-            Self::OpenCode => "opencode",
-            Self::Kiro => "kiro-cli",
-            Self::Copilot => "copilot",
-            Self::Qwen => "qwen",
-            Self::Gemini => "gemini",
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-        }
+    /// Return the binary name for this CLI, looked up from the saved registry config.
+    /// Falls back to the platform name if no registry entry is found.
+    pub fn command_name(&self) -> String {
+        let registry = Self::load_registry();
+        registry
+            .and_then(|r| r.get(self.as_str()).map(|c| c.binary.clone()))
+            .unwrap_or_else(|| self.0.clone())
     }
 
-    /// Detect which CLIs are available in PATH.
+    /// Detect which CLIs are currently available, using the saved registry config.
+    /// Returns names of CLIs whose binary was found in PATH during `canopy setup`.
+    /// Falls back to an empty list if the config file is absent.
     pub fn detect_available() -> Vec<Cli> {
-        let mut available = Vec::new();
-        if which::which("opencode").is_ok() {
-            available.push(Cli::OpenCode);
-        }
-        if which::which("kiro-cli").is_ok() {
-            available.push(Cli::Kiro);
-        }
-        if which::which("copilot").is_ok() {
-            available.push(Cli::Copilot);
-        }
-        if which::which("qwen").is_ok() {
-            available.push(Cli::Qwen);
-        }
-        if which::which("gemini").is_ok() {
-            available.push(Cli::Gemini);
-        }
-        if which::which("claude").is_ok() {
-            available.push(Cli::Claude);
-        }
-        if which::which("codex").is_ok() {
-            available.push(Cli::Codex);
-        }
-        available
+        let Some(registry) = Self::load_registry() else {
+            return Vec::new();
+        };
+        registry
+            .available_clis
+            .iter()
+            .map(|c| Cli::new(&c.name))
+            .collect()
     }
 
     /// Auto-detect a default CLI. Returns the single available CLI,
@@ -202,7 +167,7 @@ impl Cli {
     pub fn detect_default() -> Option<Cli> {
         let available = Self::detect_available();
         if available.len() == 1 {
-            Some(available[0])
+            Some(available.into_iter().next().unwrap())
         } else {
             None
         }
@@ -210,22 +175,12 @@ impl Cli {
 
     /// Resolve CLI from an optional user-provided parameter.
     ///
-    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` / `Some("qwen")` / `Some("gemini")` → returns that variant.
-    /// - `Some(other)` → error with unknown CLI message.
-    /// - `None` → auto-detects from PATH. Fails if zero or multiple CLIs found.
+    /// - `Some(name)` → returns `Cli(name)` for any non-empty string.
+    /// - `None` → auto-detects from the saved registry. Fails if zero or multiple CLIs found.
     pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
         match param {
-            Some("opencode") => Ok(Cli::OpenCode),
-            Some("kiro") => Ok(Cli::Kiro),
-            Some("copilot") => Ok(Cli::Copilot),
-            Some("qwen") => Ok(Cli::Qwen),
-            Some("gemini") => Ok(Cli::Gemini),
-            Some("claude") => Ok(Cli::Claude),
-            Some("codex") => Ok(Cli::Codex),
-            Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', 'claude', or 'codex'",
-                other
-            )),
+            Some(name) if !name.is_empty() => Ok(Cli::new(name)),
+            Some(_) => Err("CLI name must not be empty.".to_string()),
             None => match Cli::detect_default() {
                 Some(cli) => {
                     tracing::info!("Auto-detected CLI: {}", cli);
@@ -234,13 +189,10 @@ impl Cli {
                 None => {
                     let available = Cli::detect_available();
                     if available.is_empty() {
-                        Err(
-                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', 'qwen', 'gemini', 'claude', or 'codex'."
-                                .to_string(),
-                        )
+                        Err("No CLI found in the registry. Run 'canopy setup' to detect available CLIs.".to_string())
                     } else {
                         Err(format!(
-                            "Multiple CLIs found in PATH ({}). Please specify the 'cli' parameter explicitly.",
+                            "Multiple CLIs found ({}). Please specify the 'cli' parameter explicitly.",
                             available.iter().map(|c| c.as_str()).collect::<Vec<_>>().join(", ")
                         ))
                     }
@@ -284,11 +236,16 @@ impl Cli {
             env_vars: cli_config.env_vars.clone(),
         })
     }
+
+    fn load_registry() -> Option<super::cli_config::CliRegistry> {
+        let home = dirs::home_dir()?;
+        super::cli_config::CliRegistry::load(&home.join(".canopy/cli_config.json"))
+    }
 }
 
 impl std::fmt::Display for Cli {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.as_str())
+        write!(f, "{}", self.0)
     }
 }
 
@@ -397,7 +354,7 @@ mod tests {
             id: "t1".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
-            cli: Cli::OpenCode,
+            cli: Cli::new("opencode"),
             model: None,
             working_dir: None,
             enabled: true,
@@ -417,7 +374,7 @@ mod tests {
             id: "t2".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
-            cli: Cli::OpenCode,
+            cli: Cli::new("opencode"),
             model: None,
             working_dir: None,
             enabled: true,
@@ -437,7 +394,7 @@ mod tests {
             id: "t3".to_string(),
             prompt: "test".to_string(),
             schedule_expr: "* * * * *".to_string(),
-            cli: Cli::OpenCode,
+            cli: Cli::new("opencode"),
             model: None,
             working_dir: None,
             enabled: true,
@@ -471,54 +428,48 @@ mod tests {
 
     #[test]
     fn test_cli_from_str() {
-        assert!(matches!(Cli::from_str("opencode"), Cli::OpenCode));
-        assert!(matches!(Cli::from_str("kiro"), Cli::Kiro));
-        assert!(matches!(Cli::from_str("gemini"), Cli::Gemini));
-        // Unknown defaults to OpenCode
-        assert!(matches!(Cli::from_str("unknown"), Cli::OpenCode));
-        assert!(matches!(Cli::from_str(""), Cli::OpenCode));
+        assert_eq!(Cli::from_str("opencode").as_str(), "opencode");
+        assert_eq!(Cli::from_str("kiro").as_str(), "kiro");
+        assert_eq!(Cli::from_str("gemini").as_str(), "gemini");
+        // Unknown strings are accepted as-is
+        assert_eq!(Cli::from_str("unknown").as_str(), "unknown");
+        // Empty string defaults to opencode
+        assert_eq!(Cli::from_str("").as_str(), "opencode");
     }
 
     #[test]
     fn test_cli_as_str() {
-        assert_eq!(Cli::OpenCode.as_str(), "opencode");
-        assert_eq!(Cli::Kiro.as_str(), "kiro");
-        assert_eq!(Cli::Gemini.as_str(), "gemini");
-    }
-
-    #[test]
-    fn test_cli_command_name() {
-        assert_eq!(Cli::OpenCode.command_name(), "opencode");
-        assert_eq!(Cli::Kiro.command_name(), "kiro-cli");
-        assert_eq!(Cli::Gemini.command_name(), "gemini");
+        assert_eq!(Cli::new("opencode").as_str(), "opencode");
+        assert_eq!(Cli::new("kiro").as_str(), "kiro");
+        assert_eq!(Cli::new("gemini").as_str(), "gemini");
     }
 
     #[test]
     fn test_cli_display() {
-        assert_eq!(format!("{}", Cli::OpenCode), "opencode");
-        assert_eq!(format!("{}", Cli::Kiro), "kiro");
-        assert_eq!(format!("{}", Cli::Gemini), "gemini");
+        assert_eq!(format!("{}", Cli::new("opencode")), "opencode");
+        assert_eq!(format!("{}", Cli::new("kiro")), "kiro");
+        assert_eq!(format!("{}", Cli::new("gemini")), "gemini");
     }
 
     #[test]
     fn test_cli_resolve_explicit_opencode() {
-        assert_eq!(Cli::resolve(Some("opencode")).unwrap(), Cli::OpenCode);
+        assert_eq!(Cli::resolve(Some("opencode")).unwrap().as_str(), "opencode");
     }
 
     #[test]
     fn test_cli_resolve_explicit_kiro() {
-        assert_eq!(Cli::resolve(Some("kiro")).unwrap(), Cli::Kiro);
+        assert_eq!(Cli::resolve(Some("kiro")).unwrap().as_str(), "kiro");
     }
 
     #[test]
     fn test_cli_resolve_explicit_gemini() {
-        assert_eq!(Cli::resolve(Some("gemini")).unwrap(), Cli::Gemini);
+        assert_eq!(Cli::resolve(Some("gemini")).unwrap().as_str(), "gemini");
     }
 
     #[test]
-    fn test_cli_resolve_unknown_returns_error() {
-        let err = Cli::resolve(Some("vim")).unwrap_err();
-        assert!(err.contains("Unknown CLI 'vim'"));
+    fn test_cli_resolve_unknown_returns_ok() {
+        // Any non-empty string is now valid; unknown CLIs fail at execution time
+        assert_eq!(Cli::resolve(Some("vim")).unwrap().as_str(), "vim");
     }
 
     #[test]

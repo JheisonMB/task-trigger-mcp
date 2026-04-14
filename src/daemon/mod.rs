@@ -33,7 +33,7 @@ pub struct TaskAddParams {
     pub prompt: String,
     /// Standard 5-field cron expression: minute hour day month weekday. Example: "0 9 * * *" for daily at 9am.
     pub schedule: String,
-    /// CLI to use: "opencode", "kiro", "copilot", "qwen", "gemini", "claude", or "codex". If omitted, auto-detects from PATH.
+    /// CLI to use (e.g., "opencode", "kiro", "copilot"). Platform name from the registry. If omitted, auto-detects from registry.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -55,7 +55,7 @@ pub struct TaskWatchParams {
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,
-    /// CLI to use: "opencode", "kiro", "copilot", "qwen", "gemini", "claude", or "codex". If omitted, auto-detects from PATH.
+    /// CLI to use (e.g., "opencode", "kiro", "copilot"). Platform name from the registry. If omitted, auto-detects from registry.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -73,7 +73,7 @@ pub struct TaskUpdateParams {
     pub id: String,
     /// New prompt/instruction (applies to both background_agents and watchers).
     pub prompt: Option<String>,
-    /// New CLI: "opencode", "kiro", "copilot", "qwen", "gemini", "claude", or "codex" (applies to both).
+    /// New CLI platform name (e.g., "opencode", "kiro", "copilot") — applies to both tasks and watchers.
     pub cli: Option<String>,
     /// New provider/model string, or null to clear (applies to both).
     pub model: Option<Option<String>>,
@@ -843,14 +843,10 @@ impl TaskTriggerHandler {
         }
 
         let cli_str = if let Some(ref cli) = params.cli {
-            match cli.as_str() {
-                "opencode" | "kiro" | "copilot" | "qwen" | "gemini" | "claude" | "codex" => Some(cli.as_str()),
-                _ => {
-                    return Ok(error_result(
-                        "CLI must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', 'claude', or 'codex'",
-                    ))
-                }
+            if cli.is_empty() {
+                return Ok(error_result("CLI name must not be empty"));
             }
+            Some(cli.as_str())
         } else {
             None
         };

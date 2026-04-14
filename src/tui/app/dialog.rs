@@ -63,7 +63,7 @@ impl NewAgentDialog {
             task_mode: NewTaskMode::Interactive,
             cli_index: 0,
             available_clis: if available.is_empty() {
-                vec![Cli::OpenCode, Cli::Kiro, Cli::Qwen]
+                vec![Cli::new("opencode"), Cli::new("kiro"), Cli::new("qwen")]
             } else {
                 available
             },
@@ -117,7 +117,7 @@ impl NewAgentDialog {
     }
 
     pub fn selected_cli(&self) -> Cli {
-        self.available_clis[self.cli_index]
+        self.available_clis[self.cli_index].clone()
     }
 
     pub fn selected_args(&self) -> Option<String> {
@@ -269,7 +269,8 @@ impl NewAgentDialog {
             self.model_suggestions.clear();
             return;
         };
-        let cli_name = self.selected_cli().as_str();
+        let binding = self.selected_cli();
+        let cli_name = binding.as_str();
         let cli_models = models_db::models_for_cli(catalog, cli_name);
         self.model_suggestions = models_db::filter_models(&cli_models, &self.model);
         // Clamp selection index

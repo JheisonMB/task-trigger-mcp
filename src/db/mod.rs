@@ -965,7 +965,7 @@ mod tests {
             id: id.to_string(),
             prompt: "Run tests".to_string(),
             schedule_expr: "0 9 * * *".to_string(),
-            cli: Cli::OpenCode,
+            cli: Cli::new("opencode"),
             model: None,
             working_dir: Some("/tmp/project".to_string()),
             enabled: true,
@@ -984,7 +984,7 @@ mod tests {
             path: "/tmp/watched".to_string(),
             events: vec![WatchEvent::Create, WatchEvent::Modify],
             prompt: "Handle file change".to_string(),
-            cli: Cli::Kiro,
+            cli: Cli::new("kiro"),
             model: Some("claude-4".to_string()),
             debounce_seconds: 5,
             recursive: true,
@@ -1012,7 +1012,7 @@ mod tests {
         assert_eq!(retrieved.id, "build-daily");
         assert_eq!(retrieved.prompt, "Run tests");
         assert_eq!(retrieved.schedule_expr, "0 9 * * *");
-        assert!(matches!(retrieved.cli, Cli::OpenCode));
+        assert_eq!(retrieved.cli.as_str(), "opencode");
         assert_eq!(retrieved.working_dir.as_deref(), Some("/tmp/project"));
         assert!(retrieved.enabled);
     }
@@ -1141,7 +1141,7 @@ mod tests {
         assert_eq!(retrieved.events.len(), 2);
         assert!(retrieved.events.contains(&WatchEvent::Create));
         assert!(retrieved.events.contains(&WatchEvent::Modify));
-        assert!(matches!(retrieved.cli, Cli::Kiro));
+        assert_eq!(retrieved.cli.as_str(), "kiro");
         assert_eq!(retrieved.model.as_deref(), Some("claude-4"));
         assert_eq!(retrieved.debounce_seconds, 5);
         assert!(retrieved.recursive);
@@ -1337,7 +1337,7 @@ mod tests {
         let t = db.get_background_agent("upd-multi").unwrap().unwrap();
         assert_eq!(t.prompt, "Updated prompt");
         assert_eq!(t.schedule_expr, "*/10 * * * *");
-        assert!(matches!(t.cli, Cli::Kiro));
+        assert_eq!(t.cli.as_str(), "kiro");
         assert_eq!(t.model.as_deref(), Some("gpt-5"));
     }
 

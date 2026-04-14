@@ -76,7 +76,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         }
     };
 
-    let cli_name = dialog.selected_cli().as_str();
+    let cli_binding = dialog.selected_cli();
+    let cli_name = cli_binding.as_str();
 
     let mode_names = ["New", "Resume"];
     let mode_idx = match dialog.task_mode {

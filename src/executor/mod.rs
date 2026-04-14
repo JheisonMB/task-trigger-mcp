@@ -365,7 +365,7 @@ impl Executor {
 /// Resolve the full path to a CLI binary.
 fn resolve_cli_binary(cli: &Cli) -> Result<PathBuf> {
     let cmd_name = cli.command_name();
-    which::which(cmd_name).map_err(|e| {
+    which::which(&cmd_name).map_err(|e| {
         anyhow::anyhow!(
             "CLI binary '{}' not found in PATH: {}. Make sure it is installed.",
             cmd_name,
