@@ -33,7 +33,7 @@ pub struct TaskAddParams {
     pub prompt: String,
     /// Standard 5-field cron expression: minute hour day month weekday. Example: "0 9 * * *" for daily at 9am.
     pub schedule: String,
-    /// CLI to use: "opencode", "kiro", "copilot", or "qwen". If omitted, auto-detects from PATH.
+    /// CLI to use: "opencode", "kiro", "copilot", "qwen", "gemini", or "claude". If omitted, auto-detects from PATH.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -55,7 +55,7 @@ pub struct TaskWatchParams {
     pub events: Vec<String>,
     /// Instruction for the CLI on trigger.
     pub prompt: String,
-    /// CLI to use: "opencode", "kiro", "copilot", or "qwen". If omitted, auto-detects from PATH.
+    /// CLI to use: "opencode", "kiro", "copilot", "qwen", "gemini", or "claude". If omitted, auto-detects from PATH.
     pub cli: Option<String>,
     /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
     pub model: Option<String>,
@@ -73,7 +73,7 @@ pub struct TaskUpdateParams {
     pub id: String,
     /// New prompt/instruction (applies to both tasks and watchers).
     pub prompt: Option<String>,
-    /// New CLI: "opencode", "kiro", "copilot", or "qwen" (applies to both).
+    /// New CLI: "opencode", "kiro", "copilot", "qwen", "gemini", or "claude" (applies to both).
     pub cli: Option<String>,
     /// New provider/model string, or null to clear (applies to both).
     pub model: Option<Option<String>>,
@@ -828,10 +828,10 @@ impl TaskTriggerHandler {
 
         let cli_str = if let Some(ref cli) = params.cli {
             match cli.as_str() {
-                "opencode" | "kiro" | "copilot" | "qwen" => Some(cli.as_str()),
+                "opencode" | "kiro" | "copilot" | "qwen" | "gemini" | "claude" => Some(cli.as_str()),
                 _ => {
                     return Ok(error_result(
-                        "CLI must be 'opencode', 'kiro', 'copilot', or 'qwen'",
+                        "CLI must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', or 'claude'",
                     ))
                 }
             }

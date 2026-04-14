@@ -55,13 +55,15 @@ fn install_systemd_service(exe: &std::path::Path, port: u16) -> Result<()> {
     let unit_content = format!(
         r#"[Unit]
 Description=canopy daemon
-After=network.target systemd-user-sessions.service
+After=network.target
 
 [Service]
 Type=simple
 ExecStart={exe_str} serve --port {port}
-Restart=always
+Restart=on-failure
 RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
 Environment=RUST_LOG=info
 
 [Install]

@@ -124,6 +124,8 @@ pub enum Cli {
     Qwen,
     #[serde(rename = "gemini")]
     Gemini,
+    #[serde(rename = "claude")]
+    Claude,
 }
 
 impl Cli {
@@ -134,6 +136,7 @@ impl Cli {
             "copilot" => Self::Copilot,
             "qwen" => Self::Qwen,
             "gemini" => Self::Gemini,
+            "claude" => Self::Claude,
             _ => Self::OpenCode,
         }
     }
@@ -146,6 +149,7 @@ impl Cli {
             Self::Copilot => "copilot",
             Self::Qwen => "qwen",
             Self::Gemini => "gemini",
+            Self::Claude => "claude",
         }
     }
 
@@ -157,6 +161,7 @@ impl Cli {
             Self::Copilot => "copilot",
             Self::Qwen => "qwen",
             Self::Gemini => "gemini",
+            Self::Claude => "claude",
         }
     }
 
@@ -177,6 +182,9 @@ impl Cli {
         }
         if which::which("gemini").is_ok() {
             available.push(Cli::Gemini);
+        }
+        if which::which("claude").is_ok() {
+            available.push(Cli::Claude);
         }
         available
     }
@@ -204,8 +212,9 @@ impl Cli {
             Some("copilot") => Ok(Cli::Copilot),
             Some("qwen") => Ok(Cli::Qwen),
             Some("gemini") => Ok(Cli::Gemini),
+            Some("claude") => Ok(Cli::Claude),
             Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', or 'gemini'",
+                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', or 'claude'",
                 other
             )),
             None => match Cli::detect_default() {
@@ -217,7 +226,7 @@ impl Cli {
                     let available = Cli::detect_available();
                     if available.is_empty() {
                         Err(
-                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', or 'qwen'."
+                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', 'qwen', 'gemini', or 'claude'."
                                 .to_string(),
                         )
                     } else {

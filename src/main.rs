@@ -383,11 +383,15 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                     println!("Daemon is already running (PID: {pid})");
                     return Ok(());
                 }
+                // Stale PID — clean up
                 remove_pid_file(&data_dir);
             }
 
             let exe = std::env::current_exe()?;
             let port = resolve_port(port_override);
+
+            // Kill any stale process occupying the port before spawning
+            kill_port_occupant(port);
 
             #[cfg(target_os = "linux")]
             {
