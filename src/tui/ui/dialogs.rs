@@ -24,10 +24,20 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         0
     };
 
+    // Dir browser: label row + up to 4 entry rows
+    let dir_rows: u16 = if dialog.dir_entries.is_empty() {
+        0
+    } else {
+        1 + dialog.dir_entries.len().min(4) as u16
+    };
+
+    // Base heights: fields + 2 borders (no browser rows).
+    // Interactive:    11 content rows → base 13
+    // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
     let base_height: u16 = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => 18,
-        crate::tui::app::NewTaskType::Scheduled => 16,
-        crate::tui::app::NewTaskType::Watcher => 14,
+        crate::tui::app::NewTaskType::Interactive => 13 + dir_rows,
+        crate::tui::app::NewTaskType::Scheduled
+        | crate::tui::app::NewTaskType::Watcher => 15 + dir_rows,
     };
     let height = base_height + picker_rows as u16;
     let area = centered_rect(65, height, frame.area());
