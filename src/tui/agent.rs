@@ -286,16 +286,16 @@ impl InteractiveAgent {
 
         match mode {
             MPM::None => {
-                // No mouse protocol — send 3 arrow key presses
-                let seq: &[u8] = if scroll_up { b"\x1b[A" } else { b"\x1b[B" };
-                let bytes: Vec<u8> = seq.repeat(3);
-                self.write_to_pty(&bytes)
+                // No mouse protocol — send PgUp/PgDn (works in most TUIs)
+                let seq: &[u8] = if scroll_up { b"\x1b[5~" } else { b"\x1b[6~" };
+                self.write_to_pty(seq)
             }
             _ => {
+                // Send 3 scroll events for smoother scrolling
                 let button: u8 = if scroll_up { 64 } else { 65 };
                 let col: u16 = cols / 2;
                 let row: u16 = 10;
-                let bytes = match encoding {
+                let single = match encoding {
                     MPE::Sgr => {
                         format!("\x1b[<{};{};{}M", button, col + 1, row + 1).into_bytes()
                     }
@@ -310,6 +310,7 @@ impl InteractiveAgent {
                         ]
                     }
                 };
+                let bytes: Vec<u8> = single.repeat(3);
                 self.write_to_pty(&bytes)
             }
         }

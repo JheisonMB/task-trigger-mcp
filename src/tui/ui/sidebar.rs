@@ -9,7 +9,7 @@ use ratatui::Frame;
 use super::{last_two_segments, truncate_str, ACCENT, BG_SELECTED, DIM, INTERACTIVE_COLOR};
 use super::{STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 use crate::tui::agent::AgentStatus;
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::{AgentEntry, App};
 use ratatui::style::Color;
 
 pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -44,8 +44,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let sidebar_focused = app.focus == Focus::Home;
-    let border_color = if sidebar_focused { ACCENT } else { DIM };
+    let border_color = DIM;
     let row_h = 4u16; // 3 lines + 1 spacer
 
     let (bg_area, ix_area) = if has_bg && has_ix {
@@ -72,8 +71,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(bg_area) = bg_area {
         let block = Block::default()
             .title(Span::styled(
-                format!(" Background ({}) ", bg_indices.len()),
-                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                format!(" background ({}) ", bg_indices.len()),
+                Style::default().fg(DIM),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -85,8 +84,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(ix_area) = ix_area {
         let block = Block::default()
             .title(Span::styled(
-                format!(" Interactive ({}) ", ix_indices.len()),
-                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+                format!(" interactive ({}) ", ix_indices.len()),
+                Style::default().fg(DIM),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));

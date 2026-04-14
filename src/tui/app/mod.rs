@@ -89,6 +89,7 @@ pub struct App {
     pub show_legend: bool,
     pub show_copied: bool,
     pub copied_at: std::time::Instant,
+    pub last_scroll_at: std::time::Instant,
     pub last_panel_inner: (u16, u16),
     pub whimsg: super::whimsg::Whimsg,
 }
@@ -120,6 +121,7 @@ impl App {
             show_legend: false,
             show_copied: false,
             copied_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            last_scroll_at: std::time::Instant::now() - std::time::Duration::from_secs(999),
             last_panel_inner: (0, 0),
             whimsg: super::whimsg::Whimsg::new(),
         };
@@ -137,6 +139,7 @@ impl App {
         self.refresh_log();
         self.auto_hide_sidebar();
         self.dismiss_copied();
+        self.update_whimsg_context();
         self.resize_interactive_agents();
         Ok(())
     }
@@ -204,6 +207,33 @@ impl App {
             } else if should_show {
                 self.sidebar_visible = true;
             }
+        }
+    }
+
+    fn update_whimsg_context(&mut self) {
+        use crate::tui::whimsg::WhimContext;
+        use std::time::Duration;
+
+        // Check if user scrolled recently
+        if self.last_scroll_at.elapsed() < Duration::from_secs(5) {
+            self.whimsg.set_ambient(WhimContext::Scrolling);
+            return;
+        }
+
+        // Check how many interactive agents are running
+        let running = self
+            .interactive_agents
+            .iter()
+            .filter(|a| a.status == crate::tui::agent::AgentStatus::Running)
+            .count();
+        let has_active_runs = !self.active_runs.is_empty();
+
+        if running >= 3 || (running >= 1 && has_active_runs) {
+            self.whimsg.set_ambient(WhimContext::Busy);
+        } else if has_active_runs {
+            self.whimsg.set_ambient(WhimContext::TaskRunning);
+        } else {
+            self.whimsg.set_ambient(WhimContext::Idle);
         }
     }
 }

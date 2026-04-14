@@ -144,6 +144,18 @@ impl App {
         sorted.sort_unstable();
         sorted.reverse();
         for &old_idx in &sorted {
+            // Notify whimsg about agent completion
+            let status = self.interactive_agents[old_idx].status;
+            match status {
+                AgentStatus::Exited(0) => {
+                    self.whimsg
+                        .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
+                }
+                _ => {
+                    self.whimsg
+                        .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
+                }
+            }
             self.interactive_agents.remove(old_idx);
         }
 

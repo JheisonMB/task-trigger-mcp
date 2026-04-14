@@ -99,14 +99,13 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind) -> Result<()> {
 
     match app.focus {
         Focus::Agent => {
+            app.last_scroll_at = std::time::Instant::now();
             if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                 let idx = *idx;
                 let agent = &mut app.interactive_agents[idx];
                 if agent.in_alternate_screen() {
-                    // CLI is in alt-screen (own TUI) — forward scroll to PTY
                     let _ = agent.forward_scroll(dir > 0);
                 } else {
-                    // Plain output — use vt100 scrollback
                     if dir > 0 {
                         let max = agent.max_scroll();
                         agent.scroll_offset = (agent.scroll_offset + 5).min(max);
@@ -120,7 +119,28 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind) -> Result<()> {
                 app.scroll_log_down();
             }
         }
-        Focus::Preview | Focus::Home => {
+        Focus::Preview => {
+            app.last_scroll_at = std::time::Instant::now();
+            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                let idx = *idx;
+                if idx < app.interactive_agents.len() {
+                    let agent = &mut app.interactive_agents[idx];
+                    if agent.in_alternate_screen() {
+                        let _ = agent.forward_scroll(dir > 0);
+                    } else if dir > 0 {
+                        let max = agent.max_scroll();
+                        agent.scroll_offset = (agent.scroll_offset + 3).min(max);
+                    } else {
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+                    }
+                }
+            } else if dir > 0 {
+                app.scroll_log_up();
+            } else {
+                app.scroll_log_down();
+            }
+        }
+        Focus::Home => {
             if dir > 0 {
                 app.select_prev();
             } else {
@@ -215,6 +235,7 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
         KeyCode::Char('D') => {
             let _ = app.delete_selected();
         }
+        KeyCode::Char('n') => app.open_new_agent_dialog(),
         KeyCode::Char('q') => app.running = false,
         KeyCode::F(1) => {
             app.show_legend = true;

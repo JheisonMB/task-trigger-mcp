@@ -334,6 +334,8 @@ impl App {
             accent,
         )?;
         self.interactive_agents.push(agent);
+        self.whimsg
+            .notify_event(crate::tui::whimsg::WhimContext::AgentSpawned);
         Ok(())
     }
 

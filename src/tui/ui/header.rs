@@ -1,4 +1,4 @@
-//! Header bar rendering — title + daemon status indicator.
+//! Header bar rendering — animated title + daemon status indicator.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -8,6 +8,17 @@ use ratatui::Frame;
 
 use super::{ACCENT, ERROR_COLOR};
 use crate::tui::app::App;
+use crate::tui::whimsg::TITLE;
+
+/// Return the first `n` chars of `s`, respecting char boundaries.
+fn first_n_chars(s: &str, n: usize) -> &str {
+    let end = s
+        .char_indices()
+        .nth(n)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    &s[..end]
+}
 
 pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let status_text = if app.daemon_running {
@@ -17,23 +28,42 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     let status_w = status_text.chars().count() as u16;
 
-    // Whimsical header: tick the generator and decide what to show
-    let whim = app.whimsg.tick();
-    let title_span = if let Some(msg) = whim {
-        Span::styled(
-            format!(" {msg}"),
-            Style::default()
-                .fg(Color::Rgb(180, 180, 180))
-                .add_modifier(Modifier::ITALIC),
-        )
-    } else {
-        Span::styled(
-            " agent-canopy",
+    let wf = app.whimsg.tick();
+
+    let spans: Vec<Span> = if wf.title_visible > 0 {
+        // Title partially or fully visible
+        let visible = first_n_chars(TITLE, wf.title_visible);
+        vec![Span::styled(
+            format!(" {visible}"),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )
+        )]
+    } else if !wf.kaomoji.is_empty() && wf.text_visible == 0 && wf.text.is_empty() {
+        // Kaomoji flash (no message yet)
+        vec![Span::styled(
+            format!(" {}", wf.kaomoji),
+            Style::default().fg(Color::Rgb(102, 187, 106)),
+        )]
+    } else if !wf.kaomoji.is_empty() {
+        // Kaomoji + partial/full message
+        let visible_text = first_n_chars(&wf.text, wf.text_visible);
+        vec![
+            Span::styled(
+                format!(" {} ", wf.kaomoji),
+                Style::default().fg(Color::Rgb(102, 187, 106)),
+            ),
+            Span::styled(
+                visible_text.to_string(),
+                Style::default()
+                    .fg(Color::Rgb(140, 140, 140))
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]
+    } else {
+        // Blank phase
+        vec![Span::raw(" ")]
     };
 
-    let left = Paragraph::new(Line::from(title_span));
+    let left = Paragraph::new(Line::from(spans));
     frame.render_widget(left, area);
 
     if area.width > status_w {
