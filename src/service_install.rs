@@ -55,12 +55,12 @@ fn install_systemd_service(exe: &std::path::Path, port: u16) -> Result<()> {
     let unit_content = format!(
         r#"[Unit]
 Description=canopy daemon
-After=network.target
+After=network.target systemd-user-sessions.service
 
 [Service]
 Type=simple
 ExecStart={exe_str} serve --port {port}
-Restart=on-failure
+Restart=always
 RestartSec=5
 Environment=RUST_LOG=info
 
@@ -72,6 +72,32 @@ WantedBy=default.target
     std::fs::write(&unit_path, unit_content)?;
     println!("Created {}", unit_path.display());
 
+    // Enable lingering so the service survives after logout/reboot
+    if let Ok(user) = std::env::var("USER") {
+        let linger_status = std::process::Command::new("loginctl")
+            .args(["show-user", &user, "-p", "Linger"])
+            .output();
+        let linger_enabled = linger_status
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "Linger=yes")
+            .unwrap_or(false);
+
+        if !linger_enabled {
+            let linger = std::process::Command::new("loginctl")
+                .args(["enable-linger", &user])
+                .status();
+            match linger {
+                Ok(s) if s.success() => {
+                    println!("  Lingering enabled (service survives logout/reboot)");
+                }
+                _ => {
+                    println!("  ⚠ Could not enable lingering — service may stop on logout/reboot.");
+                    println!("    Run manually: sudo loginctl enable-linger {user}");
+                }
+            }
+        }
+    }
+
     let status = std::process::Command::new("systemctl")
         .args(["--user", "daemon-reload"])
         .status();
@@ -79,40 +105,26 @@ WantedBy=default.target
     match status {
         Ok(s) if s.success() => {}
         _ => {
-            println!("Warning: systemctl daemon-reload failed (systemd may not be available)");
-            println!("The unit file has been written — you can enable it manually:");
-            println!("  systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
+            println!("  ⚠ systemctl daemon-reload failed (systemd may not be fully available)");
+            println!("    The unit file has been written — you can enable it manually:");
+            println!("    systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
             return Ok(());
         }
     }
 
     let enable = std::process::Command::new("systemctl")
         .args(["--user", "enable", "--now", SYSTEMD_SERVICE_NAME])
-        .status()?;
+        .status();
 
-    if enable.success() {
-        println!("Service enabled and started");
-        println!("  Check status: systemctl --user status {SYSTEMD_SERVICE_NAME}");
-        println!("  View logs:    journalctl --user -u {SYSTEMD_SERVICE_NAME} -f");
-    } else {
-        println!("Warning: failed to enable service");
-        println!("  Try manually: systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
-    }
-
-    if let Ok(user) = std::env::var("USER") {
-        let linger = std::process::Command::new("loginctl")
-            .args(["enable-linger", &user])
-            .status();
-        match linger {
-            Ok(s) if s.success() => {
-                println!("Lingering enabled (service will run after logout)");
-            }
-            _ => {
-                println!(
-                    "Note: could not enable lingering. The service may stop when you log out."
-                );
-                println!("  Run manually: loginctl enable-linger {user}");
-            }
+    match enable {
+        Ok(s) if s.success() => {
+            println!("  Service enabled and started");
+            println!("    Check status: systemctl --user status {SYSTEMD_SERVICE_NAME}");
+            println!("    View logs:    journalctl --user -u {SYSTEMD_SERVICE_NAME} -f");
+        }
+        _ => {
+            println!("  ⚠ Failed to enable service automatically");
+            println!("    Enable manually: systemctl --user enable --now {SYSTEMD_SERVICE_NAME}");
         }
     }
 

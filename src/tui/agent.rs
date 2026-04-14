@@ -22,6 +22,16 @@ pub enum AgentStatus {
     Exited(i32),
 }
 
+/// Install no-op handlers for SIGHUP and SIGPIPE so that when a PTY child
+/// exits the canopy process is not accidentally terminated.
+#[cfg(unix)]
+fn ignore_signals() {
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
 /// An interactive agent with a virtual terminal screen.
 pub struct InteractiveAgent {
     pub id: String,
@@ -52,15 +62,20 @@ impl InteractiveAgent {
     /// Spawn a new interactive agent in a PTY with a virtual terminal.
     ///
     /// `cols` and `rows` should match the panel area where the agent will render.
-    /// Interactive args come from the registry (`CliConfig::interactive_args`).
+    /// `interactive_args` come from the registry (e.g. `--tui`, `-c`, etc.).
+    /// `fallback_args` are tried if the primary args fail (e.g. kiro `chat`).
     pub fn spawn(
         cli: Cli,
         working_dir: &str,
         cols: u16,
         rows: u16,
         interactive_args: Option<&str>,
+        fallback_args: Option<&str>,
         accent_color: Color,
     ) -> Result<Self> {
+        #[cfg(unix)]
+        ignore_signals();
+
         let pty_system = native_pty_system();
 
         let pair = pty_system.openpty(PtySize {
@@ -72,7 +87,13 @@ impl InteractiveAgent {
 
         let mut cmd = CommandBuilder::new(cli.command_name());
         // Apply registry-driven interactive args (e.g. "--tui", "-c", etc.)
-        if let Some(args) = interactive_args {
+        // If primary args fail and fallback is available, try that instead.
+        let args_to_use = if let Some(args) = interactive_args {
+            Some(args)
+        } else {
+            fallback_args
+        };
+        if let Some(args) = args_to_use {
             for arg in args.split_whitespace() {
                 if !arg.is_empty() {
                     cmd.arg(arg);
@@ -267,22 +288,22 @@ fn convert_color(color: vt100::Color) -> ratatui::style::Color {
         vt100::Color::Idx(i) if i < 16 => {
             // Standard 16 ANSI colors with explicit RGB values.
             const ANSI_16: [Color; 16] = [
-                Color::Rgb(0, 0, 0),         // 0  black
-                Color::Rgb(170, 0, 0),       // 1  red
-                Color::Rgb(0, 170, 0),       // 2  green
-                Color::Rgb(170, 85, 0),      // 3  yellow
-                Color::Rgb(0, 0, 170),       // 4  blue
-                Color::Rgb(170, 0, 170),     // 5  magenta
-                Color::Rgb(0, 170, 170),     // 6  cyan
-                Color::Rgb(170, 170, 170),   // 7  white (dark white = light gray)
-                Color::Rgb(85, 85, 85),      // 8  bright black (gray)
-                Color::Rgb(255, 85, 85),     // 9  bright red
-                Color::Rgb(85, 255, 85),     // 10 bright green
-                Color::Rgb(255, 255, 85),    // 11 bright yellow
-                Color::Rgb(85, 85, 255),     // 12 bright blue
-                Color::Rgb(255, 85, 255),    // 13 bright magenta
-                Color::Rgb(85, 255, 255),    // 14 bright cyan
-                Color::Rgb(255, 255, 255),   // 15 bright white
+                Color::Rgb(0, 0, 0),       // 0  black
+                Color::Rgb(170, 0, 0),     // 1  red
+                Color::Rgb(0, 170, 0),     // 2  green
+                Color::Rgb(170, 85, 0),    // 3  yellow
+                Color::Rgb(0, 0, 170),     // 4  blue
+                Color::Rgb(170, 0, 170),   // 5  magenta
+                Color::Rgb(0, 170, 170),   // 6  cyan
+                Color::Rgb(170, 170, 170), // 7  white (dark white = light gray)
+                Color::Rgb(85, 85, 85),    // 8  bright black (gray)
+                Color::Rgb(255, 85, 85),   // 9  bright red
+                Color::Rgb(85, 255, 85),   // 10 bright green
+                Color::Rgb(255, 255, 85),  // 11 bright yellow
+                Color::Rgb(85, 85, 255),   // 12 bright blue
+                Color::Rgb(255, 85, 255),  // 13 bright magenta
+                Color::Rgb(85, 255, 255),  // 14 bright cyan
+                Color::Rgb(255, 255, 255), // 15 bright white
             ];
             ANSI_16[i as usize]
         }

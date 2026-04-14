@@ -122,6 +122,8 @@ pub enum Cli {
     Copilot,
     #[serde(rename = "qwen")]
     Qwen,
+    #[serde(rename = "gemini")]
+    Gemini,
 }
 
 impl Cli {
@@ -131,6 +133,7 @@ impl Cli {
             "kiro" => Self::Kiro,
             "copilot" => Self::Copilot,
             "qwen" => Self::Qwen,
+            "gemini" => Self::Gemini,
             _ => Self::OpenCode,
         }
     }
@@ -142,6 +145,7 @@ impl Cli {
             Self::Kiro => "kiro",
             Self::Copilot => "copilot",
             Self::Qwen => "qwen",
+            Self::Gemini => "gemini",
         }
     }
 
@@ -152,6 +156,7 @@ impl Cli {
             Self::Kiro => "kiro-cli",
             Self::Copilot => "copilot",
             Self::Qwen => "qwen",
+            Self::Gemini => "gemini",
         }
     }
 
@@ -170,6 +175,9 @@ impl Cli {
         if which::which("qwen").is_ok() {
             available.push(Cli::Qwen);
         }
+        if which::which("gemini").is_ok() {
+            available.push(Cli::Gemini);
+        }
         available
     }
 
@@ -186,7 +194,7 @@ impl Cli {
 
     /// Resolve CLI from an optional user-provided parameter.
     ///
-    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` / `Some("qwen")` → returns that variant.
+    /// - `Some("opencode")` / `Some("kiro")` / `Some("copilot")` / `Some("qwen")` / `Some("gemini")` → returns that variant.
     /// - `Some(other)` → error with unknown CLI message.
     /// - `None` → auto-detects from PATH. Fails if zero or multiple CLIs found.
     pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
@@ -195,8 +203,9 @@ impl Cli {
             Some("kiro") => Ok(Cli::Kiro),
             Some("copilot") => Ok(Cli::Copilot),
             Some("qwen") => Ok(Cli::Qwen),
+            Some("gemini") => Ok(Cli::Gemini),
             Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', or 'qwen'",
+                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', or 'gemini'",
                 other
             )),
             None => match Cli::detect_default() {
@@ -446,6 +455,7 @@ mod tests {
     fn test_cli_from_str() {
         assert!(matches!(Cli::from_str("opencode"), Cli::OpenCode));
         assert!(matches!(Cli::from_str("kiro"), Cli::Kiro));
+        assert!(matches!(Cli::from_str("gemini"), Cli::Gemini));
         // Unknown defaults to OpenCode
         assert!(matches!(Cli::from_str("unknown"), Cli::OpenCode));
         assert!(matches!(Cli::from_str(""), Cli::OpenCode));
@@ -455,18 +465,21 @@ mod tests {
     fn test_cli_as_str() {
         assert_eq!(Cli::OpenCode.as_str(), "opencode");
         assert_eq!(Cli::Kiro.as_str(), "kiro");
+        assert_eq!(Cli::Gemini.as_str(), "gemini");
     }
 
     #[test]
     fn test_cli_command_name() {
         assert_eq!(Cli::OpenCode.command_name(), "opencode");
         assert_eq!(Cli::Kiro.command_name(), "kiro-cli");
+        assert_eq!(Cli::Gemini.command_name(), "gemini");
     }
 
     #[test]
     fn test_cli_display() {
         assert_eq!(format!("{}", Cli::OpenCode), "opencode");
         assert_eq!(format!("{}", Cli::Kiro), "kiro");
+        assert_eq!(format!("{}", Cli::Gemini), "gemini");
     }
 
     #[test]
@@ -477,6 +490,11 @@ mod tests {
     #[test]
     fn test_cli_resolve_explicit_kiro() {
         assert_eq!(Cli::resolve(Some("kiro")).unwrap(), Cli::Kiro);
+    }
+
+    #[test]
+    fn test_cli_resolve_explicit_gemini() {
+        assert_eq!(Cli::resolve(Some("gemini")).unwrap(), Cli::Gemini);
     }
 
     #[test]

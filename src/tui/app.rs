@@ -55,9 +55,20 @@ pub enum NewTaskType {
     Watcher,
 }
 
+/// Launch mode for interactive agents.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NewTaskMode {
+    /// Start a fresh interactive session (uses `interactive_args`).
+    Interactive,
+    /// Resume a previous session (uses `resume_args`).
+    Resume,
+}
+
 /// State for the "new agent" dialog.
 pub struct NewAgentDialog {
     pub task_type: NewTaskType,
+    /// Launch mode for interactive agents (ignored for scheduled/watcher).
+    pub task_mode: NewTaskMode,
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
     /// Registry configs parallel to `available_clis` (for `interactive_args` etc.)
@@ -69,12 +80,14 @@ pub struct NewAgentDialog {
     pub cron_expr: String,
     pub watch_path: String,
     pub watch_events: Vec<String>,
-    /// Which field is focused: 0=type, 1=CLI, 2=dir, 3=model, 4=prompt, 5=cron/watch
+    /// Which field is focused: 0=type, 1=mode (interactive only), 2=CLI, 3=dir, 4=model, 5=prompt, 6=cron/watch
     pub field: usize,
     pub dir_entries: Vec<String>,
     pub dir_selected: usize,
     pub dir_scroll: usize,
     pub current_path: String,
+    /// Focus state before opening the dialog, restored on cancel.
+    pub prev_focus: Option<Focus>,
 }
 
 impl NewAgentDialog {
@@ -85,6 +98,7 @@ impl NewAgentDialog {
             .unwrap_or_default();
         let mut dialog = Self {
             task_type: NewTaskType::Interactive,
+            task_mode: NewTaskMode::Interactive,
             cli_index: 0,
             available_clis: if available.is_empty() {
                 vec![Cli::OpenCode, Cli::Kiro, Cli::Qwen]
@@ -107,6 +121,7 @@ impl NewAgentDialog {
             dir_selected: 0,
             dir_scroll: 0,
             current_path: cwd,
+            prev_focus: None,
         };
         dialog.refresh_dir_entries();
         dialog
@@ -140,12 +155,24 @@ impl NewAgentDialog {
         self.available_clis[self.cli_index]
     }
 
-    /// Get the `interactive_args` for the currently selected CLI from the registry.
-    pub fn selected_interactive_args(&self) -> Option<String> {
+    /// Get the correct args for the current launch mode.
+    pub fn selected_args(&self) -> Option<String> {
+        let config = self
+            .cli_configs
+            .get(self.cli_index)
+            .and_then(|c| c.as_ref())?;
+        match self.task_mode {
+            NewTaskMode::Resume => config.resume_args.clone(),
+            NewTaskMode::Interactive => config.interactive_args.clone(),
+        }
+    }
+
+    /// Get the fallback args for interactive mode (e.g. kiro `chat`).
+    pub fn selected_fallback_args(&self) -> Option<String> {
         self.cli_configs
             .get(self.cli_index)
             .and_then(|c| c.as_ref())
-            .and_then(|c| c.interactive_args.clone())
+            .and_then(|c| c.fallback_interactive_args.clone())
     }
 
     /// Get the accent color for the currently selected CLI.
@@ -266,6 +293,14 @@ pub struct App {
     pub term_width: u16,
     /// Show color legend overlay.
     pub show_legend: bool,
+    /// Show "COPIED" indicator.
+    pub show_copied: bool,
+    /// When the copy happened (for auto-dismiss).
+    pub copied_at: std::time::Instant,
+    /// Last known inner dimensions of the right panel (set by draw).
+    pub last_panel_inner: (u16, u16),
+    /// Whimsical header messages.
+    pub whimsg: super::whimsg::Whimsg,
 }
 
 impl App {
@@ -293,6 +328,10 @@ impl App {
             sidebar_visible: true,
             term_width: 0,
             show_legend: false,
+            show_copied: false,
+            copied_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            last_panel_inner: (0, 0),
+            whimsg: super::whimsg::Whimsg::new(),
         };
         app.refresh()?;
         Ok(app)
@@ -307,6 +346,7 @@ impl App {
         self.tick_brians_brain();
         self.refresh_log();
         self.auto_hide_sidebar();
+        self.dismiss_copied();
         self.resize_interactive_agents();
         Ok(())
     }
@@ -330,17 +370,9 @@ impl App {
         }
     }
 
-    /// Resize interactive agents' PTY to match current terminal dimensions.
+    /// Resize interactive agents' PTY to match the actual render area.
     fn resize_interactive_agents(&mut self) {
-        let Ok((tw, th)) = ratatui::crossterm::terminal::size() else {
-            return;
-        };
-        let sidebar_w = if self.sidebar_visible { 26 } else { 0 };
-        // Account for borders: left border + right border = 2 chars
-        let cols = tw.saturating_sub(sidebar_w).saturating_sub(2);
-        // Account for header + footer borders = 2 rows
-        let rows = th.saturating_sub(2);
-
+        let (cols, rows) = self.last_panel_inner;
         if cols == 0 || rows == 0 {
             return;
         }
@@ -392,6 +424,41 @@ impl App {
         if let Some(ref mut brain) = self.brain {
             brain.reset();
         }
+    }
+
+    /// Auto-dismiss the COPIED indicator after 2 seconds.
+    fn dismiss_copied(&mut self) {
+        if self.show_copied
+            && self.copied_at.elapsed() > std::time::Duration::from_secs(2)
+        {
+            self.show_copied = false;
+        }
+    }
+
+    /// Copy the current screen content to the system clipboard.
+    pub fn copy_screen_to_clipboard(&mut self) {
+        let text = match self.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                let idx = *idx;
+                if idx < self.interactive_agents.len() {
+                    self.interactive_agents[idx].output()
+                } else {
+                    return;
+                }
+            }
+            _ => self.log_content.clone(),
+        };
+
+        if text.is_empty() {
+            return;
+        }
+
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(&text);
+        }
+
+        self.show_copied = true;
+        self.copied_at = std::time::Instant::now();
     }
 
     /// Cycle to the next interactive agent and go to focus mode.
@@ -473,31 +540,40 @@ impl App {
             agent.poll();
         }
 
-        // Remove exited agents
+        // Remove exited agents and fix indices
         let mut removed_indices = Vec::new();
         for (i, agent) in self.interactive_agents.iter().enumerate() {
             if matches!(agent.status, AgentStatus::Exited(_)) {
                 removed_indices.push(i);
             }
         }
-        // Remove in reverse order to avoid index shifting
+
+        if removed_indices.is_empty() {
+            return;
+        }
+
+        // Remove in reverse order and fix indices
         removed_indices.sort_unstable();
         removed_indices.reverse();
 
-        for idx in &removed_indices {
-            self.interactive_agents.remove(*idx);
+        for &old_idx in &removed_indices {
+            self.interactive_agents.remove(old_idx);
         }
 
-        // Rebuild agents list to reflect removals
-        if !removed_indices.is_empty() {
-            let _ = self.refresh_agents();
+        // Fix all Interactive indices in agents list
+        for agent in &mut self.agents {
+            if let AgentEntry::Interactive(idx) = agent {
+                // Count how many removed agents were before this index
+                let shifts = removed_indices.iter().filter(|&&r| r < *idx).count();
+                *idx -= shifts;
+            }
+        }
 
-            // If the currently selected agent was removed, exit focus mode
-            if self.focus == Focus::Agent {
-                self.focus = Focus::Preview;
-                if self.selected >= self.agents.len() && !self.agents.is_empty() {
-                    self.selected = self.agents.len() - 1;
-                }
+        // If the currently selected agent was removed, exit focus mode
+        if self.focus == Focus::Agent {
+            self.focus = Focus::Preview;
+            if self.selected >= self.agents.len() && !self.agents.is_empty() {
+                self.selected = self.agents.len() - 1;
             }
         }
     }
@@ -621,13 +697,25 @@ impl App {
     }
 
     pub fn open_new_agent_dialog(&mut self) {
+        let prev_focus = self.focus;
         self.new_agent_dialog = Some(NewAgentDialog::new());
+        // Store previous focus to restore on cancel
+        self.new_agent_dialog.as_mut().unwrap().prev_focus = Some(prev_focus);
         self.focus = Focus::NewAgentDialog;
     }
 
     pub fn close_new_agent_dialog(&mut self) {
+        // Restore the previous focus when closing the dialog
+        if let Some(dialog) = &self.new_agent_dialog {
+            if let Some(prev) = dialog.prev_focus {
+                self.focus = prev;
+            } else {
+                self.focus = Focus::Home;
+            }
+        } else {
+            self.focus = Focus::Home;
+        }
         self.new_agent_dialog = None;
-        self.focus = Focus::Home;
     }
 
     pub fn launch_new_agent(&mut self) -> Result<()> {
@@ -645,17 +733,23 @@ impl App {
             NewTaskType::Interactive => {
                 let cli = dialog.selected_cli();
                 let dir = dialog.working_dir.clone();
-                let interactive_args = dialog.selected_interactive_args();
+                let args = dialog.selected_args();
+                let fallback = dialog.selected_fallback_args();
                 let accent_color = dialog.selected_accent_color();
-                let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-                let cols = tw.saturating_sub(28);
-                let rows = th.saturating_sub(4);
+                // Use the actual panel inner dimensions stored by draw()
+                let (cols, rows) = if self.last_panel_inner != (0, 0) {
+                    self.last_panel_inner
+                } else {
+                    let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+                    (tw.saturating_sub(28), th.saturating_sub(4))
+                };
                 let agent = InteractiveAgent::spawn(
                     cli,
                     &dir,
                     cols,
                     rows,
-                    interactive_args.as_deref(),
+                    args.as_deref(),
+                    fallback.as_deref(),
                     accent_color,
                 )?;
                 self.interactive_agents.push(agent);
@@ -725,11 +819,20 @@ impl App {
 
         self.refresh_agents()?;
         self.selected = self.agents.len().saturating_sub(1);
+
+        // For interactive agents, go straight to Focus mode on the new agent.
+        // For scheduled/watcher, go to Preview mode.
+        let was_interactive = matches!(self.new_agent_dialog.as_ref(), Some(d) if matches!(d.task_type, NewTaskType::Interactive));
         self.close_new_agent_dialog();
-        self.focus = Focus::Preview;
+        self.focus = if was_interactive {
+            Focus::Agent
+        } else {
+            Focus::Preview
+        };
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn kill_selected_agent(&mut self) {
         let Some(AgentEntry::Interactive(idx)) = self.agents.get(self.selected) else {
             return;

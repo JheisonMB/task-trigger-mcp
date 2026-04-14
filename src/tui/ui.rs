@@ -55,11 +55,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn draw_header(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     draw_header_full(frame, area, app);
 }
 
-fn draw_header_full(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_header_full(frame: &mut Frame, area: Rect, app: &mut App) {
     let status_text = if app.daemon_running {
         format!(" RUNNING (PID: {}) ", app.daemon_pid.unwrap_or(0))
     } else {
@@ -67,10 +67,23 @@ fn draw_header_full(frame: &mut Frame, area: Rect, app: &App) {
     };
     let status_w = status_text.chars().count() as u16;
 
-    let left = Paragraph::new(Line::from(Span::styled(
-        " agent-canopy",
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    )));
+    // Whimsical header: tick the generator and decide what to show
+    let whim = app.whimsg.tick();
+    let title_span = if let Some(msg) = whim {
+        Span::styled(
+            format!(" {msg}"),
+            Style::default()
+                .fg(Color::Rgb(180, 180, 180))
+                .add_modifier(Modifier::ITALIC),
+        )
+    } else {
+        Span::styled(
+            " agent-canopy",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
+
+    let left = Paragraph::new(Line::from(title_span));
     frame.render_widget(left, area);
 
     if area.width > status_w {
@@ -122,6 +135,7 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // Sidebar is highlighted only when focus is Home
     let sidebar_focused = app.focus == Focus::Home;
+    let border_color = if sidebar_focused { ACCENT } else { DIM };
     let row_h = 4u16; // 3 lines + 1 spacer
 
     // Calculate proportional split
@@ -147,11 +161,10 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     if let Some(bg_area) = bg_area {
-        let border_color = if sidebar_focused { ACCENT } else { DIM };
         let block = Block::default()
             .title(Span::styled(
                 format!(" Background ({}) ", bg_indices.len()),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -161,17 +174,10 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(ix_area) = ix_area {
-        let border_color = if sidebar_focused {
-            INTERACTIVE_COLOR
-        } else {
-            DIM
-        };
         let block = Block::default()
             .title(Span::styled(
                 format!(" Interactive ({}) ", ix_indices.len()),
-                Style::default()
-                    .fg(INTERACTIVE_COLOR)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
             ))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -294,7 +300,11 @@ fn draw_sidebar_card(
             accent_bar,
             Span::raw(" "),
             Span::styled(
-                format!("{} · {}", agent_type, truncate_str(type_detail, w.saturating_sub(6))),
+                format!(
+                    "{} · {}",
+                    agent_type,
+                    truncate_str(type_detail, w.saturating_sub(6))
+                ),
                 Style::default().fg(DIM),
             ),
         ]);
@@ -321,7 +331,7 @@ fn draw_sidebar_card(
     }
 }
 
-fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = match app.focus {
         Focus::Agent | Focus::Preview => app
             .selected_agent()
@@ -355,8 +365,10 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // Store actual inner dimensions so PTY resize matches exactly
+    app.last_panel_inner = (inner.width, inner.height);
+
     match app.focus {
-        // ── Home: banner/brain grid (pre-activation shows banner as cells) ──
         Focus::Home => {
             if let Some(ref brain) = app.brain {
                 draw_brians_brain(frame, inner, brain);
@@ -411,12 +423,40 @@ fn draw_log_panel(frame: &mut Frame, area: Rect, app: &App) {
                         let scroll_area = ratatui::layout::Rect::new(sx, sy, scroll_w, 1);
                         frame.render_widget(bar, scroll_area);
                     }
+                    // Copied indicator (auto-dismissed after 2s)
+                    if app.show_copied {
+                        let copy_msg = " ▒ COPIED ▒ ";
+                        let copy_w = copy_msg.len() as u16;
+                        let cx = inner.x + inner.width.saturating_sub(copy_w + 1);
+                        let cy = inner.y + if snap.scrolled { 1 } else { 0 };
+                        let bar = Paragraph::new(copy_msg)
+                            .style(Style::default().fg(ACCENT).bg(Color::Black));
+                        let copy_area = ratatui::layout::Rect::new(cx, cy, copy_w, 1);
+                        frame.render_widget(bar, copy_area);
+                    }
                     return;
                 }
             }
             // background agents fall through to log rendering below
         }
-        Focus::NewAgentDialog => {}
+        Focus::NewAgentDialog => {
+            // Render what was behind the dialog (brain/banner if from Home)
+            let prev = app
+                .new_agent_dialog
+                .as_ref()
+                .and_then(|d| d.prev_focus);
+            match prev {
+                Some(Focus::Home) | None => {
+                    if let Some(ref brain) = app.brain {
+                        draw_brians_brain(frame, inner, brain);
+                    } else {
+                        draw_canopy_banner_preview(frame, inner);
+                    }
+                    return;
+                }
+                _ => {} // fall through to log rendering
+            }
+        }
     }
 
     // ── Log / text content ──
@@ -497,21 +537,65 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &super::agent::ScreenSn
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {
-        Focus::Home => "  ↑↓ select agent  n new  q quit  Esc confirm quit  Tab focus agent",
-        Focus::Preview => {
-            "  ↑↓ nav  Enter focus  D delete  r rerun  e/d toggle  n new  Esc home  q quit"
-        }
-        Focus::NewAgentDialog => {
-            "  ←→ select CLI  ↓ browse dirs  Space enter dir  Enter launch  Esc cancel"
-        }
+        Focus::Home => vec![
+            ("↑↓", "select"),
+            ("n", "new"),
+            ("q", "quit"),
+            ("F1", "legend"),
+        ],
+        Focus::Preview => vec![
+            ("↑↓", "nav"),
+            ("Enter", "focus"),
+            ("D", "delete"),
+            ("r", "rerun"),
+            ("e/d", "toggle"),
+            ("n", "new"),
+            ("q", "quit"),
+        ],
+        Focus::NewAgentDialog => vec![
+            ("↑↓", "fields"),
+            ("←→", "CLI"),
+            ("Space", "enter dir"),
+            ("Enter", "launch"),
+            ("Esc", "cancel"),
+        ],
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                "  EscEsc back  Shift+↑↓ scroll  PgUp/PgDn  Tab next agent  Shift+Tab sidebar  ? legend"
+                vec![
+                    ("Shift+↑↓", "scroll"),
+                    ("PgUp/Dn", "fast"),
+                    ("RClick", "copy"),
+                    ("EscEsc", "back"),
+                    ("Tab", "next"),
+                    ("F1", "legend"),
+                ]
             } else {
-                "  ↑↓/jk scroll log  Esc back  ? legend"
+                vec![
+                    ("↑↓/jk", "scroll"),
+                    ("Esc", "back"),
+                    ("Ctrl+N", "new"),
+                    ("F1", "legend"),
+                ]
             }
         }
     };
+
+    // Build spans: key in white/bold, space, description in lighter gray
+    let mut spans = Vec::new();
+    spans.push(Span::raw("  "));
+    for (i, (key, desc)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            *key,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(*desc, Style::default().fg(DIM)));
+    }
 
     let version = if app.daemon_version.is_empty() {
         String::new()
@@ -520,18 +604,16 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     };
     let version_w = version.len() as u16;
 
-    // Hints on left, version on right
-    let hints_span = Span::styled(hints, Style::default().fg(DIM));
-    let version_span = Span::styled(
-        &version,
-        Style::default().fg(DIM).add_modifier(Modifier::BOLD),
-    );
-
-    let hints_p = Paragraph::new(Line::from(hints_span));
+    let hints_line = Line::from(spans);
+    let hints_p = Paragraph::new(hints_line);
     frame.render_widget(hints_p, area);
 
     if version_w > 0 && area.width > version_w {
         let ver_area = Rect::new(area.x + area.width - version_w, area.y, version_w, 1);
+        let version_span = Span::styled(
+            &version,
+            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+        );
         let ver_p = Paragraph::new(Line::from(version_span));
         frame.render_widget(ver_p, ver_area);
     }
@@ -545,7 +627,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let accent = dialog.selected_accent_color();
 
     let height = match dialog.task_type {
-        super::app::NewTaskType::Interactive => 16,
+        super::app::NewTaskType::Interactive => 18,
         super::app::NewTaskType::Scheduled => 16,
         super::app::NewTaskType::Watcher => 14,
     };
@@ -582,6 +664,22 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let cli_name = dialog.selected_cli().as_str();
 
+    // Mode selector (only for Interactive)
+    let mode_names = ["Interactive", "Resume"];
+    let mode_idx = match dialog.task_mode {
+        super::app::NewTaskMode::Interactive => 0,
+        super::app::NewTaskMode::Resume => 1,
+    };
+    let mode_field = 1;
+
+    // Field offset: mode is field 1 for Interactive, but CLI is field 2
+    // For scheduled/watcher, CLI stays at field 1
+    let cli_field = if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        2
+    } else {
+        1
+    };
+
     // Build lines for the dialog
     let mut lines = vec![
         Line::from(""),
@@ -590,36 +688,75 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             Span::styled(format!(" ◀ {} ▶ ", type_names[type_idx]), focus_style(0)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  CLI:   ", Style::default().fg(DIM)),
-            if is_focused(1) {
-                Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(1))
-            } else {
-                Span::styled(
-                    format!(" ◀ {cli_name} ▶ "),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                )
-            },
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Dir:   ", Style::default().fg(DIM)),
-            Span::styled(truncate_str(&dialog.working_dir, 50), focus_style(2)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Model: ", Style::default().fg(DIM)),
-            Span::styled(
-                if dialog.model.is_empty() {
-                    "(optional, e.g. gpt-4.1)".to_string()
-                } else {
-                    dialog.model.clone()
-                },
-                focus_style(3),
-            ),
-        ]),
-        Line::from(""),
     ];
+
+    // Mode selector for Interactive
+    if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        lines.push(Line::from(vec![
+            Span::styled("  Mode:  ", Style::default().fg(DIM)),
+            Span::styled(
+                format!(" ◀ {} ▶ ", mode_names[mode_idx]),
+                focus_style(mode_field),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("  CLI:   ", Style::default().fg(DIM)),
+        if is_focused(cli_field) {
+            Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(cli_field))
+        } else {
+            Span::styled(
+                format!(" ◀ {cli_name} ▶ "),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )
+        },
+    ]));
+    lines.push(Line::from(""));
+
+    // Field offsets shift by 1 for Interactive type
+    let dir_field = if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        3
+    } else {
+        2
+    };
+    let model_field = if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        4
+    } else {
+        3
+    };
+    let prompt_field = if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        5
+    } else {
+        4
+    };
+    let extra_field = if matches!(dialog.task_type, super::app::NewTaskType::Interactive) {
+        6
+    } else {
+        5
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled("  Dir:   ", Style::default().fg(DIM)),
+        Span::styled(
+            truncate_str(&dialog.working_dir, 50),
+            focus_style(dir_field),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Model: ", Style::default().fg(DIM)),
+        Span::styled(
+            if dialog.model.is_empty() {
+                "(optional, e.g. gpt-4.1)".to_string()
+            } else {
+                dialog.model.clone()
+            },
+            focus_style(model_field),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     // Type-specific fields
     if matches!(
@@ -634,7 +771,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 } else {
                     dialog.prompt.clone()
                 },
-                focus_style(4),
+                focus_style(prompt_field),
             ),
         ]));
         lines.push(Line::from(""));
@@ -642,12 +779,15 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         if dialog.task_type == super::app::NewTaskType::Scheduled {
             lines.push(Line::from(vec![
                 Span::styled("  Cron:  ", Style::default().fg(DIM)),
-                Span::styled(dialog.cron_expr.clone(), focus_style(5)),
+                Span::styled(dialog.cron_expr.clone(), focus_style(extra_field)),
             ]));
         } else {
             lines.push(Line::from(vec![
                 Span::styled("  Path:  ", Style::default().fg(DIM)),
-                Span::styled(truncate_str(&dialog.watch_path, 50), focus_style(5)),
+                Span::styled(
+                    truncate_str(&dialog.watch_path, 50),
+                    focus_style(extra_field),
+                ),
             ]));
         }
         lines.push(Line::from(""));
@@ -669,7 +809,7 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             }
 
             let is_selected = i == dialog.dir_selected;
-            let entry_style = if is_selected && is_focused(2) {
+            let entry_style = if is_selected && is_focused(dir_field) {
                 Style::default()
                     .fg(Color::Black)
                     .bg(INTERACTIVE_COLOR)
@@ -693,13 +833,13 @@ fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let help_text = match dialog.task_type {
         super::app::NewTaskType::Interactive => {
-            "  Tab: next field · ←→: CLI · ↑↓: dirs · Space: enter dir · Enter: launch · Esc: cancel"
+            "  ↑↓: fields · ←→: CLI/mode · Space: enter dir · Enter: launch · Esc: cancel"
         }
         super::app::NewTaskType::Scheduled => {
-            "  Tab: next field · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
         }
         super::app::NewTaskType::Watcher => {
-            "  Tab: next field · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
         }
     };
 
@@ -786,25 +926,45 @@ fn draw_legend(frame: &mut Frame) {
     let lines = vec![
         Line::from(vec![
             Span::styled("▌ ", Style::default().fg(STATUS_RUNNING)),
-            Span::styled("RUNNING  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "RUNNING  ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Agent is executing", Style::default().fg(DIM)),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("▌ ", Style::default().fg(STATUS_OK)),
-            Span::styled("OK/IDLE  ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "OK/IDLE  ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Agent ready / last run OK", Style::default().fg(DIM)),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("▌ ", Style::default().fg(STATUS_FAIL)),
-            Span::styled("FAILED   ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "FAILED   ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Last run failed / error exit", Style::default().fg(DIM)),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("▌ ", Style::default().fg(STATUS_DISABLED)),
-            Span::styled("DISABLED ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "DISABLED ",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("Agent is paused", Style::default().fg(DIM)),
         ]),
     ];

@@ -9,7 +9,9 @@
 //!   Focus:   background → scroll log, interactive → PTY, `EscEsc` → Preview
 
 use anyhow::Result;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use std::time::Duration;
 
 use super::agent::key_to_bytes;
@@ -36,10 +38,19 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
         };
 
         if event::poll(tick)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    handle_key(app, key.code, key.modifiers)?;
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        handle_key(app, key.code, key.modifiers)?;
+                    }
                 }
+                Event::Mouse(mouse) => {
+                    handle_mouse(app, mouse.kind)?;
+                }
+                Event::Resize(_, _) => {
+                    // Resize is handled by refresh() on next tick
+                }
+                _ => {}
             }
         }
 
@@ -51,17 +62,81 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 }
 
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Legend overlay intercepts ALL keys — closes on any key
+    if app.show_legend {
+        app.show_legend = false;
+        return Ok(());
+    }
+
+    // Ctrl+N: new agent from any mode (works in Focus too)
+    if code == KeyCode::Char('n') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.open_new_agent_dialog();
+        return Ok(());
+    }
+
     match app.focus {
-        Focus::Home => handle_home_key(app, code),
-        Focus::Preview => handle_preview_key(app, code),
+        Focus::Home => handle_home_key(app, code, modifiers),
+        Focus::Preview => handle_preview_key(app, code, modifiers),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
     }
 }
 
+// ── Mouse: scroll wheel only (hold Shift to select/copy text) ───────
+
+fn handle_mouse(app: &mut App, kind: MouseEventKind) -> Result<()> {
+    // Right-click = copy screen content to clipboard
+    if matches!(kind, MouseEventKind::Down(MouseButton::Right)) {
+        app.copy_screen_to_clipboard();
+        return Ok(());
+    }
+
+    let dir = match kind {
+        MouseEventKind::ScrollUp => 1i32,
+        MouseEventKind::ScrollDown => -1i32,
+        _ => return Ok(()),
+    };
+
+    match app.focus {
+        Focus::Agent => {
+            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                let idx = *idx;
+                let agent = &mut app.interactive_agents[idx];
+                if dir > 0 {
+                    let max = agent.max_scroll();
+                    agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                } else {
+                    agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                }
+            } else if dir > 0 {
+                app.scroll_log_up();
+            } else {
+                app.scroll_log_down();
+            }
+        }
+        Focus::Preview | Focus::Home => {
+            if dir > 0 {
+                app.select_prev();
+            } else {
+                app.select_next();
+            }
+        }
+        Focus::NewAgentDialog => {
+            if let Some(dialog) = &mut app.new_agent_dialog {
+                if dir > 0 && dialog.dir_selected > 0 {
+                    dialog.dir_selected -= 1;
+                } else if dir < 0 && dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                    dialog.dir_selected += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Home: screensaver — arrows enter Preview ────────────────────────
 
-fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Result<()> {
     // Quit-confirmation overlay intercepts all keys
     if app.quit_confirm {
         match code {
@@ -75,6 +150,9 @@ fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Char('q') => app.running = false,
         KeyCode::Esc => {
             app.quit_confirm = true;
+        }
+        KeyCode::F(1) => {
+            app.show_legend = true;
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if !app.agents.is_empty() {
@@ -107,7 +185,7 @@ fn handle_home_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 // ── Preview: navigate agents, Enter → Focus ─────────────────────────
 
-fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Result<()> {
     match code {
         KeyCode::Esc | KeyCode::Char('h') => {
             app.focus = Focus::Home;
@@ -131,9 +209,10 @@ fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Char('D') => {
             let _ = app.delete_selected();
         }
-        KeyCode::Char('n') => app.open_new_agent_dialog(),
-        KeyCode::Char('x') => app.kill_selected_agent(),
         KeyCode::Char('q') => app.running = false,
+        KeyCode::F(1) => {
+            app.show_legend = true;
+        }
         _ => {}
     }
     Ok(())
@@ -142,11 +221,6 @@ fn handle_preview_key(app: &mut App, code: KeyCode) -> Result<()> {
 // ── Focus: PTY interaction or log scroll ────────────────────────────
 
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-    // Color legend toggle
-    if code == KeyCode::Char('?') {
-        app.show_legend = !app.show_legend;
-    }
-
     // Background agents: simple log-scrolling, single Esc → Preview
     if !matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
         match code {
@@ -154,6 +228,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
             KeyCode::Down | KeyCode::Char('j') => app.scroll_log_down(),
             KeyCode::Up | KeyCode::Char('k') => app.scroll_log_up(),
             KeyCode::Char('q') => app.running = false,
+            KeyCode::F(1) => app.show_legend = !app.show_legend,
             _ => {}
         }
         return Ok(());
@@ -169,6 +244,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         app.last_esc = std::time::Instant::now();
     }
 
+    // F1 = toggle legend (intercept before PTY)
+    if code == KeyCode::F(1) {
+        app.show_legend = !app.show_legend;
+        return Ok(());
+    }
+
     // Tab = cycle to next interactive agent (focus mode)
     if code == KeyCode::Tab {
         app.next_interactive();
@@ -181,16 +262,41 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     };
     let idx = *idx;
 
-    // Shift+Up/Down or PageUp/PageDown = scroll history
-    let shift = modifiers.contains(KeyModifiers::SHIFT);
+    // Bounds check — agent may have been removed between ticks
+    if idx >= app.interactive_agents.len() {
+        app.focus = Focus::Preview;
+        return Ok(());
+    }
+
+    // Shift+Up/Down = always scroll (even when not already scrolled)
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        match code {
+            KeyCode::Up => {
+                let max = app.interactive_agents[idx].max_scroll();
+                app.interactive_agents[idx].scroll_offset =
+                    (app.interactive_agents[idx].scroll_offset + 3).min(max);
+                return Ok(());
+            }
+            KeyCode::Down => {
+                app.interactive_agents[idx].scroll_offset =
+                    app.interactive_agents[idx].scroll_offset.saturating_sub(3);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    // Up/Down = scroll PTY history when scrolled up, otherwise pass to PTY.
+    // PageUp/PageDown always scroll regardless of position.
     let max_scroll = app.interactive_agents[idx].max_scroll();
+    let scrolled = app.interactive_agents[idx].scroll_offset > 0;
     match code {
-        KeyCode::Up if shift => {
+        KeyCode::Up if scrolled => {
             app.interactive_agents[idx].scroll_offset =
                 (app.interactive_agents[idx].scroll_offset + 3).min(max_scroll);
             return Ok(());
         }
-        KeyCode::Down if shift => {
+        KeyCode::Down if scrolled => {
             let agent = &mut app.interactive_agents[idx];
             agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
             return Ok(());
@@ -230,7 +336,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 
 // ── Dialog: new agent creation ──────────────────────────────────────
 //
-// Flow: Tab/Shift+Tab switch fields, ←→ choose CLI, ↑↓ navigate dirs,
+// Flow: ↑↓ switch fields, ←→ choose CLI/type/mode, ↑↓ in dir browser,
 //       Space enter directory, Enter launch, Esc cancel.
 
 fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
@@ -243,31 +349,28 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             let _ = app.launch_new_agent();
         }
-        KeyCode::Tab => {
-            let Some(dialog) = &mut app.new_agent_dialog else {
-                return Ok(());
-            };
-            let max_field = match dialog.task_type {
-                super::app::NewTaskType::Interactive => 3, // type, CLI, dir, model
-                super::app::NewTaskType::Scheduled => 5,   // + prompt, cron
-                super::app::NewTaskType::Watcher => 5,     // + prompt, watch_path
-            };
-            dialog.field = (dialog.field + 1).min(max_field);
-        }
-        KeyCode::BackTab => {
-            let Some(dialog) = &mut app.new_agent_dialog else {
-                return Ok(());
-            };
-            dialog.field = dialog.field.saturating_sub(1);
-        }
         _ => {
             let Some(dialog) = &mut app.new_agent_dialog else {
                 return Ok(());
             };
+
+            let is_interactive =
+                matches!(dialog.task_type, super::app::NewTaskType::Interactive);
+            let cli_field: usize = if is_interactive { 2 } else { 1 };
+            let dir_field: usize = if is_interactive { 3 } else { 2 };
+            let model_field: usize = if is_interactive { 4 } else { 3 };
+            let prompt_field: usize = if is_interactive { 5 } else { 4 };
+            let extra_field: usize = if is_interactive { 6 } else { 5 };
+            let max_field: usize = match dialog.task_type {
+                super::app::NewTaskType::Interactive => 4,
+                super::app::NewTaskType::Scheduled => 5,
+                super::app::NewTaskType::Watcher => 5,
+            };
+
             match dialog.field {
                 // Task type selector
                 0 => match code {
-                    KeyCode::Left | KeyCode::Up => {
+                    KeyCode::Left => {
                         dialog.task_type = match dialog.task_type {
                             super::app::NewTaskType::Interactive => {
                                 super::app::NewTaskType::Watcher
@@ -278,7 +381,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             super::app::NewTaskType::Watcher => super::app::NewTaskType::Scheduled,
                         };
                     }
-                    KeyCode::Right | KeyCode::Down => {
+                    KeyCode::Right => {
                         dialog.task_type = match dialog.task_type {
                             super::app::NewTaskType::Interactive => {
                                 super::app::NewTaskType::Scheduled
@@ -289,19 +392,38 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             }
                         };
                     }
+                    KeyCode::Down | KeyCode::Tab => dialog.field = 1,
+                    _ => {}
+                },
+                // Mode selector (Interactive only)
+                1 if is_interactive => match code {
+                    KeyCode::Left => {
+                        dialog.task_mode = super::app::NewTaskMode::Interactive;
+                    }
+                    KeyCode::Right => {
+                        dialog.task_mode = super::app::NewTaskMode::Resume;
+                    }
+                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
                     _ => {}
                 },
                 // CLI selector
-                1 => match code {
+                n if n == cli_field => match code {
                     KeyCode::Left => dialog.prev_cli(),
                     KeyCode::Right => dialog.next_cli(),
+                    KeyCode::Down | KeyCode::Tab => dialog.field = dir_field,
+                    KeyCode::Up | KeyCode::BackTab => {
+                        dialog.field = if is_interactive { 1 } else { 0 };
+                    }
                     _ => {}
                 },
-                // Directory browser
-                2 => match code {
+                // Directory browser — ↑↓ navigate list, ↑ at top exits upward
+                n if n == dir_field => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
+                        } else {
+                            dialog.field = cli_field;
                         }
                     }
                     KeyCode::Down => {
@@ -309,37 +431,45 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             dialog.dir_selected += 1;
                         }
                     }
+                    KeyCode::Tab => dialog.field = model_field,
+                    KeyCode::BackTab => dialog.field = cli_field,
                     KeyCode::Char(' ') => {
                         dialog.navigate_to_selected();
-                    }
-                    KeyCode::Backspace => {
-                        dialog.working_dir.pop();
                     }
                     _ => {}
                 },
                 // Model input
-                3 => match code {
+                n if n == model_field => match code {
                     KeyCode::Char(c) => dialog.model.push(c),
                     KeyCode::Backspace => {
                         dialog.model.pop();
                     }
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
+                    KeyCode::Down | KeyCode::Tab => {
+                        if dialog.field < max_field {
+                            dialog.field = prompt_field;
+                        }
+                    }
                     _ => {}
                 },
                 // Prompt (scheduled/watcher)
-                4 => match code {
+                n if n == prompt_field => match code {
                     KeyCode::Char(c) => dialog.prompt.push(c),
                     KeyCode::Backspace => {
                         dialog.prompt.pop();
                     }
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = model_field,
+                    KeyCode::Down | KeyCode::Tab => dialog.field = extra_field,
                     _ => {}
                 },
                 // Cron expr or watch path
-                5 => match dialog.task_type {
+                n if n == extra_field => match dialog.task_type {
                     super::app::NewTaskType::Scheduled => match code {
                         KeyCode::Char(c) => dialog.cron_expr.push(c),
                         KeyCode::Backspace => {
                             dialog.cron_expr.pop();
                         }
+                        KeyCode::Up | KeyCode::BackTab => dialog.field = prompt_field,
                         _ => {}
                     },
                     super::app::NewTaskType::Watcher => match code {
@@ -347,6 +477,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         KeyCode::Backspace => {
                             dialog.watch_path.pop();
                         }
+                        KeyCode::Up | KeyCode::BackTab => dialog.field = prompt_field,
                         _ => {}
                     },
                     _ => {}
