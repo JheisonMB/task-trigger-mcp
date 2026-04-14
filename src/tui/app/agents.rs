@@ -51,30 +51,6 @@ impl App {
         }
     }
 
-    pub fn copy_screen_to_clipboard(&mut self) {
-        let text = match self.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => {
-                let idx = *idx;
-                if idx < self.interactive_agents.len() {
-                    self.interactive_agents[idx].output()
-                } else {
-                    return;
-                }
-            }
-            _ => self.log_content.clone(),
-        };
-
-        if text.is_empty() {
-            return;
-        }
-
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(&text);
-        }
-
-        self.show_copied = true;
-        self.copied_at = std::time::Instant::now();
-    }
 
     pub fn next_interactive(&mut self) {
         let interactive_indices: Vec<usize> = self

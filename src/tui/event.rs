@@ -45,7 +45,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
                     }
                 }
                 Event::Mouse(mouse) => {
-                    handle_mouse(app, mouse.kind)?;
+                    handle_mouse(app, mouse.kind, mouse.modifiers)?;
                 }
                 Event::Resize(_, _) => {
                     // Resize is handled by refresh() on next tick
@@ -82,12 +82,16 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
     }
 }
 
-// ── Mouse: scroll wheel only (hold Shift to select/copy text) ───────
+// ── Mouse: scroll wheel + Shift+Click to copy selection ─────────────
 
-fn handle_mouse(app: &mut App, kind: MouseEventKind) -> Result<()> {
-    // Right-click = copy screen content to clipboard
-    if matches!(kind, MouseEventKind::Down(MouseButton::Right)) {
-        app.copy_screen_to_clipboard();
+fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) -> Result<()> {
+    // Shift+Left release — terminal has already placed the selection in the
+    // clipboard; just surface the "Copied" indicator as visual feedback.
+    if matches!(kind, MouseEventKind::Up(MouseButton::Left))
+        && modifiers.contains(KeyModifiers::SHIFT)
+    {
+        app.show_copied = true;
+        app.copied_at = std::time::Instant::now();
         return Ok(());
     }
 
