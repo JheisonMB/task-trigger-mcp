@@ -229,10 +229,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
 
-    // Directory browser (all task types)
+    // Directory / file browser
     if !dialog.dir_entries.is_empty() {
+        let is_watcher = dialog.task_type == crate::tui::app::NewTaskType::Watcher;
+        let browser_label = if is_watcher {
+            "  Browse  (↑↓ navigate, Space to select):"
+        } else {
+            "  Directories  (↑↓ navigate, Space to enter):"
+        };
         lines.push(Line::from(Span::styled(
-            "  Directories (↑↓ navigate, Space to enter):",
+            browser_label,
             Style::default().fg(DIM),
         )));
 
@@ -245,22 +251,25 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             }
 
             let is_selected = i == dialog.dir_selected;
-            let entry_style = if is_selected && is_focused(dir_field) {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(INTERACTIVE_COLOR)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
+            // Always highlight the selected entry so the user always sees the cursor.
+            let entry_style = if is_selected {
+                if is_focused(dir_field) {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(INTERACTIVE_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Rgb(80, 100, 80))
+                        .add_modifier(Modifier::BOLD)
+                }
             } else {
                 Style::default().fg(Color::White)
             };
 
-            let icon = if entry == ".." { ".." } else { ">" };
             lines.push(Line::from(Span::styled(
-                format!("    {} {}", icon, entry),
+                format!("    {entry}"),
                 entry_style,
             )));
         }

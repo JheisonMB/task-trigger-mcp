@@ -404,6 +404,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             }
                             super::app::NewTaskType::Watcher => super::app::NewTaskType::Scheduled,
                         };
+                        dialog.refresh_dir_entries();
                     }
                     KeyCode::Right => {
                         dialog.task_type = match dialog.task_type {
@@ -415,6 +416,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                                 super::app::NewTaskType::Interactive
                             }
                         };
+                        dialog.refresh_dir_entries();
                     }
                     KeyCode::Down | KeyCode::Tab => dialog.field = 1,
                     _ => {}

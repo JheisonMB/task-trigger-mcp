@@ -164,26 +164,44 @@ impl NewAgentDialog {
             return;
         };
 
+        let include_files = self.task_type == NewTaskType::Watcher;
+
         self.dir_entries.clear();
-        let mut dirs: Vec<String> = entries
-            .filter_map(|e| e.ok())
+        let all: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+
+        // Collect dirs (always) and files (watcher only), skip hidden entries
+        let mut dirs: Vec<String> = all
+            .iter()
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .filter_map(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .to_string()
-                    .strip_prefix('.')
-                    .map(|_| None)
-                    .unwrap_or_else(|| Some(e.file_name().to_string_lossy().to_string()))
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') { None } else { Some(format!("📁 {name}")) }
             })
             .collect();
 
+        let mut files: Vec<String> = if include_files {
+            all.iter()
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') { None } else { Some(format!("  {name}")) }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         dirs.sort();
+        files.sort();
+
+        let mut result = dirs;
+        result.extend(files);
+
         if self.current_path != "/" {
-            dirs.insert(0, "..".to_string());
+            result.insert(0, "..".to_string());
         }
 
-        self.dir_entries = dirs;
+        self.dir_entries = result;
         self.dir_selected = 0;
         self.dir_scroll = 0;
     }
@@ -193,24 +211,44 @@ impl NewAgentDialog {
             return;
         }
 
-        let selected = &self.dir_entries[self.dir_selected];
-        let new_path = if selected == ".." {
-            if let Some(pos) = self.current_path.rfind('/') {
-                if pos == 0 {
-                    "/".to_string()
-                } else {
-                    self.current_path[..pos].to_string()
-                }
+        let selected = self.dir_entries[self.dir_selected].clone();
+
+        // ".." — go up one level
+        if selected == ".." {
+            let new_path = if let Some(pos) = self.current_path.rfind('/') {
+                if pos == 0 { "/".to_string() } else { self.current_path[..pos].to_string() }
             } else {
                 ".".to_string()
+            };
+            self.current_path = new_path;
+            self.working_dir = self.current_path.clone();
+            if self.task_type == NewTaskType::Watcher {
+                self.watch_path = self.current_path.clone();
             }
-        } else {
-            format!("{}/{}", self.current_path.trim_end_matches('/'), selected)
-        };
+            self.refresh_dir_entries();
+            return;
+        }
 
-        self.current_path = new_path;
-        self.working_dir = self.current_path.clone();
-        self.refresh_dir_entries();
+        // Strip prefix icons to get actual name
+        let name = selected
+            .trim_start_matches("📁 ")
+            .trim_start_matches("  ");
+
+        let full_path = format!("{}/{}", self.current_path.trim_end_matches('/'), name);
+        let is_dir = std::fs::metadata(&full_path).map(|m| m.is_dir()).unwrap_or(false);
+
+        if is_dir {
+            // Navigate into directory
+            self.current_path = full_path;
+            self.working_dir = self.current_path.clone();
+            if self.task_type == NewTaskType::Watcher {
+                self.watch_path = self.current_path.clone();
+            }
+            self.refresh_dir_entries();
+        } else {
+            // File selected (Watcher only) — set watch_path, stay in current dir
+            self.watch_path = full_path;
+        }
     }
 
     /// Recompute the filtered model suggestions based on current CLI and query.
