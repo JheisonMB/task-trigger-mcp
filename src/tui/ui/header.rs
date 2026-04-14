@@ -44,17 +44,27 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut spans: Vec<Span> = Vec::new();
     // Leading padding so the green kaomoji/title block isn't flush against the left border
     spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        " ",
+        Style::default().bg(Color::Rgb(102, 187, 106)),
+    ));
 
     if wf.title_visible > 0 {
         // Title partially or fully visible — dark text on green background
         let visible = first_n_chars(TITLE, wf.title_visible);
         spans.push(Span::styled(
-            format!("{} ", visible),
+            visible.to_string(),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Rgb(102, 187, 106))
                 .add_modifier(Modifier::BOLD),
         ));
+        // Single trailing green space after title, then raw separator
+        spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::Rgb(102, 187, 106)),
+        ));
+        spans.push(Span::raw(" "));
     } else if !wf.kaomoji.is_empty() && wf.text_visible == 0 && wf.text.is_empty() {
         // Kaomoji flash — dark text on green background
         spans.push(Span::styled(
@@ -67,11 +77,17 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         // Kaomoji with green background + message in gray without background
         let visible_text = first_n_chars(&wf.text, wf.text_visible);
         spans.push(Span::styled(
-            format!("{} ", wf.kaomoji),
+            wf.kaomoji.to_string(),
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Rgb(102, 187, 106)),
         ));
+        // Single trailing green space after kaomoji, then raw separator
+        spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::Rgb(102, 187, 106)),
+        ));
+        spans.push(Span::raw(" "));
         spans.push(Span::styled(
             format!("{} ", visible_text),
             Style::default()

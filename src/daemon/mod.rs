@@ -153,8 +153,8 @@ impl TaskTriggerHandler {
 
     /// Register a new scheduled background_agent. The daemon's internal scheduler handles execution.
     #[tool(
-        name = "task_add",
-        description = "Register a new scheduled background_agent. Use task_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary background_agents that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
+        name = "agent_add",
+        description = "Register a new scheduled background_agent. Use agent_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary background_agents that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_add(
         &self,
@@ -224,7 +224,7 @@ impl TaskTriggerHandler {
 
     /// Register a file or directory watcher.
     #[tool(
-        name = "task_watch",
+        name = "agent_watch",
         description = "Watch a file or directory for changes and execute a prompt when events occur. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
     )]
     async fn task_watch(
@@ -287,7 +287,7 @@ impl TaskTriggerHandler {
 
     /// List all registered scheduled background_agents with status.
     #[tool(
-        name = "task_list",
+        name = "agent_list",
         description = "List all registered scheduled background_agents with their current status"
     )]
     async fn task_list(&self) -> Result<CallToolResult, McpError> {
@@ -352,7 +352,7 @@ impl TaskTriggerHandler {
 
     /// List all active file watchers with status.
     #[tool(
-        name = "task_watchers",
+        name = "agent_watchers",
         description = "List all registered file watchers with their current status"
     )]
     async fn task_watchers(&self) -> Result<CallToolResult, McpError> {
@@ -402,7 +402,7 @@ impl TaskTriggerHandler {
 
     /// Remove a background_agent or watcher completely.
     #[tool(
-        name = "task_remove",
+        name = "agent_remove",
         description = "Remove a background_agent or watcher completely — deletes from database and stops any active watcher"
     )]
     async fn task_remove(
@@ -421,7 +421,7 @@ impl TaskTriggerHandler {
 
     /// Pause a file watcher without deleting it.
     #[tool(
-        name = "task_unwatch",
+        name = "agent_unwatch",
         description = "Pause a file watcher without deleting its definition — can be resumed later"
     )]
     async fn task_unwatch(
@@ -439,7 +439,7 @@ impl TaskTriggerHandler {
 
     /// Enable a disabled background_agent or watcher.
     #[tool(
-        name = "task_enable",
+        name = "agent_enable",
         description = "Enable a disabled scheduled background_agent or watcher"
     )]
     async fn task_enable(
@@ -472,7 +472,7 @@ impl TaskTriggerHandler {
 
     /// Disable a background_agent without removing it.
     #[tool(
-        name = "task_disable",
+        name = "agent_disable",
         description = "Disable a scheduled background_agent or watcher without removing it"
     )]
     async fn task_disable(
@@ -558,14 +558,14 @@ impl TaskTriggerHandler {
         }
 
         Ok(success_result(&format!(
-            "BackgroundAgent '{}' launched in background. Use task_logs to check progress.",
+            "BackgroundAgent '{}' launched in background. Use agent_logs to check progress.",
             id
         )))
     }
 
     /// Get daemon status and statistics.
     #[tool(
-        name = "task_status",
+        name = "agent_status",
         description = "Get overall daemon health, scheduler state, and statistics"
     )]
     async fn task_status(&self) -> Result<CallToolResult, McpError> {
@@ -654,8 +654,8 @@ impl TaskTriggerHandler {
 
     /// List available AI models that can be used with background_agents and watchers.
     #[tool(
-        name = "task_models",
-        description = "List common AI models available for use with background_agents and watchers. Returns provider/model strings that can be passed to the model field of task_add or task_watch."
+        name = "agent_models",
+        description = "List common AI models available for use with background_agents and watchers. Returns provider/model strings that can be passed to the model field of agent_add or agent_watch."
     )]
     async fn task_models(&self) -> Result<CallToolResult, McpError> {
         let models = [
@@ -698,7 +698,7 @@ impl TaskTriggerHandler {
 
     /// Get log output for a background_agent or watcher.
     #[tool(
-        name = "task_logs",
+        name = "agent_logs",
         description = "Get the log output for a background_agent or watcher with optional line and time filters"
     )]
     async fn task_logs(
@@ -805,7 +805,7 @@ impl TaskTriggerHandler {
 
     /// Update fields of an existing background_agent or watcher without recreating it.
     #[tool(
-        name = "task_update",
+        name = "agent_update",
         description = "Modify an existing scheduled background_agent or file watcher. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the ID belongs to a background_agent or watcher. For background_agents: schedule, prompt, cli, model, working_dir, duration_minutes. For watchers: path, events, prompt, cli, model, debounce_seconds, recursive."
     )]
     async fn task_update(
@@ -1023,7 +1023,7 @@ impl TaskTriggerHandler {
 
     /// Report execution status from within a running background_agent.
     #[tool(
-        name = "task_report",
+        name = "agent_report",
         description = "Report execution status for a running background_agent. The run_id is provided in the background_agent execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
     )]
     async fn task_report(
@@ -1128,8 +1128,8 @@ impl ServerHandler for TaskTriggerHandler {
             ))
             .with_instructions(
                 "MCP server for registering, managing, and executing scheduled and event-driven background_agents. \
-                 Use task_add to create scheduled background_agents, task_watch for file watchers, \
-                 agent_run to test immediately, and task_status for daemon health."
+                 Use agent_add to create scheduled background_agents, agent_watch for file watchers, \
+                 agent_run to test immediately, and agent_status for daemon health."
                     .to_string(),
             )
     }
