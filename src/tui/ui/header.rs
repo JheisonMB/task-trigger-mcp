@@ -84,13 +84,13 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let left = Paragraph::new(Line::from(spans));
     frame.render_widget(left, area);
 
-    // Daemon status: single blinking character at right
-    if area.width > 2 {
+    // Daemon status: single character one cell from the right edge
+    if area.width > 3 {
         let status = Paragraph::new(Line::from(Span::styled(
             status_char,
             Style::default().fg(status_color),
         )));
-        let status_area = Rect::new(area.x + area.width - 1, area.y, 1, 1);
+        let status_area = Rect::new(area.x + area.width - 2, area.y, 1, 1);
         frame.render_widget(status, status_area);
     }
 }
