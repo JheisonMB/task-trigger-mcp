@@ -385,15 +385,11 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let cli_field: usize = if is_interactive { 2 } else { 1 };
             let model_field: usize = if is_interactive { 3 } else { 2 };
-            let dir_field: usize = if is_interactive { 4 } else { 3 };
-            let prompt_field: usize = if is_interactive { 5 } else { 4 };
-            let extra_field: usize = if is_interactive { 6 } else { 5 };
-            let max_field: usize = match dialog.task_type {
-                super::app::NewTaskType::Interactive => 4,
-                super::app::NewTaskType::Scheduled => 5,
-                super::app::NewTaskType::Watcher => 5,
-            };
-            let _ = max_field; // used for bounds checking
+            // Non-interactive only fields (prompt=3, extra=4 are before dir)
+            let prompt_field: usize = 3;
+            let extra_field: usize = 4;
+            let dir_field: usize = if is_interactive { 4 } else { 5 };
+            let _ = (prompt_field, extra_field); // used in non-interactive branches below
 
             match dialog.field {
                 // Task type selector
@@ -445,13 +441,13 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         dialog.next_cli();
                         dialog.refresh_model_suggestions();
                     }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = model_field,
-                    KeyCode::Up | KeyCode::BackTab => {
+                    KeyCode::Down => dialog.field = model_field,
+                    KeyCode::Up => {
                         dialog.field = if is_interactive { 1 } else { 0 };
                     }
                     _ => {}
                 },
-                // Model field — Space opens picker, ↑↓ navigate suggestions
+                // Model field — Space opens picker, ↑↓ navigate suggestions or fields
                 n if n == model_field => match code {
                     KeyCode::Char(' ') => {
                         dialog.model_picker_open = true;
@@ -489,16 +485,9 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Right if dialog.model_picker_open => {
                         dialog.accept_model_suggestion();
                     }
-                    KeyCode::Tab => {
-                        if dialog.model_picker_open {
-                            dialog.accept_model_suggestion();
-                        }
+                    KeyCode::Enter if dialog.model_picker_open => {
+                        dialog.accept_model_suggestion();
                         dialog.model_picker_open = false;
-                        dialog.field = dir_field;
-                    }
-                    KeyCode::BackTab => {
-                        dialog.model_picker_open = false;
-                        dialog.field = cli_field;
                     }
                     KeyCode::Esc | KeyCode::Left if dialog.model_picker_open => {
                         dialog.model_picker_open = false;
@@ -509,53 +498,29 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => {
                         dialog.model_picker_open = false;
-                        dialog.field = dir_field;
+                        dialog.field = if is_interactive { dir_field } else { 3 }; // prompt or dir
                     }
                     _ => {}
                 },
-                // Directory browser — ↑↓ navigate list, ↑ at top exits upward
-                n if n == dir_field => match code {
-                    KeyCode::Up => {
-                        if dialog.dir_selected > 0 {
-                            dialog.dir_selected -= 1;
-                        } else {
-                            dialog.field = model_field;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
-                            dialog.dir_selected += 1;
-                        }
-                    }
-                    KeyCode::Tab => {
-                        if !is_interactive {
-                            dialog.field = prompt_field;
-                        }
-                    }
-                    KeyCode::BackTab => dialog.field = model_field,
-                    KeyCode::Char(' ') => {
-                        dialog.navigate_to_selected();
-                    }
-                    _ => {}
-                },
-                // Prompt (scheduled/watcher)
-                n if n == prompt_field => match code {
+                // Prompt (scheduled/watcher only — field 3)
+                3 if !is_interactive => match code {
                     KeyCode::Char(c) => dialog.prompt.push(c),
                     KeyCode::Backspace => {
                         dialog.prompt.pop();
                     }
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = model_field,
-                    KeyCode::Down | KeyCode::Tab => dialog.field = extra_field,
+                    KeyCode::Up => dialog.field = model_field,
+                    KeyCode::Down => dialog.field = 4, // extra_field
                     _ => {}
                 },
-                // Cron expr or watch path
-                n if n == extra_field => match dialog.task_type {
+                // Cron expr or watch path (field 4, non-interactive only)
+                4 if !is_interactive => match dialog.task_type {
                     super::app::NewTaskType::Scheduled => match code {
                         KeyCode::Char(c) => dialog.cron_expr.push(c),
                         KeyCode::Backspace => {
                             dialog.cron_expr.pop();
                         }
-                        KeyCode::Up | KeyCode::BackTab => dialog.field = prompt_field,
+                        KeyCode::Up => dialog.field = 3, // prompt
+                        KeyCode::Down => dialog.field = dir_field,
                         _ => {}
                     },
                     super::app::NewTaskType::Watcher => match code {
@@ -563,9 +528,31 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         KeyCode::Backspace => {
                             dialog.watch_path.pop();
                         }
-                        KeyCode::Up | KeyCode::BackTab => dialog.field = prompt_field,
+                        KeyCode::Up => dialog.field = 3, // prompt
+                        KeyCode::Down => dialog.field = dir_field,
                         _ => {}
                     },
+                    _ => {}
+                },
+                // Directory browser — ↑↓ navigate entries, ↑ at top exits up
+                n if n == dir_field => match code {
+                    KeyCode::Up => {
+                        if dialog.dir_selected > 0 {
+                            dialog.dir_selected -= 1;
+                        } else if is_interactive {
+                            dialog.field = model_field;
+                        } else {
+                            dialog.field = 4; // extra_field
+                        }
+                    }
+                    KeyCode::Down => {
+                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                            dialog.dir_selected += 1;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        dialog.navigate_to_selected();
+                    }
                     _ => {}
                 },
                 _ => {}

@@ -107,9 +107,9 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     lines.push(Line::from(""));
 
     let model_field = if is_interactive { 3 } else { 2 };
-    let dir_field = if is_interactive { 4 } else { 3 };
-    let prompt_field = if is_interactive { 5 } else { 4 };
-    let extra_field = if is_interactive { 6 } else { 5 };
+    let prompt_field = 3usize; // non-interactive only (field 3)
+    let extra_field = 4usize;  // non-interactive only (field 4)
+    let dir_field = if is_interactive { 4 } else { 5 };
 
     lines.push(Line::from(vec![
         Span::styled("  Model: ", Style::default().fg(DIM)),
@@ -177,15 +177,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::styled("  Dir:   ", Style::default().fg(DIM)),
-        Span::styled(
-            truncate_str(&dialog.working_dir, 50),
-            focus_style(dir_field),
-        ),
-    ]));
-    lines.push(Line::from(""));
 
+    // Prompt + extra fields for non-interactive tasks (before Dir)
     if matches!(
         dialog.task_type,
         crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher
@@ -194,9 +187,9 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             Span::styled("  Prompt:", Style::default().fg(DIM)),
             Span::styled(
                 if dialog.prompt.is_empty() {
-                    "enter task prompt...".to_string()
+                    " enter task prompt...".to_string()
                 } else {
-                    dialog.prompt.clone()
+                    format!(" {}▏", dialog.prompt)
                 },
                 focus_style(prompt_field),
             ),
@@ -206,7 +199,14 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         if dialog.task_type == crate::tui::app::NewTaskType::Scheduled {
             lines.push(Line::from(vec![
                 Span::styled("  Cron:  ", Style::default().fg(DIM)),
-                Span::styled(dialog.cron_expr.clone(), focus_style(extra_field)),
+                Span::styled(
+                    if dialog.cron_expr.is_empty() {
+                        " * * * * *  (min hr dom mon dow)".to_string()
+                    } else {
+                        format!(" {}▏", dialog.cron_expr)
+                    },
+                    focus_style(extra_field),
+                ),
             ]));
         } else {
             lines.push(Line::from(vec![
@@ -219,6 +219,15 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         }
         lines.push(Line::from(""));
     }
+
+    lines.push(Line::from(vec![
+        Span::styled("  Dir:   ", Style::default().fg(DIM)),
+        Span::styled(
+            truncate_str(&dialog.working_dir, 50),
+            focus_style(dir_field),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     // Directory browser (all task types)
     if !dialog.dir_entries.is_empty() {
