@@ -31,10 +31,21 @@ pub fn run_tui() -> Result<()> {
     let db_path = data_dir.join("tasks.db");
 
     if !db_path.exists() {
-        anyhow::bail!(
-            "No database found at {}. Is the daemon running?",
-            db_path.display()
-        );
+        eprintln!("Daemon not running — starting it automatically…");
+        auto_start_daemon(&data_dir)?;
+        // Wait briefly for the daemon to create the database
+        for _ in 0..20 {
+            if db_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !db_path.exists() {
+            anyhow::bail!(
+                "Daemon started but database not found at {}.\nCheck logs: canopy daemon logs",
+                db_path.display()
+            );
+        }
     }
 
     let db = Arc::new(Database::new(&db_path).context("Failed to open database")?);
@@ -60,4 +71,36 @@ pub fn run_tui() -> Result<()> {
     terminal.show_cursor()?;
 
     result
+}
+
+/// Try to start the daemon process automatically.
+fn auto_start_daemon(data_dir: &std::path::Path) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let log_path = data_dir.join("daemon.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_err = log_file.try_clone()?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("serve")
+        .stdout(log_file)
+        .stderr(log_err)
+        .stdin(std::process::Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    cmd.spawn()
+        .context("Failed to spawn daemon process")?;
+    Ok(())
 }
