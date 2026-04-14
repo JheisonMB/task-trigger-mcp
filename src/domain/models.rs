@@ -126,6 +126,8 @@ pub enum Cli {
     Gemini,
     #[serde(rename = "claude")]
     Claude,
+    #[serde(rename = "codex")]
+    Codex,
 }
 
 impl Cli {
@@ -137,6 +139,7 @@ impl Cli {
             "qwen" => Self::Qwen,
             "gemini" => Self::Gemini,
             "claude" => Self::Claude,
+            "codex" => Self::Codex,
             _ => Self::OpenCode,
         }
     }
@@ -150,6 +153,7 @@ impl Cli {
             Self::Qwen => "qwen",
             Self::Gemini => "gemini",
             Self::Claude => "claude",
+            Self::Codex => "codex",
         }
     }
 
@@ -162,6 +166,7 @@ impl Cli {
             Self::Qwen => "qwen",
             Self::Gemini => "gemini",
             Self::Claude => "claude",
+            Self::Codex => "codex",
         }
     }
 
@@ -185,6 +190,9 @@ impl Cli {
         }
         if which::which("claude").is_ok() {
             available.push(Cli::Claude);
+        }
+        if which::which("codex").is_ok() {
+            available.push(Cli::Codex);
         }
         available
     }
@@ -213,8 +221,9 @@ impl Cli {
             Some("qwen") => Ok(Cli::Qwen),
             Some("gemini") => Ok(Cli::Gemini),
             Some("claude") => Ok(Cli::Claude),
+            Some("codex") => Ok(Cli::Codex),
             Some(other) => Err(format!(
-                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', or 'claude'",
+                "Unknown CLI '{}'. Must be 'opencode', 'kiro', 'copilot', 'qwen', 'gemini', 'claude', or 'codex'",
                 other
             )),
             None => match Cli::detect_default() {
@@ -226,7 +235,7 @@ impl Cli {
                     let available = Cli::detect_available();
                     if available.is_empty() {
                         Err(
-                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', 'qwen', 'gemini', or 'claude'."
+                            "No supported CLI found in PATH. Install 'opencode', 'kiro-cli', 'copilot', 'qwen', 'gemini', 'claude', or 'codex'."
                                 .to_string(),
                         )
                     } else {

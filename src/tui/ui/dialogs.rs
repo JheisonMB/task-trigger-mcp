@@ -16,11 +16,20 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let accent = dialog.selected_accent_color();
 
-    let height = match dialog.task_type {
+    let picker_rows = if dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
+        let visible = dialog.model_suggestions.len().min(5);
+        let overflow_line = if dialog.model_suggestions.len() > 5 { 1 } else { 0 };
+        visible + overflow_line
+    } else {
+        0
+    };
+
+    let base_height: u16 = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => 18,
         crate::tui::app::NewTaskType::Scheduled => 16,
         crate::tui::app::NewTaskType::Watcher => 14,
     };
+    let height = base_height + picker_rows as u16;
     let area = centered_rect(65, height, frame.area());
     frame.render_widget(Clear, area);
 
@@ -114,13 +123,67 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         Span::styled("  Model: ", Style::default().fg(DIM)),
         Span::styled(
             if dialog.model.is_empty() {
-                "(optional, e.g. gpt-4.1)".to_string()
+                "(type to search models)".to_string()
             } else {
-                dialog.model.clone()
+                format!("{}▏", dialog.model)
             },
             focus_style(model_field),
         ),
     ]));
+
+    // Model suggestions dropdown
+    if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty()
+    {
+        let max_visible = 5;
+        let total = dialog.model_suggestions.len();
+        let sel = dialog.model_suggestion_idx;
+        let scroll = if sel >= max_visible {
+            sel - max_visible + 1
+        } else {
+            0
+        };
+
+        for (i, entry) in dialog
+            .model_suggestions
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(max_visible)
+        {
+            let is_sel = i == sel;
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let provider_tag = format!(" [{}]", entry.provider);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("    {} ", if is_sel { "›" } else { " " }),
+                    style,
+                ),
+                Span::styled(truncate_str(&entry.id, 38), style),
+                Span::styled(
+                    provider_tag,
+                    if is_sel {
+                        style
+                    } else {
+                        Style::default().fg(DIM)
+                    },
+                ),
+            ]));
+        }
+        if total > max_visible {
+            lines.push(Line::from(Span::styled(
+                format!("    … {total} models (↑↓ scroll, → or Tab accept)"),
+                Style::default().fg(DIM),
+            )));
+        }
+    }
+
     lines.push(Line::from(""));
 
     if matches!(

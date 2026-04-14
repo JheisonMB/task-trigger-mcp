@@ -409,8 +409,14 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 },
                 // CLI selector
                 n if n == cli_field => match code {
-                    KeyCode::Left => dialog.prev_cli(),
-                    KeyCode::Right => dialog.next_cli(),
+                    KeyCode::Left => {
+                        dialog.prev_cli();
+                        dialog.refresh_model_suggestions();
+                    }
+                    KeyCode::Right => {
+                        dialog.next_cli();
+                        dialog.refresh_model_suggestions();
+                    }
                     KeyCode::Down | KeyCode::Tab => dialog.field = dir_field,
                     KeyCode::Up | KeyCode::BackTab => {
                         dialog.field = if is_interactive { 1 } else { 0 };
@@ -438,14 +444,59 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     _ => {}
                 },
-                // Model input
+                // Model input — with autocomplete picker
                 n if n == model_field => match code {
-                    KeyCode::Char(c) => dialog.model.push(c),
+                    KeyCode::Char(c) => {
+                        dialog.model.push(c);
+                        dialog.model_picker_open = true;
+                        dialog.model_suggestion_idx = 0;
+                        dialog.refresh_model_suggestions();
+                    }
                     KeyCode::Backspace => {
                         dialog.model.pop();
+                        dialog.model_picker_open = !dialog.model.is_empty();
+                        dialog.model_suggestion_idx = 0;
+                        dialog.refresh_model_suggestions();
                     }
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
-                    KeyCode::Down | KeyCode::Tab => {
+                    KeyCode::Down if dialog.model_picker_open => {
+                        let len = dialog.model_suggestions.len();
+                        if len > 0 {
+                            dialog.model_suggestion_idx =
+                                (dialog.model_suggestion_idx + 1) % len;
+                        }
+                    }
+                    KeyCode::Up if dialog.model_picker_open => {
+                        let len = dialog.model_suggestions.len();
+                        if len > 0 {
+                            dialog.model_suggestion_idx = dialog
+                                .model_suggestion_idx
+                                .checked_sub(1)
+                                .unwrap_or(len - 1);
+                        }
+                    }
+                    KeyCode::Right if dialog.model_picker_open => {
+                        dialog.accept_model_suggestion();
+                    }
+                    KeyCode::Tab => {
+                        if dialog.model_picker_open {
+                            dialog.accept_model_suggestion();
+                        } else if dialog.field < max_field {
+                            dialog.field = prompt_field;
+                        }
+                    }
+                    KeyCode::BackTab => {
+                        dialog.model_picker_open = false;
+                        dialog.field = dir_field;
+                    }
+                    KeyCode::Left if dialog.model_picker_open => {
+                        dialog.model_picker_open = false;
+                    }
+                    KeyCode::Up => {
+                        dialog.model_picker_open = false;
+                        dialog.field = dir_field;
+                    }
+                    KeyCode::Down => {
+                        dialog.model_picker_open = false;
                         if dialog.field < max_field {
                             dialog.field = prompt_field;
                         }

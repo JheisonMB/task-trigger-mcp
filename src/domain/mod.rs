@@ -6,4 +6,5 @@
 pub mod cli_config;
 pub mod cli_strategy;
 pub mod models;
+pub mod models_db;
 pub mod validation;

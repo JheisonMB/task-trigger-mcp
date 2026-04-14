@@ -24,6 +24,8 @@ pub struct RegistryRaw {
 pub struct Platform {
     pub name: String,
     pub config_path: String,
+    #[serde(default)]
+    pub config_format: Option<String>,
     #[serde(alias = "servers_key")]
     pub mcp_servers_key: Vec<String>,
     #[serde(default)]
@@ -123,18 +125,26 @@ pub fn run_setup() -> Result<()> {
 
     for p in &selected {
         let path = home.join(&p.config_path);
-        let servers_parent = &p.mcp_servers_key[0];
+        let is_toml = p.config_format.as_deref() == Some("toml");
 
-        for old_key in &p.deprecated_keys {
-            if let Ok(true) = remove_json_key(&path, servers_parent, old_key) {
-                println!("  🗑  Removed old '{}' from {}", old_key, p.name);
+        if !is_toml {
+            let servers_parent = &p.mcp_servers_key[0];
+            for old_key in &p.deprecated_keys {
+                if let Ok(true) = remove_json_key(&path, servers_parent, old_key) {
+                    println!("  🗑  Removed old '{}' from {}", old_key, p.name);
+                }
             }
         }
 
-        let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
-        key_refs.push(&p.canopy_entry_key);
+        let result = if is_toml {
+            upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &p.canopy_entry)
+        } else {
+            let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
+            key_refs.push(&p.canopy_entry_key);
+            upsert_json_key(&path, &key_refs, &p.canopy_entry)
+        };
 
-        match upsert_json_key(&path, &key_refs, &p.canopy_entry) {
+        match result {
             Ok(true) => println!("  \x1b[32m✅\x1b[0m Configured MCP for {}", p.name),
             Ok(false) => println!("  \x1b[33m⏭\x1b[0m  {} already configured", p.name),
             Err(e) => println!("  \x1b[31m❌\x1b[0m Failed to configure {}: {}", p.name, e),
@@ -280,6 +290,62 @@ fn upsert_json_key(path: &Path, keys: &[&str], value: &serde_json::Value) -> Res
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    Ok(true)
+}
+
+/// Upsert a TOML config key for platforms like Codex that use config.toml.
+///
+/// Writes `[{section}.{entry_key}]` with the fields from `value` (a JSON object).
+/// Example output: `[mcp_servers.canopy]\nurl = "http://localhost:7755/mcp"\n`
+fn upsert_toml_key(
+    path: &Path,
+    section: &str,
+    entry_key: &str,
+    value: &serde_json::Value,
+) -> Result<bool> {
+    let table_header = format!("[{section}.{entry_key}]");
+
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    // Already configured — check if the section header exists
+    if content.contains(&table_header) {
+        return Ok(false);
+    }
+
+    // Build the TOML fragment from the JSON value
+    let mut fragment = format!("\n{table_header}\n");
+    if let Some(obj) = value.as_object() {
+        for (k, v) in obj {
+            match v {
+                serde_json::Value::String(s) => {
+                    fragment.push_str(&format!("{k} = \"{s}\"\n"));
+                }
+                serde_json::Value::Bool(b) => {
+                    fragment.push_str(&format!("{k} = {b}\n"));
+                }
+                serde_json::Value::Number(n) => {
+                    fragment.push_str(&format!("{k} = {n}\n"));
+                }
+                _ => {
+                    // For arrays/objects, serialize as inline TOML via serde
+                    let toml_val: toml::Value = serde_json::from_value(v.clone())?;
+                    fragment.push_str(&format!("{k} = {toml_val}\n"));
+                }
+            }
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut out = content;
+    out.push_str(&fragment);
+    std::fs::write(path, out)?;
     Ok(true)
 }
 
@@ -459,16 +525,22 @@ pub fn run_setup_silent() -> Result<()> {
     // Configure MCP for all detected platforms
     for p in &detected {
         let path = home.join(&p.config_path);
-        let servers_parent = &p.mcp_servers_key[0];
+        let is_toml = p.config_format.as_deref() == Some("toml");
 
-        for old_key in &p.deprecated_keys {
-            let _ = remove_json_key(&path, servers_parent, old_key);
+        if !is_toml {
+            let servers_parent = &p.mcp_servers_key[0];
+            for old_key in &p.deprecated_keys {
+                let _ = remove_json_key(&path, servers_parent, old_key);
+            }
         }
 
-        let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
-        key_refs.push(&p.canopy_entry_key);
-
-        let _ = upsert_json_key(&path, &key_refs, &p.canopy_entry);
+        if is_toml {
+            let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &p.canopy_entry);
+        } else {
+            let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
+            key_refs.push(&p.canopy_entry_key);
+            let _ = upsert_json_key(&path, &key_refs, &p.canopy_entry);
+        }
     }
 
     // Save CLI config

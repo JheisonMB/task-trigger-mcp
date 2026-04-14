@@ -3,6 +3,7 @@
 use ratatui::style::Color;
 
 use crate::domain::models::Cli;
+use crate::domain::models_db::{self, ModelCatalog, ModelEntry};
 
 use super::Focus;
 
@@ -43,6 +44,11 @@ pub struct NewAgentDialog {
     pub dir_scroll: usize,
     pub current_path: String,
     pub prev_focus: Option<Focus>,
+    // ── Model suggestions ──
+    pub model_catalog: Option<ModelCatalog>,
+    pub model_suggestions: Vec<ModelEntry>,
+    pub model_suggestion_idx: usize,
+    pub model_picker_open: bool,
 }
 
 impl NewAgentDialog {
@@ -51,6 +57,7 @@ impl NewAgentDialog {
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+        let catalog = models_db::load_catalog();
         let mut dialog = Self {
             task_type: NewTaskType::Interactive,
             task_mode: NewTaskMode::Interactive,
@@ -77,8 +84,13 @@ impl NewAgentDialog {
             dir_scroll: 0,
             current_path: cwd,
             prev_focus: None,
+            model_catalog: catalog,
+            model_suggestions: Vec::new(),
+            model_suggestion_idx: 0,
+            model_picker_open: false,
         };
         dialog.refresh_dir_entries();
+        dialog.refresh_model_suggestions();
         dialog
     }
 
@@ -199,6 +211,29 @@ impl NewAgentDialog {
         self.current_path = new_path;
         self.working_dir = self.current_path.clone();
         self.refresh_dir_entries();
+    }
+
+    /// Recompute the filtered model suggestions based on current CLI and query.
+    pub fn refresh_model_suggestions(&mut self) {
+        let Some(catalog) = &self.model_catalog else {
+            self.model_suggestions.clear();
+            return;
+        };
+        let cli_name = self.selected_cli().as_str();
+        let cli_models = models_db::models_for_cli(catalog, cli_name);
+        self.model_suggestions = models_db::filter_models(&cli_models, &self.model);
+        // Clamp selection index
+        if self.model_suggestion_idx >= self.model_suggestions.len() {
+            self.model_suggestion_idx = 0;
+        }
+    }
+
+    /// Accept the currently highlighted model suggestion.
+    pub fn accept_model_suggestion(&mut self) {
+        if let Some(entry) = self.model_suggestions.get(self.model_suggestion_idx) {
+            self.model = entry.id.clone();
+            self.model_picker_open = false;
+        }
     }
 }
 
