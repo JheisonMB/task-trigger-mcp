@@ -34,7 +34,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" New Task ")
+        .title(" New Agent ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
         .style(Style::default().bg(Color::Rgb(15, 25, 15)));
@@ -84,7 +84,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     if is_interactive {
         lines.push(Line::from(vec![
-            Span::styled("  Mode:  ", Style::default().fg(DIM)),
+            Span::styled("  Session:  ", Style::default().fg(DIM)),
             Span::styled(
                 format!(" ◀ {} ▶ ", mode_names[mode_idx]),
                 focus_style(mode_field),

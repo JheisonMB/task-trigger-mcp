@@ -21,40 +21,52 @@ fn first_n_chars(s: &str, n: usize) -> &str {
 }
 
 pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
-    let status_text = if app.daemon_running {
-        format!(" RUNNING (PID: {}) ", app.daemon_pid.unwrap_or(0))
-    } else {
-        " STOPPED ".to_string()
-    };
-    let status_w = status_text.chars().count() as u16;
+    // Daemon status: blinking █ character
+    let status_char = if app.daemon_running { "█" } else { "▓" };
+    let status_color = if app.daemon_running { ACCENT } else { ERROR_COLOR };
+    
+    // Blinking effect: show/hide based on time
+    let blink_on = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() / 500) % 2 == 0;
+    let status_visible = app.daemon_running || !blink_on;
 
     let wf = app.whimsg.tick();
 
     let spans: Vec<Span> = if wf.title_visible > 0 {
-        // Title partially or fully visible
+        // Title partially or fully visible — dark text on green background
         let visible = first_n_chars(TITLE, wf.title_visible);
         vec![Span::styled(
-            format!(" {visible}"),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            format!(" {visible} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(102, 187, 106))
+                .add_modifier(Modifier::BOLD),
         )]
     } else if !wf.kaomoji.is_empty() && wf.text_visible == 0 && wf.text.is_empty() {
-        // Kaomoji flash (no message yet)
+        // Kaomoji flash — dark text on green background
         vec![Span::styled(
-            format!(" {}", wf.kaomoji),
-            Style::default().fg(Color::Rgb(102, 187, 106)),
+            format!(" {} ", wf.kaomoji),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Rgb(102, 187, 106)),
         )]
     } else if !wf.kaomoji.is_empty() {
-        // Kaomoji + partial/full message
+        // Kaomoji + partial/full message — dark text on green
         let visible_text = first_n_chars(&wf.text, wf.text_visible);
         vec![
             Span::styled(
                 format!(" {} ", wf.kaomoji),
-                Style::default().fg(Color::Rgb(102, 187, 106)),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(102, 187, 106)),
             ),
             Span::styled(
-                visible_text.to_string(),
+                format!("{} ", visible_text),
                 Style::default()
-                    .fg(Color::Rgb(140, 140, 140))
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(102, 187, 106))
                     .add_modifier(Modifier::ITALIC),
             ),
         ]
@@ -66,16 +78,13 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let left = Paragraph::new(Line::from(spans));
     frame.render_widget(left, area);
 
-    if area.width > status_w {
+    // Daemon status: single blinking character at right
+    if area.width > 2 && status_visible {
         let status = Paragraph::new(Line::from(Span::styled(
-            status_text,
-            Style::default().fg(Color::Black).bg(if app.daemon_running {
-                ACCENT
-            } else {
-                ERROR_COLOR
-            }),
+            status_char,
+            Style::default().fg(Color::Black).bg(status_color),
         )));
-        let status_area = Rect::new(area.x + area.width - status_w, area.y, status_w, 1);
+        let status_area = Rect::new(area.x + area.width - 1, area.y, 1, 1);
         frame.render_widget(status, status_area);
     }
 }
