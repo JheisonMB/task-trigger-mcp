@@ -256,6 +256,64 @@ impl InteractiveAgent {
             0
         }
     }
+
+    /// Whether the child process is using alternate screen mode.
+    pub fn in_alternate_screen(&self) -> bool {
+        self.vt
+            .lock()
+            .map(|vt| vt.screen().alternate_screen())
+            .unwrap_or(false)
+    }
+
+    /// Forward a mouse scroll event to the PTY.
+    ///
+    /// Checks the child's mouse protocol mode.  If mouse reporting is
+    /// active, sends the wheel event in the correct encoding.  Otherwise
+    /// falls back to arrow-key sequences.
+    pub fn forward_scroll(&self, scroll_up: bool) -> Result<()> {
+        let (mode, encoding, cols) = {
+            let vt = self.vt.lock().map_err(|_| anyhow::anyhow!("vt lock"))?;
+            let s = vt.screen();
+            (
+                s.mouse_protocol_mode(),
+                s.mouse_protocol_encoding(),
+                s.size().1,
+            )
+        };
+
+        use vt100::MouseProtocolEncoding as MPE;
+        use vt100::MouseProtocolMode as MPM;
+
+        match mode {
+            MPM::None => {
+                // No mouse protocol — send 3 arrow key presses
+                let seq: &[u8] = if scroll_up { b"\x1b[A" } else { b"\x1b[B" };
+                let bytes: Vec<u8> = seq.repeat(3);
+                self.write_to_pty(&bytes)
+            }
+            _ => {
+                let button: u8 = if scroll_up { 64 } else { 65 };
+                let col: u16 = cols / 2;
+                let row: u16 = 10;
+                let bytes = match encoding {
+                    MPE::Sgr => {
+                        format!("\x1b[<{};{};{}M", button, col + 1, row + 1).into_bytes()
+                    }
+                    _ => {
+                        vec![
+                            0x1b,
+                            b'[',
+                            b'M',
+                            button + 32,
+                            (col as u8).wrapping_add(33),
+                            (row as u8).wrapping_add(33),
+                        ]
+                    }
+                };
+                self.write_to_pty(&bytes)
+            }
+        }
+    }
 }
 
 /// A snapshot of the virtual terminal screen.

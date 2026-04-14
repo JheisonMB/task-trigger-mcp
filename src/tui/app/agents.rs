@@ -117,7 +117,7 @@ impl App {
             agent.poll();
         }
 
-        let mut removed_indices: Vec<usize> = self
+        let removed_indices: Vec<usize> = self
             .interactive_agents
             .iter()
             .enumerate()
@@ -129,25 +129,38 @@ impl App {
             return;
         }
 
-        removed_indices.sort_unstable();
-        removed_indices.reverse();
+        // 1. Remove matching AgentEntry::Interactive from self.agents
+        //    BEFORE touching interactive_agents so indices are still valid.
+        self.agents.retain(|a| {
+            if let AgentEntry::Interactive(idx) = a {
+                !removed_indices.contains(idx)
+            } else {
+                true
+            }
+        });
 
-        for &old_idx in &removed_indices {
+        // 2. Remove from interactive_agents (reverse order preserves indices)
+        let mut sorted = removed_indices;
+        sorted.sort_unstable();
+        sorted.reverse();
+        for &old_idx in &sorted {
             self.interactive_agents.remove(old_idx);
         }
 
+        // 3. Adjust remaining Interactive indices
         for agent in &mut self.agents {
             if let AgentEntry::Interactive(idx) = agent {
-                let shifts = removed_indices.iter().filter(|&&r| r < *idx).count();
+                let shifts = sorted.iter().filter(|&&r| r < *idx).count();
                 *idx -= shifts;
             }
         }
 
+        // 4. Fix focus and selection
         if self.focus == Focus::Agent {
             self.focus = Focus::Preview;
-            if self.selected >= self.agents.len() && !self.agents.is_empty() {
-                self.selected = self.agents.len() - 1;
-            }
+        }
+        if self.selected >= self.agents.len() {
+            self.selected = self.agents.len().saturating_sub(1);
         }
     }
 

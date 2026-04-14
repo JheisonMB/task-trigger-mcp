@@ -36,11 +36,10 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                 vec![
-                    ("Shift+↑↓", "scroll"),
-                    ("PgUp/Dn", "fast"),
-                    ("RClick", "copy"),
                     ("EscEsc", "back"),
                     ("Tab", "next"),
+                    ("Ctrl+N", "new"),
+                    ("Shift+Click", "select"),
                     ("F1", "legend"),
                 ]
             } else {

@@ -136,12 +136,13 @@ pub fn run_setup() -> Result<()> {
             }
         }
 
+        let entry = sanitize_canopy_entry(&p.name, p.canopy_entry.clone());
         let result = if is_toml {
-            upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &p.canopy_entry)
+            upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
         } else {
             let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
             key_refs.push(&p.canopy_entry_key);
-            upsert_json_key(&path, &key_refs, &p.canopy_entry)
+            upsert_json_key(&path, &key_refs, &entry)
         };
 
         match result {
@@ -534,12 +535,13 @@ pub fn run_setup_silent() -> Result<()> {
             }
         }
 
+        let entry = sanitize_canopy_entry(&p.name, p.canopy_entry.clone());
         if is_toml {
-            let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &p.canopy_entry);
+            let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
         } else {
             let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
             key_refs.push(&p.canopy_entry_key);
-            let _ = upsert_json_key(&path, &key_refs, &p.canopy_entry);
+            let _ = upsert_json_key(&path, &key_refs, &entry);
         }
     }
 
@@ -561,6 +563,20 @@ pub fn run_setup_silent() -> Result<()> {
     std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
 
     Ok(())
+}
+
+/// Sanitize a platform's `canopy_entry` by stripping keys that the CLI's
+/// MCP config schema does not support.  This protects against registry
+/// entries that include keys valid for one CLI but invalid for another
+/// (e.g. `"tools"` is supported by copilot but rejected by gemini).
+fn sanitize_canopy_entry(name: &str, mut entry: serde_json::Value) -> serde_json::Value {
+    // Gemini does not support "tools" in mcpServers entries.
+    if name == "gemini" {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("tools");
+        }
+    }
+    entry
 }
 
 /// Refresh the registry config in the background if it's older than 24h.

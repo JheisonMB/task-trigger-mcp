@@ -102,11 +102,17 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind) -> Result<()> {
             if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                 let idx = *idx;
                 let agent = &mut app.interactive_agents[idx];
-                if dir > 0 {
-                    let max = agent.max_scroll();
-                    agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                if agent.in_alternate_screen() {
+                    // CLI is in alt-screen (own TUI) — forward scroll to PTY
+                    let _ = agent.forward_scroll(dir > 0);
                 } else {
-                    agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                    // Plain output — use vt100 scrollback
+                    if dir > 0 {
+                        let max = agent.max_scroll();
+                        agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                    } else {
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                    }
                 }
             } else if dir > 0 {
                 app.scroll_log_up();
