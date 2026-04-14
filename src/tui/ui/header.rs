@@ -23,14 +23,18 @@ fn first_n_chars(s: &str, n: usize) -> &str {
 pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     // Daemon status: blinking █ character
     let status_char = if app.daemon_running { "█" } else { "▓" };
-    let status_color = if app.daemon_running { ACCENT } else { ERROR_COLOR };
     
     // Blinking effect: show/hide based on time
     let blink_on = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() / 500) % 2 == 0;
-    let status_visible = app.daemon_running || !blink_on;
+    
+    let status_color = if app.daemon_running {
+        if blink_on { ACCENT } else { Color::Rgb(60, 120, 60) }
+    } else {
+        if blink_on { ERROR_COLOR } else { Color::Rgb(120, 60, 60) }
+    };
 
     let wf = app.whimsg.tick();
 
@@ -53,7 +57,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
                 .bg(Color::Rgb(102, 187, 106)),
         )]
     } else if !wf.kaomoji.is_empty() {
-        // Kaomoji + partial/full message — dark text on green
+        // Kaomoji with green background + message in gray without background
         let visible_text = first_n_chars(&wf.text, wf.text_visible);
         vec![
             Span::styled(
@@ -65,8 +69,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(
                 format!("{} ", visible_text),
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(102, 187, 106))
+                    .fg(Color::Rgb(140, 140, 140))
                     .add_modifier(Modifier::ITALIC),
             ),
         ]
@@ -79,7 +82,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     frame.render_widget(left, area);
 
     // Daemon status: single blinking character at right
-    if area.width > 2 && status_visible {
+    if area.width > 2 {
         let status = Paragraph::new(Line::from(Span::styled(
             status_char,
             Style::default().fg(Color::Black).bg(status_color),

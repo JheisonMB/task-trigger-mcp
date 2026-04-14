@@ -63,7 +63,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let cli_name = dialog.selected_cli().as_str();
 
-    let mode_names = ["Interactive", "Resume"];
+    let mode_names = ["New", "Resume"];
     let mode_idx = match dialog.task_mode {
         crate::tui::app::NewTaskMode::Interactive => 0,
         crate::tui::app::NewTaskMode::Resume => 1,
@@ -106,24 +106,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
 
-    let dir_field = if is_interactive { 3 } else { 2 };
-    let model_field = if is_interactive { 4 } else { 3 };
+    let model_field = if is_interactive { 3 } else { 2 };
+    let dir_field = if is_interactive { 4 } else { 3 };
     let prompt_field = if is_interactive { 5 } else { 4 };
     let extra_field = if is_interactive { 6 } else { 5 };
 
     lines.push(Line::from(vec![
-        Span::styled("  Dir:   ", Style::default().fg(DIM)),
-        Span::styled(
-            truncate_str(&dialog.working_dir, 50),
-            focus_style(dir_field),
-        ),
-    ]));
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
         Span::styled("  Model: ", Style::default().fg(DIM)),
         Span::styled(
             if dialog.model.is_empty() {
-                "(type to search models)".to_string()
+                "(press space to select)".to_string()
             } else {
                 format!("{}▏", dialog.model)
             },
@@ -185,6 +177,14 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     }
 
     lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Dir:   ", Style::default().fg(DIM)),
+        Span::styled(
+            truncate_str(&dialog.working_dir, 50),
+            focus_style(dir_field),
+        ),
+    ]));
+    lines.push(Line::from(""));
 
     if matches!(
         dialog.task_type,
@@ -220,8 +220,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Directory browser
-    if is_interactive && !dialog.dir_entries.is_empty() {
+    // Directory browser (all task types)
+    if !dialog.dir_entries.is_empty() {
         lines.push(Line::from(Span::styled(
             "  Directories (↑↓ navigate, Space to enter):",
             Style::default().fg(DIM),
@@ -260,13 +260,13 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let help_text = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => {
-            "  ↑↓: fields · ←→: CLI/mode · Space: enter dir · Enter: launch · Esc: cancel"
+            "  ↑↓: fields · ←→: CLI/mode · Space: navigate dirs · Enter: launch · Esc: cancel"
         }
         crate::tui::app::NewTaskType::Scheduled => {
-            "  ↑↓: fields · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI · Space: navigate dirs · Enter: create · Esc: cancel"
         }
         crate::tui::app::NewTaskType::Watcher => {
-            "  ↑↓: fields · ←→: type/CLI · chars: input · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI · Space: navigate dirs · Enter: create · Esc: cancel"
         }
     };
 
