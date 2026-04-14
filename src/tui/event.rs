@@ -392,7 +392,15 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             // Non-interactive only fields (prompt=3, extra=4 are before dir)
             let prompt_field: usize = 3;
             let extra_field: usize = 4;
-            let dir_field: usize = if is_interactive { 4 } else { 5 };
+            let dir_field: usize = if is_interactive {
+                4
+            } else if dialog.task_type == super::app::NewTaskType::Watcher {
+                // Watcher reuses the extra_field (4) as the browser field so there is
+                // no separate Dir field for Watchers.
+                4
+            } else {
+                5
+            };
             let _ = (prompt_field, extra_field); // used in non-interactive branches below
 
             match dialog.field {

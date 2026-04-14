@@ -6,7 +6,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, truncate_str};
-use super::{ACCENT, DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
+use super::{ACCENT, DIM, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 use crate::tui::app::App;
 
 pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
@@ -230,14 +230,19 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    lines.push(Line::from(vec![
-        Span::styled("  Dir:   ", Style::default().fg(DIM)),
-        Span::styled(
-            truncate_str(&dialog.working_dir, 50),
-            focus_style(dir_field),
-        ),
-    ]));
-    lines.push(Line::from(""));
+    // Only show working directory when not creating a Watcher. Watchers use
+    // the 'Path' field to select files or directories to watch, which is
+    // displayed above as 'Path'. Hiding Dir avoids confusion.
+    if dialog.task_type != crate::tui::app::NewTaskType::Watcher {
+        lines.push(Line::from(vec![
+            Span::styled("  Dir:   ", Style::default().fg(DIM)),
+            Span::styled(
+                truncate_str(&dialog.working_dir, 50),
+                focus_style(dir_field),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
 
     // Directory / file browser
     if !dialog.dir_entries.is_empty() {
@@ -247,9 +252,15 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         } else {
             "  Directories  (↑↓ navigate, Space to enter):"
         };
+        // Browser label uses the selected CLI's accent color for emphasis
+        let browser_field_idx = if is_watcher { extra_field } else { dir_field };
         lines.push(Line::from(Span::styled(
             browser_label,
-            Style::default().fg(DIM),
+            if is_focused(browser_field_idx) {
+                Style::default().fg(accent)
+            } else {
+                Style::default().fg(DIM)
+            },
         )));
 
         let visible_rows = 4;
@@ -263,17 +274,12 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             let is_selected = i == dialog.dir_selected;
             // Always highlight the selected entry so the user always sees the cursor.
             let entry_style = if is_selected {
-                if is_focused(dir_field) {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(INTERACTIVE_COLOR)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Rgb(80, 100, 80))
-                        .add_modifier(Modifier::BOLD)
-                }
+                // Use the CLI-specific accent color for selection background so the
+                // browser matches the agent's emphasis color.
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
