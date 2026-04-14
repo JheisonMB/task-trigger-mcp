@@ -18,6 +18,7 @@ use crate::db::Database;
 use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
 
 use super::agent::InteractiveAgent;
+use super::context_transfer::{ContextTransferConfig, ContextTransferModal, ContextTransferStep};
 
 pub(crate) use data::send_mcp_task_run;
 pub use dialog::NewAgentDialog;
@@ -49,6 +50,7 @@ pub enum Focus {
     Preview,
     NewAgentDialog,
     Agent,
+    ContextTransfer,
 }
 
 // ── App struct ──────────────────────────────────────────────────
@@ -92,6 +94,8 @@ pub struct App {
     pub last_scroll_at: std::time::Instant,
     pub last_panel_inner: (u16, u16),
     pub whimsg: super::whimsg::Whimsg,
+    pub context_transfer_modal: Option<ContextTransferModal>,
+    pub context_transfer_config: ContextTransferConfig,
 }
 
 impl App {
@@ -124,6 +128,8 @@ impl App {
             last_scroll_at: std::time::Instant::now() - std::time::Duration::from_secs(999),
             last_panel_inner: (0, 0),
             whimsg: super::whimsg::Whimsg::new(),
+            context_transfer_modal: None,
+            context_transfer_config: ContextTransferConfig::default(),
         };
         app.refresh()?;
         Ok(app)
@@ -218,10 +224,84 @@ impl App {
         use crate::tui::whimsg::WhimContext;
         use std::time::Duration;
 
+        // CRITICAL: If daemon is down, everything is an error state
+        if !self.daemon_running {
+            self.whimsg.set_ambient(WhimContext::AgentFailed);
+            self.whimsg.notify_event(WhimContext::AgentFailed);
+            return;
+        }
+
+        // Check global health: recent background agent failures
+        let now = Utc::now();
+        for run in &self.recent_runs {
+            if let Some(finished) = run.finished_at {
+                // If a run failed or timed out in the last 2 minutes, notify event
+                if (now - finished).num_seconds() < 120 {
+                    match run.status {
+                        crate::domain::models::RunStatus::Error
+                        | crate::domain::models::RunStatus::Timeout => {
+                            self.whimsg.notify_event(WhimContext::AgentFailed);
+                        }
+                        crate::domain::models::RunStatus::Success => {
+                            // Only notify success if it was very recent (30s) to avoid noise
+                            if (now - finished).num_seconds() < 30 {
+                                self.whimsg.notify_event(WhimContext::AgentDone);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // Check if user scrolled recently
         if self.last_scroll_at.elapsed() < Duration::from_secs(5) {
             self.whimsg.set_ambient(WhimContext::Scrolling);
             return;
+        }
+
+        // Scan logs of selected agent for contextual triggers
+        if let Some(agent) = self.agents.get(self.selected) {
+            let log_to_scan = match agent {
+                AgentEntry::Interactive(idx) => {
+                    if let Some(ia) = self.interactive_agents.get(*idx) {
+                        ia.last_lines(50).to_uppercase()
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => self.log_content.to_uppercase(),
+            };
+
+            if !log_to_scan.is_empty() {
+                // Priority: Errors > Success > Spawning
+                if log_to_scan.contains("ERROR")
+                    || log_to_scan.contains("EXCEPTION")
+                    || log_to_scan.contains("FAILED")
+                    || log_to_scan.contains("CRITICAL")
+                    || log_to_scan.contains("PANIC")
+                    || log_to_scan.contains("SEGFAULT")
+                    || log_to_scan.contains("TIMEOUT")
+                    || log_to_scan.contains("HALTED")
+                {
+                    self.whimsg.notify_event(WhimContext::AgentFailed);
+                } else if log_to_scan.contains("SUCCESS")
+                    || log_to_scan.contains("DONE")
+                    || log_to_scan.contains("FINISHED")
+                    || log_to_scan.contains("COMPLETED")
+                    || log_to_scan.contains("STABILIZED")
+                    || log_to_scan.contains("READY")
+                    || log_to_scan.contains("CONVERGED")
+                {
+                    self.whimsg.notify_event(WhimContext::AgentDone);
+                } else if log_to_scan.contains("SPAWN")
+                    || log_to_scan.contains("STARTING")
+                    || log_to_scan.contains("BOOTSTRAP")
+                    || log_to_scan.contains("INITIALIZING")
+                {
+                    self.whimsg.notify_event(WhimContext::AgentSpawned);
+                }
+            }
         }
 
         // Check how many interactive agents are running
@@ -239,6 +319,107 @@ impl App {
         } else {
             self.whimsg.set_ambient(WhimContext::Idle);
         }
+    }
+
+    // ── Context Transfer ────────────────────────────────────────
+
+    /// Open the context transfer modal for the currently focused interactive agent.
+    pub fn open_context_transfer_modal(&mut self) {
+        let Some(AgentEntry::Interactive(idx)) = self.selected_agent() else {
+            return;
+        };
+        let idx = *idx;
+        if idx >= self.interactive_agents.len() {
+            return;
+        }
+
+        let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
+        modal.refresh_preview(&self.interactive_agents[idx]);
+        self.context_transfer_modal = Some(modal);
+        self.focus = Focus::ContextTransfer;
+    }
+
+    /// Close the modal and return focus to the agent.
+    pub fn close_context_transfer_modal(&mut self) {
+        self.context_transfer_modal = None;
+        self.focus = Focus::Agent;
+    }
+
+    /// Advance the modal from Preview to AgentPicker.
+    pub fn context_transfer_to_picker(&mut self) {
+        if let Some(modal) = &mut self.context_transfer_modal {
+            if modal.step == ContextTransferStep::Preview {
+                modal.step = ContextTransferStep::AgentPicker;
+                modal.picker_selected = 0;
+            }
+        }
+    }
+
+    /// Execute the context transfer to the selected destination agent.
+    ///
+    /// 1. Builds the payload.
+    /// 2. Persists it (non-fatal on failure).
+    /// 3. Injects into destination PTY.
+    /// 4. Optionally switches tab to destination.
+    pub fn execute_context_transfer(&mut self, dest_entry_idx: usize) {
+        let Some(modal) = self.context_transfer_modal.take() else {
+            return;
+        };
+
+        let src_idx = modal.source_agent_idx;
+        if src_idx >= self.interactive_agents.len() {
+            return;
+        }
+
+        // Destination: resolve the picker index to an interactive agent index
+        let dest_agent_idx = {
+            let picker_entries = self.picker_interactive_entries();
+            picker_entries.get(dest_entry_idx).copied()
+        };
+        let Some(dest_ia_idx) = dest_agent_idx else {
+            return;
+        };
+
+        if dest_ia_idx >= self.interactive_agents.len() {
+            return;
+        }
+
+        let payload = super::context_transfer::build_context_payload(
+            &self.interactive_agents[src_idx],
+            modal.n_prompts,
+            modal.scrollback_lines,
+        );
+
+        let workdir = self.interactive_agents[src_idx].working_dir.clone();
+        let keep = self.context_transfer_config.keep_ctx_history;
+        if let Err(e) = super::context_transfer::persist_context(&payload, &workdir, keep) {
+            tracing::warn!("context transfer persist failed (non-fatal): {e}");
+        }
+
+        let _ = self.interactive_agents[dest_ia_idx].inject_context(&payload);
+
+        if self.context_transfer_config.auto_switch_tab {
+            // Find the sidebar entry index that points to dest_ia_idx
+            if let Some(entry_pos) = self
+                .agents
+                .iter()
+                .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
+            {
+                self.selected = entry_pos;
+            }
+            self.focus = Focus::Agent;
+        } else {
+            self.focus = Focus::Agent;
+        }
+    }
+
+    /// Collect interactive agent indices for use in the picker list.
+    pub fn picker_interactive_entries(&self) -> Vec<usize> {
+        self.interactive_agents
+            .iter()
+            .enumerate()
+            .map(|(i, _)| i)
+            .collect()
     }
 }
 

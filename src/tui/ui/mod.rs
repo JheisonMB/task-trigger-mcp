@@ -58,6 +58,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         dialogs::draw_legend(frame);
     }
 
+    if app.context_transfer_modal.is_some() {
+        dialogs::draw_context_transfer_modal(frame, app);
+    }
+
     // Top-level overlays rendered last so they appear above all content
     if app.show_copied {
         let full = frame.area();

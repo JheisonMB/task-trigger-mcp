@@ -7,6 +7,7 @@
 mod agent;
 mod app;
 mod brians_brain;
+pub(crate) mod context_transfer;
 mod event;
 mod ui;
 mod whimsg;

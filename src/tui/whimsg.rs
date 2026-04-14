@@ -14,10 +14,10 @@ const ERASE_MS: u64 = 35;
 const TYPE_MS: u64 = 45;
 const KAOMOJI_MS: u64 = 400;
 const BLANK_MS: u64 = 200;
-const HOLD_MIN: u64 = 5;
-const HOLD_MAX: u64 = 9;
-const INTERVAL_MIN: u64 = 20;
-const INTERVAL_MAX: u64 = 50;
+const HOLD_MIN: u64 = 4;
+const HOLD_MAX: u64 = 8;
+const INTERVAL_MIN: u64 = 60;
+const INTERVAL_MAX: u64 = 180;
 const EVENT_DECAY_SECS: u64 = 30;
 
 // ── Kaomojis ──────────────────────────────────────────────────────
@@ -30,28 +30,58 @@ const KAO_LOADING: &[&str] = &[
     "(◉̃_᷅◉)",
     "(͠◉_◉᷅ )",
     "(◑_◑)",
+    "◌◎◍",
+    "◰◱◲◳",
+    "(ง'̀-'́)ง",
+    "(っ◕‿◕)っ",
+    "(づ ◕‿◕ )づ",
+    "(๑•̀ㅂ•́)و",
 ];
 const KAO_SUCCESS: &[&str] = &[
-    "(♥‿♥)",
+    "(*^‿^*)",
     "(◕‿◕)",
     "(っ▀¯▀)つ",
     "ヾ(´〇`)ﾉ♪♪♪",
     "(◠﹏◠)",
     "٩(˘◡˘)۶",
     "ᕙ(`▿´)ᕗ",
+    "(ᵔᵕᵔ)",
+    "(๑˃ᴗ˂)ﻭ",
+    "(ﾉ◕ヮ◕)ﾉ*:･ﾟ✧",
+    "(b ᵔ▽ᵔ)b",
+    "٩(◕‿◕)۶",
+    "(★ω★)",
 ];
 const KAO_ERROR: &[&str] = &[
     "ಥ_ಥ",
     "◔_◔",
     "(҂◡_◡)",
-    "♨_♨",
     "(Ծ‸ Ծ)",
     "¯\\_(ツ)_/¯",
     "¿ⓧ_ⓧﮌ",
     "(╥﹏╥)",
     "( ˘︹˘ )",
+    "(ノಠ益ಠ)ノ彡┻━┻",
+    "(╯°□°）╯︵ ┻━┻",
+    "(ಥ﹏ಥ)",
+    "(×_×)",
+    "(シ_ _)シ",
 ];
-const KAO_THINKING: &[&str] = &["(ʘ_ʘ)", "(º_º)", "(￢_￢)", "(._.)", "ఠ_ఠ", "(⊙_◎)"];
+const KAO_THINKING: &[&str] = &[
+    "(ʘ_ʘ)",
+    "(º_º)",
+    "(￢_￢)",
+    "(._.)",
+    "ఠ_ఠ",
+    "(⊙_◎)",
+    "（´ー｀）",
+    "(꜆꜄ * )꜆꜄",
+    "( • ̀ω•́ )✧",
+    "(￣ω￣;)",
+    "(；⌣̀_⌣́)",
+    "( ˘▽˘)っ旦",
+    "( ͡° ͜ʖ ͡°)",
+];
 
 // ── Actions ───────────────────────────────────────────────────────
 
@@ -66,6 +96,14 @@ const ACT_LOADING: &[&str] = &[
     "Mapping",
     "Scanning",
     "Warming up",
+    "Hydrating",
+    "Provisioning",
+    "Bootstrapping",
+    "Refactoring",
+    "Overclocking",
+    "Transpiling",
+    "Grokking",
+    "Defragmenting",
 ];
 const ACT_SUCCESS: &[&str] = &[
     "Completed",
@@ -77,6 +115,11 @@ const ACT_SUCCESS: &[&str] = &[
     "Verified",
     "Shipped",
     "Unlocked",
+    "Optimized",
+    "Synthesized",
+    "Propagated",
+    "Harmonized",
+    "Ascended",
 ];
 const ACT_ERROR: &[&str] = &[
     "Something broke",
@@ -85,6 +128,12 @@ const ACT_ERROR: &[&str] = &[
     "Collision detected",
     "Entropy overflow",
     "Segfault in",
+    "Desynchronized",
+    "Depleted",
+    "Terminated",
+    "Exhausted",
+    "Imploded",
+    "Melted",
 ];
 const ACT_THINKING: &[&str] = &[
     "Evaluating",
@@ -94,6 +143,11 @@ const ACT_THINKING: &[&str] = &[
     "Modeling",
     "Questioning",
     "Investigating",
+    "Dreaming of",
+    "Abstracting",
+    "Inferring",
+    "Meditating on",
+    "Hypothesizing",
 ];
 
 // ── Objects ───────────────────────────────────────────────────────
@@ -108,6 +162,13 @@ const OBJ_DEV: &[&str] = &[
     "the type system",
     "edge cases",
     "async chaos",
+    "legacy spaghetti",
+    "YAML indentation",
+    "the production DB",
+    "unresolved PRs",
+    "the borrow checker",
+    "the monad",
+    "the linker",
 ];
 const OBJ_SPACE: &[&str] = &[
     "cosmic background noise",
@@ -119,6 +180,8 @@ const OBJ_SPACE: &[&str] = &[
     "stellar coordinates",
     "quantum foam",
     "spacetime curvature",
+    "void pointers",
+    "the flux capacitor",
 ];
 const OBJ_SCIENCE: &[&str] = &[
     "entropy levels",
@@ -130,6 +193,8 @@ const OBJ_SCIENCE: &[&str] = &[
     "the signal",
     "quantum states",
     "unknown constants",
+    "the double-slit experiment",
+    "Schrödinger's cat",
 ];
 const OBJ_ABSURD: &[&str] = &[
     "the rubber duck",
@@ -141,6 +206,9 @@ const OBJ_ABSURD: &[&str] = &[
     "the intern",
     "the void",
     "common sense",
+    "blinker fluid",
+    "the 'it works on my machine' seal",
+    "the missing bracket",
 ];
 const OBJ_NATURE: &[&str] = &[
     "the root system",
@@ -152,6 +220,19 @@ const OBJ_NATURE: &[&str] = &[
     "mycelium networks",
     "wind currents",
     "leaf patterns",
+    "photosynthetic efficiency",
+    "the sap flow",
+];
+const OBJ_AI: &[&str] = &[
+    "the latent space",
+    "hallucination filters",
+    "token budgets",
+    "vector embeddings",
+    "stochastic parrots",
+    "RLHF feedback",
+    "prompt injections",
+    "overfitting tendencies",
+    "the neural pathways",
 ];
 
 // ── Twists ────────────────────────────────────────────────────────
@@ -165,6 +246,15 @@ const TWIST_FUNNY: &[&str] = &[
     "(might explode)",
     "(no guarantees)",
     "(fingers crossed)",
+    "(legacy debt included)",
+    "(at least it's not COBOL)",
+    "(O(n!) efficiency)",
+    "(it's a feature now)",
+    "(sponsored by caffeine)",
+    "(it was DNS)",
+    "(allegedly)",
+    "(standard procedure)",
+    "(error 404: joke not found)",
 ];
 const TWIST_POETIC: &[&str] = &[
     "across dimensions",
@@ -185,6 +275,7 @@ const TWIST_ADVICE: &[&str] = &[
     "— name things properly",
     "— fail fast",
     "— question assumptions",
+    "— try turning it off and on",
 ];
 
 // ── Direct phrases (context-driven) ──────────────────────────────
@@ -198,6 +289,8 @@ const PH_IDLE: &[&str] = &[
     "quiet among the branches",
     "the understory hums",
     "dappled sunlight",
+    "garbage collecting dead leaves",
+    "waiting for a breeze (or a task)",
 ];
 const PH_SPAWN: &[&str] = &[
     "new growth detected",
@@ -206,6 +299,7 @@ const PH_SPAWN: &[&str] = &[
     "the forest expands",
     "fresh leaves unfurling",
     "welcome to the grove",
+    "git checkout -b new-branch-literally",
 ];
 const PH_SUCCESS: &[&str] = &[
     "sunlight breaks through",
@@ -214,6 +308,7 @@ const PH_SUCCESS: &[&str] = &[
     "another ring in the trunk",
     "the canopy thrives",
     "fruits of labor",
+    "100% test coverage (of my leaves)",
 ];
 const PH_ERROR: &[&str] = &[
     "storm damage reported",
@@ -222,6 +317,7 @@ const PH_ERROR: &[&str] = &[
     "lightning struck nearby",
     "roots need attention",
     "the canopy sways hard",
+    "wildfire in the server room",
 ];
 const PH_SCROLL: &[&str] = &[
     "exploring the layers",
@@ -230,6 +326,7 @@ const PH_SCROLL: &[&str] = &[
     "reading the growth",
     "deeper into the forest",
     "following the grain",
+    "grep-ing through the foliage",
 ];
 const PH_BUSY: &[&str] = &[
     "the forest is alive",
@@ -238,6 +335,7 @@ const PH_BUSY: &[&str] = &[
     "photosynthesis overload",
     "the canopy buzzes",
     "biodiversity peak",
+    "parallel processing chlorophyll",
 ];
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -402,7 +500,7 @@ impl Whimsg {
         self.event_context = Some(event);
         self.event_at = Instant::now();
         if matches!(self.phase, Phase::Idle) {
-            let soon = self.rng.between(3, 6);
+            let soon = self.rng.between(15, 30);
             let proposed = Instant::now() + Duration::from_secs(soon);
             if proposed < self.next_trigger {
                 self.next_trigger = proposed;
@@ -567,12 +665,13 @@ impl Whimsg {
                 Intent::Error => ACT_ERROR,
                 Intent::Thinking => ACT_THINKING,
             };
-            let domain = self.rng.range(5);
+            let domain = self.rng.range(6);
             let objects = match domain {
                 0 => OBJ_DEV,
                 1 => OBJ_SPACE,
                 2 => OBJ_SCIENCE,
                 3 => OBJ_NATURE,
+                4 => OBJ_AI,
                 _ => OBJ_ABSURD,
             };
             let style = self.rng.range(4);

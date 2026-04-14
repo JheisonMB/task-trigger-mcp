@@ -1,4 +1,4 @@
-//! Dialog overlays — new agent, quit confirmation, color legend.
+//! Dialog overlays — new agent, quit confirmation, color legend, context transfer.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -8,6 +8,7 @@ use ratatui::Frame;
 use super::{centered_rect, truncate_str};
 use super::{ACCENT, DIM, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 use crate::tui::app::App;
+use crate::tui::context_transfer::ContextTransferStep;
 
 pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let Some(dialog) = &app.new_agent_dialog else {
@@ -392,3 +393,163 @@ pub(super) fn draw_legend(frame: &mut Frame) {
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
+
+// ── Context Transfer modal ───────────────────────────────────────
+
+pub(super) fn draw_context_transfer_modal(frame: &mut Frame, app: &App) {
+    let Some(modal) = &app.context_transfer_modal else {
+        return;
+    };
+
+    match modal.step {
+        ContextTransferStep::Preview => draw_ctx_preview(frame, app),
+        ContextTransferStep::AgentPicker => draw_ctx_picker(frame, app),
+    }
+}
+
+fn draw_ctx_preview(frame: &mut Frame, app: &App) {
+    let Some(modal) = &app.context_transfer_modal else {
+        return;
+    };
+
+    let preview_lines: Vec<&str> = modal.payload_preview.lines().collect();
+    let visible_preview = preview_lines.len().min(8) as u16;
+    let height = 12 + visible_preview;
+    let area = centered_rect(70, height, frame.area());
+    frame.render_widget(Clear, area);
+
+    let src_id = app
+        .interactive_agents
+        .get(modal.source_agent_idx)
+        .map(|a| a.id.as_str())
+        .unwrap_or("?");
+
+    let block = Block::default()
+        .title(format!(" Context Transfer — from: {src_id} "))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let focus_style = |active: bool| {
+        if active {
+            Style::default()
+                .fg(Color::Black)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        }
+    };
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Prompts:   ", Style::default().fg(DIM)),
+            Span::styled(
+                format!(" ◀ {} ▶ ", modal.n_prompts),
+                focus_style(modal.preview_field == 0),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Scrollback:", Style::default().fg(DIM)),
+            Span::styled(
+                format!(" ◀ {} lines ▶ ", modal.scrollback_lines),
+                focus_style(modal.preview_field == 1),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Preview:", Style::default().fg(DIM))),
+    ];
+
+    for line in preview_lines.iter().take(8) {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", truncate_str(line, 60)),
+            Style::default().fg(Color::Rgb(170, 200, 170)),
+        )));
+    }
+    if preview_lines.len() > 8 {
+        lines.push(Line::from(Span::styled(
+            format!("  … {} more lines", preview_lines.len() - 8),
+            Style::default().fg(DIM),
+        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑↓: field · ←→: adjust · Enter: pick destination · Esc: cancel",
+        Style::default().fg(DIM),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_ctx_picker(frame: &mut Frame, app: &App) {
+    let Some(modal) = &app.context_transfer_modal else {
+        return;
+    };
+
+    let agents = &app.interactive_agents;
+    let visible = agents.len().min(8) as u16;
+    let height = 6 + visible.max(1);
+    let area = centered_rect(60, height, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Select Destination Agent ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![Line::from("")];
+
+    if agents.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No interactive agents running.",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (i, agent) in agents.iter().enumerate() {
+            let is_sel = i == modal.picker_selected;
+            let is_src = i == modal.source_agent_idx;
+            let label = if is_src {
+                format!(
+                    "  {} {}  (source)",
+                    if is_sel { "›" } else { " " },
+                    agent.id
+                )
+            } else {
+                format!("  {} {}", if is_sel { "›" } else { " " }, agent.id)
+            };
+            let style = if is_sel {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_src {
+                Style::default().fg(DIM)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(label, style)));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑↓: navigate · Enter: transfer · Esc: back",
+        Style::default().fg(DIM),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// ── suppress unused import warning until all variants are referenced ──
+#[allow(unused_imports)]
+use super::{BG_SELECTED, ERROR_COLOR, INTERACTIVE_COLOR};

@@ -33,6 +33,10 @@ pub struct Platform {
     pub canopy_entry: serde_json::Value,
     #[serde(default)]
     pub deprecated_keys: Vec<String>,
+    /// Keys that this platform's MCP schema does not support.
+    /// Used to sanitize configs when syncing across platforms.
+    #[serde(default)]
+    pub unsupported_keys: Vec<String>,
     #[serde(default)]
     pub cli: Option<serde_json::Value>,
 }
@@ -63,6 +67,15 @@ impl Platform {
             cli,
         }
     }
+}
+
+/// Check if a platform is available by detecting its CLI binary in PATH.
+pub fn is_platform_available(p: &Platform) -> bool {
+    p.cli
+        .as_ref()
+        .and_then(|v| v.get("binary").and_then(|b| b.as_str()))
+        .map(|binary| which::which(binary).is_ok())
+        .unwrap_or(false)
 }
 
 #[allow(dead_code)]
@@ -98,7 +111,7 @@ pub fn run_setup() -> Result<()> {
     let detected: Vec<&Platform> = registry
         .platforms
         .iter()
-        .filter(|p| home.join(&p.config_path).exists())
+        .filter(|p| is_platform_available(p))
         .collect();
 
     if detected.is_empty() {
@@ -127,6 +140,32 @@ pub fn run_setup() -> Result<()> {
         let path = home.join(&p.config_path);
         let is_toml = p.config_format.as_deref() == Some("toml");
 
+        // Create config file if it doesn't exist
+        if !path.exists() {
+            print!(
+                "  \x1b[33m?\x1b[0m {} config not found. Create it? [y/N] ",
+                p.name
+            );
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let input = input.trim().to_lowercase();
+            if input != "y" && input != "yes" {
+                println!("  \x1b[33m⏭\x1b[0m  Skipping {}", p.name);
+                continue;
+            }
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let initial_content = if is_toml {
+                format!("[{}]\n", &p.mcp_servers_key[0])
+            } else {
+                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
+            };
+            std::fs::write(&path, &initial_content)?;
+            println!("  \x1b[32m✓\x1b[0m Created {}", path.display());
+        }
+
         if !is_toml {
             let servers_parent = &p.mcp_servers_key[0];
             for old_key in &p.deprecated_keys {
@@ -136,7 +175,7 @@ pub fn run_setup() -> Result<()> {
             }
         }
 
-        let entry = sanitize_canopy_entry(&p.name, p.canopy_entry.clone());
+        let entry = sanitize_canopy_entry(&p.unsupported_keys, p.canopy_entry.clone());
         let result = if is_toml {
             upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
         } else {
@@ -176,6 +215,11 @@ pub fn run_setup() -> Result<()> {
         Err(e) => println!("\x1b[33m⚠\x1b[0m  Failed to save CLI config: {}", e),
     }
 
+    // Sync MCP configurations across platforms
+    if !selected.is_empty() {
+        let _ = run_sync_step(&home, &selected);
+    }
+
     // Start daemon
     print!("  Starting daemon... ");
     io::stdout().flush()?;
@@ -200,8 +244,8 @@ pub fn run_setup() -> Result<()> {
     std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
 
     println!();
-    println!("  \x1b[1;32m✅ canopy is ready!\x1b[0m");
-    println!("  Launching TUI...");
+    println!("  \x1b[1;32m✅ Setup complete! canopy is ready.\x1b[0m");
+    println!("  Run \x1b[1mcanopy\x1b[0m or \x1b[1mcanopy tui\x1b[0m to launch the interface.");
     println!();
 
     Ok(())
@@ -520,7 +564,7 @@ pub fn run_setup_silent() -> Result<()> {
     let detected: Vec<&Platform> = registry
         .platforms
         .iter()
-        .filter(|p| home.join(&p.config_path).exists())
+        .filter(|p| is_platform_available(p))
         .collect();
 
     // Configure MCP for all detected platforms
@@ -535,7 +579,7 @@ pub fn run_setup_silent() -> Result<()> {
             }
         }
 
-        let entry = sanitize_canopy_entry(&p.name, p.canopy_entry.clone());
+        let entry = sanitize_canopy_entry(&p.unsupported_keys, p.canopy_entry.clone());
         if is_toml {
             let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
         } else {
@@ -569,14 +613,30 @@ pub fn run_setup_silent() -> Result<()> {
 /// MCP config schema does not support.  This protects against registry
 /// entries that include keys valid for one CLI but invalid for another
 /// (e.g. `"tools"` is supported by copilot but rejected by gemini).
-fn sanitize_canopy_entry(name: &str, mut entry: serde_json::Value) -> serde_json::Value {
-    // Gemini does not support "tools" in mcpServers entries.
-    if name == "gemini" {
-        if let Some(obj) = entry.as_object_mut() {
-            obj.remove("tools");
+fn sanitize_canopy_entry(
+    unsupported_keys: &[String],
+    mut entry: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(obj) = entry.as_object_mut() {
+        for key in unsupported_keys {
+            obj.remove(key);
         }
     }
     entry
+}
+
+/// Sanitize an arbitrary MCP server config for a target platform.
+/// Removes keys that the target platform does not support.
+fn sanitize_server_config_for_platform(
+    unsupported_keys: &[String],
+    mut config: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(obj) = config.as_object_mut() {
+        for key in unsupported_keys {
+            obj.remove(key);
+        }
+    }
+    config
 }
 
 /// Refresh the registry config in the background if it's older than 24h.
@@ -636,6 +696,213 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
 
     if !cli_registry.available_clis.is_empty() {
         cli_registry.save(&home.join(".canopy/cli_config.json"))?;
+    }
+
+    Ok(())
+}
+
+// ── MCP Sync ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct SyncConfigEntry {
+    server_name: String,
+    config: serde_json::Value,
+    source_platforms: Vec<String>,
+}
+
+/// Extract all MCP server configs from the selected platforms.
+fn extract_all_mcp_configs(
+    home: &Path,
+    selected: &[&Platform],
+) -> Vec<crate::config::PlatformMcpConfig> {
+    let mut configs = Vec::new();
+    for p in selected {
+        let config_path = home.join(&p.config_path);
+        if !config_path.exists() {
+            continue;
+        }
+        if let Ok(cfg) = crate::config::McpConfigRegistry::extract_from_platform(
+            &p.name,
+            &config_path,
+            &p.mcp_servers_key,
+        ) {
+            configs.push(cfg);
+        }
+    }
+    configs
+}
+
+/// Collect unique server names across all platforms.
+fn collect_unique_servers(
+    all_configs: &[crate::config::PlatformMcpConfig],
+) -> Vec<SyncConfigEntry> {
+    let mut server_map: std::collections::BTreeMap<String, SyncConfigEntry> =
+        std::collections::BTreeMap::new();
+
+    for platform_cfg in all_configs {
+        for server in &platform_cfg.servers {
+            let entry = server_map
+                .entry(server.name.clone())
+                .or_insert_with(|| SyncConfigEntry {
+                    server_name: server.name.clone(),
+                    config: server.config.clone(),
+                    source_platforms: Vec::new(),
+                });
+            if !entry.source_platforms.contains(&platform_cfg.platform) {
+                entry.source_platforms.push(platform_cfg.platform.clone());
+            }
+        }
+    }
+
+    server_map.into_values().collect()
+}
+
+/// Run the interactive MCP sync step.
+fn run_sync_step(home: &Path, selected: &[&Platform]) -> Result<()> {
+    use inquire::Confirm;
+
+    println!();
+    let all_configs = extract_all_mcp_configs(home, selected);
+
+    if all_configs.is_empty() {
+        return Ok(());
+    }
+
+    // Show summary
+    println!("  MCP configurations:");
+    for cfg in &all_configs {
+        println!(
+            "    \x1b[1m{}\x1b[0m: {} server(s)",
+            cfg.platform,
+            cfg.servers.len()
+        );
+        for s in &cfg.servers {
+            let status = if s.enabled { "🟢" } else { "⚫" };
+            println!("      {} {}", status, s.name);
+        }
+    }
+    println!();
+
+    let unique_servers = collect_unique_servers(&all_configs);
+
+    // Ask if user wants to sync
+    let do_sync = Confirm::new("Sync MCP configurations across platforms?")
+        .with_default(false)
+        .prompt()
+        .unwrap_or(false);
+
+    if !do_sync {
+        return Ok(());
+    }
+
+    // Select which MCP servers to sync
+    let server_choices: Vec<String> = unique_servers
+        .iter()
+        .map(|s| s.server_name.clone())
+        .collect();
+    if server_choices.is_empty() {
+        return Ok(());
+    }
+
+    use inquire::MultiSelect;
+    let selected_servers = MultiSelect::new("Select MCP servers to sync:", server_choices)
+        .with_all_selected_by_default()
+        .prompt()
+        .unwrap_or_default();
+
+    if selected_servers.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping sync.");
+        return Ok(());
+    }
+
+    // Select target platforms (all pre-selected except the ones that already have all selected servers)
+    let platform_names: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
+
+    let target_platforms = MultiSelect::new("Select target platforms:", platform_names)
+        .with_all_selected_by_default()
+        .prompt()
+        .unwrap_or_default();
+
+    if target_platforms.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping sync.");
+        return Ok(());
+    }
+
+    // Apply sync
+    println!();
+    for platform_name in &target_platforms {
+        let platform = selected
+            .iter()
+            .find(|p| &p.name == platform_name)
+            .expect("platform should exist");
+
+        let config_path = home.join(&platform.config_path);
+        let is_toml = platform.config_format.as_deref() == Some("toml");
+
+        for server_name in &selected_servers {
+            let server = unique_servers
+                .iter()
+                .find(|s| &s.server_name == server_name)
+                .unwrap();
+
+            // Skip if already configured
+            if let Ok(existing) = crate::config::McpConfigRegistry::extract_from_platform(
+                &platform.name,
+                &config_path,
+                &platform.mcp_servers_key,
+            ) {
+                if existing
+                    .servers
+                    .iter()
+                    .any(|s| s.name == server.server_name)
+                {
+                    println!(
+                        "  \x1b[33m⏭\x1b[0m  {} → {} already configured",
+                        server.server_name, platform_name
+                    );
+                    continue;
+                }
+            }
+
+            // Sanitize config for target platform
+            let config = sanitize_server_config_for_platform(
+                &platform.unsupported_keys,
+                server.config.clone(),
+            );
+
+            // Upsert the server config
+            let result = if is_toml {
+                crate::setup::upsert_toml_key(
+                    &config_path,
+                    &platform.mcp_servers_key[0],
+                    &server.server_name,
+                    &config,
+                )
+            } else {
+                let mut key_refs: Vec<&str> = platform
+                    .mcp_servers_key
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect();
+                key_refs.push(&server.server_name);
+                crate::setup::upsert_json_key(&config_path, &key_refs, &config)
+            };
+
+            match result {
+                Ok(true) => println!(
+                    "  \x1b[32m✅\x1b[0m {} → {}",
+                    server.server_name, platform_name
+                ),
+                Ok(false) => println!(
+                    "  \x1b[33m⏭\x1b[0m  {} → {} already configured",
+                    server.server_name, platform_name
+                ),
+                Err(e) => println!(
+                    "  \x1b[31m❌\x1b[0m {} → {}: {}",
+                    server.server_name, platform_name, e
+                ),
+            }
+        }
     }
 
     Ok(())

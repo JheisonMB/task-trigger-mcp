@@ -79,6 +79,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         Focus::Preview => handle_preview_key(app, code, modifiers),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
+        Focus::ContextTransfer => handle_context_transfer_key(app, code),
     }
 }
 
@@ -160,6 +161,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
                 }
             }
         }
+        Focus::ContextTransfer => {}
     }
     Ok(())
 }
@@ -265,6 +267,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
+    // Ctrl+T: open context transfer modal
+    if code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.open_context_transfer_modal();
+        return Ok(());
+    }
+
     // Interactive agents: double-Esc → Preview
     if code == KeyCode::Esc {
         if app.last_esc.elapsed() < Duration::from_millis(400) {
@@ -354,6 +362,29 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         );
         if resets_scroll {
             app.interactive_agents[idx].scroll_offset = 0;
+        }
+    }
+
+    // Record the prompt when the user presses Enter
+    if code == KeyCode::Enter {
+        if let Ok(input) = app.interactive_agents[idx].input_buffer.lock() {
+            let captured = input.trim().to_string();
+            if !captured.is_empty() {
+                app.interactive_agents[idx].record_prompt(&captured);
+            }
+        }
+        if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
+            input.clear();
+        }
+    } else if let KeyCode::Char(c) = code {
+        if !modifiers.contains(KeyModifiers::CONTROL) {
+            if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
+                input.push(c);
+            }
+        }
+    } else if code == KeyCode::Backspace {
+        if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
+            input.pop();
         }
     }
 
@@ -571,6 +602,125 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 _ => {}
             }
         }
+    }
+    Ok(())
+}
+
+// ── Context Transfer modal ───────────────────────────────────────
+//
+// Step 1 (Preview):  ↑↓ switch between n_prompts/scrollback fields,
+//                    ←→ adjust values, Enter → Step 2, Esc → cancel.
+// Step 2 (Picker):   ↑↓ navigate agents, Enter → execute, Esc → back.
+
+fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
+    use super::context_transfer::ContextTransferStep;
+
+    let Some(modal) = app.context_transfer_modal.as_ref() else {
+        app.focus = super::app::Focus::Agent;
+        return Ok(());
+    };
+
+    match modal.step {
+        ContextTransferStep::Preview => match code {
+            KeyCode::Esc => {
+                app.close_context_transfer_modal();
+            }
+            KeyCode::Enter => {
+                app.context_transfer_to_picker();
+            }
+            KeyCode::Up | KeyCode::Down => {
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.preview_field = 1 - modal.preview_field;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('+') => {
+                let max = app.context_transfer_config.max_scrollback_lines;
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.increment_field(max);
+                }
+                let src_idx = app
+                    .context_transfer_modal
+                    .as_ref()
+                    .map(|m| m.source_agent_idx);
+                if let Some(idx) = src_idx {
+                    if idx < app.interactive_agents.len() {
+                        // Reborrow safely via index
+                        let (n_prompts, scrollback_lines) = app
+                            .context_transfer_modal
+                            .as_ref()
+                            .map(|m| (m.n_prompts, m.scrollback_lines))
+                            .unwrap();
+                        let preview = super::context_transfer::build_context_payload(
+                            &app.interactive_agents[idx],
+                            n_prompts,
+                            scrollback_lines,
+                        );
+                        if let Some(modal) = app.context_transfer_modal.as_mut() {
+                            modal.payload_preview = preview;
+                        }
+                    }
+                }
+            }
+            KeyCode::Left | KeyCode::Char('-') => {
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.decrement_field();
+                }
+                let src_idx = app
+                    .context_transfer_modal
+                    .as_ref()
+                    .map(|m| m.source_agent_idx);
+                if let Some(idx) = src_idx {
+                    if idx < app.interactive_agents.len() {
+                        let (n_prompts, scrollback_lines) = app
+                            .context_transfer_modal
+                            .as_ref()
+                            .map(|m| (m.n_prompts, m.scrollback_lines))
+                            .unwrap();
+                        let preview = super::context_transfer::build_context_payload(
+                            &app.interactive_agents[idx],
+                            n_prompts,
+                            scrollback_lines,
+                        );
+                        if let Some(modal) = app.context_transfer_modal.as_mut() {
+                            modal.payload_preview = preview;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        },
+        ContextTransferStep::AgentPicker => match code {
+            KeyCode::Esc => {
+                // Go back to preview step
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.step = ContextTransferStep::Preview;
+                }
+            }
+            KeyCode::Up => {
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    if modal.picker_selected > 0 {
+                        modal.picker_selected -= 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                let picker_len = app.picker_interactive_entries().len();
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    if modal.picker_selected + 1 < picker_len {
+                        modal.picker_selected += 1;
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                let dest_idx = app
+                    .context_transfer_modal
+                    .as_ref()
+                    .map(|m| m.picker_selected)
+                    .unwrap_or(0);
+                app.execute_context_transfer(dest_idx);
+            }
+            _ => {}
+        },
     }
     Ok(())
 }

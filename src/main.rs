@@ -115,7 +115,6 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Setup) => {
             setup::run_setup()?;
-            tui::run_tui()?;
             Ok(())
         }
         None => {

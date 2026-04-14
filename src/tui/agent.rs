@@ -8,6 +8,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +22,20 @@ pub enum AgentStatus {
     Running,
     Exited(i32),
 }
+
+/// A recorded user prompt with its response range in scrollback.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct PromptEntry {
+    pub input: String,
+    /// (start_line, end_line) in the vt100 scrollback buffer
+    /// representing the agent's response to this prompt.
+    pub output_range: (usize, usize),
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Maximum number of prompt entries to keep in the ring buffer.
+const MAX_PROMPT_HISTORY: usize = 20;
 
 /// Install no-op handlers for SIGHUP and SIGPIPE so that when a PTY child
 /// exits the canopy process is not accidentally terminated.
@@ -56,6 +71,10 @@ pub struct InteractiveAgent {
     /// Last known PTY dimensions (for resize detection).
     pub last_pty_cols: u16,
     pub last_pty_rows: u16,
+    /// Ring buffer of recent user prompts and their responses.
+    pub prompt_history: Arc<Mutex<VecDeque<PromptEntry>>>,
+    /// Current accumulated input (characters since last Enter).
+    pub input_buffer: Arc<Mutex<String>>,
 }
 
 impl InteractiveAgent {
@@ -144,6 +163,8 @@ impl InteractiveAgent {
             scroll_offset: 0,
             last_pty_cols: cols,
             last_pty_rows: rows,
+            prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
+            input_buffer: Arc::new(Mutex::new(String::new())),
         })
     }
 
@@ -153,6 +174,43 @@ impl InteractiveAgent {
             w.write_all(data)?;
             w.flush()?;
         }
+        Ok(())
+    }
+
+    /// Record a user prompt submission. Called when Enter is pressed.
+    /// Captures the input and the current scrollback length as the start
+    /// of the response range.
+    pub fn record_prompt(&self, input: &str) {
+        let scrollback_len = if let Ok(vt) = self.vt.lock() {
+            vt.screen().scrollback()
+        } else {
+            0
+        };
+
+        if let Ok(mut history) = self.prompt_history.lock() {
+            history.push_back(PromptEntry {
+                input: input.to_string(),
+                output_range: (scrollback_len, scrollback_len), // end updated later
+                timestamp: Utc::now(),
+            });
+            // Keep only the last MAX_PROMPT_HISTORY entries
+            while history.len() > MAX_PROMPT_HISTORY {
+                history.pop_front();
+            }
+        }
+    }
+
+    /// Inject a context block into the agent's PTY, followed by Enter.
+    ///
+    /// Replaces Unix newlines with carriage returns (PTY convention) and
+    /// writes the whole payload in one shot rather than char-by-char.
+    pub fn inject_context(&self, ctx_block: &str) -> Result<()> {
+        let bytes: Vec<u8> = ctx_block
+            .bytes()
+            .map(|b| if b == b'\n' { b'\r' } else { b })
+            .collect();
+        self.write_to_pty(&bytes)?;
+        self.write_to_pty(b"\r")?;
         Ok(())
     }
 
@@ -201,6 +259,54 @@ impl InteractiveAgent {
         } else {
             String::new()
         }
+    }
+
+    /// Get the last N lines of the entire history (scrollback + visible screen).
+    pub fn last_lines(&self, n: usize) -> String {
+        let Ok(mut vt) = self.vt.lock() else {
+            return String::new();
+        };
+
+        let (rows, _cols) = vt.screen().size();
+        let total_available = vt.screen().scrollback() + rows as usize;
+        let to_take = n.min(total_available);
+
+        if to_take == 0 {
+            return String::new();
+        }
+
+        let prev_scroll = vt.screen().scrollback();
+        let mut lines = Vec::with_capacity(to_take);
+
+        // We want the absolute last 'to_take' lines.
+        // Screen rows are 0..rows. Scrollback 1..N are above row 0.
+        // This is a bit complex in vt100, so we'll use a simpler heuristic:
+        // Read the visible screen, and if we need more, read from scrollback.
+        let visible = vt.screen().contents();
+        let visible_lines: Vec<String> = visible.lines().map(|s| s.to_string()).collect();
+
+        if visible_lines.len() >= to_take {
+            let start = visible_lines.len() - to_take;
+            return visible_lines[start..].join("\n");
+        }
+
+        // Need more from scrollback
+        let remaining = to_take - visible_lines.len();
+        for i in 1..=remaining {
+            vt.screen_mut().set_scrollback(i);
+            // Just take the last line of the screen at this scrollback offset
+            let screen_at_offset = vt.screen().contents();
+            if let Some(last_line) = screen_at_offset.lines().last() {
+                lines.push(last_line.to_string());
+            }
+        }
+        vt.screen_mut().set_scrollback(prev_scroll);
+
+        lines.reverse();
+        lines.extend(visible_lines);
+
+        let start = lines.len().saturating_sub(to_take);
+        lines[start..].join("\n")
     }
 
     /// Check if the process has exited.

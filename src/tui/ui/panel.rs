@@ -111,6 +111,11 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 _ => {}
             }
         }
+
+        Focus::ContextTransfer => {
+            // The context transfer modal is drawn as an overlay in ui/mod.rs.
+            // Fall through to draw the underlying panel as background.
+        }
     }
 
     // ── Log / text content fallback ──

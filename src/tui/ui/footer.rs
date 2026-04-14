@@ -38,6 +38,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                 vec![
                     ("EscEsc", "back"),
                     ("Tab", "next"),
+                    ("Ctrl+T", "transfer ctx"),
                     ("Ctrl+N", "new"),
                     ("Shift+Click", "select"),
                     ("F1", "legend"),
@@ -51,6 +52,11 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                 ]
             }
         }
+        Focus::ContextTransfer => vec![
+            ("↑↓", "select"),
+            ("Tab/Enter", "next step"),
+            ("Esc", "cancel"),
+        ],
     };
 
     let mut spans = Vec::new();
