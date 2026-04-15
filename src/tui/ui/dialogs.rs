@@ -100,13 +100,20 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ];
 
     if is_interactive {
-        lines.push(Line::from(vec![
+        let mut session_line = vec![
             Span::styled("  Session:  ", Style::default().fg(DIM)),
             Span::styled(
                 format!(" ◀ {} ▶ ", mode_names[mode_idx]),
                 focus_style(mode_field),
             ),
-        ]));
+        ];
+        if dialog.resume_unconfigured() {
+            session_line.push(Span::styled(
+                "  (not configured — falls back to new)",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        lines.push(Line::from(session_line));
         lines.push(Line::from(""));
     }
 

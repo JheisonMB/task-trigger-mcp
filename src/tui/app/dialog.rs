@@ -126,9 +126,25 @@ impl NewAgentDialog {
             .get(self.cli_index)
             .and_then(|c| c.as_ref())?;
         match self.task_mode {
-            NewTaskMode::Resume => config.resume_args.clone(),
+            // Fall back to interactive_args when resume_args is not configured so
+            // Resume mode doesn't silently launch with NO args (different from New).
+            NewTaskMode::Resume => config
+                .resume_args
+                .clone()
+                .or_else(|| config.interactive_args.clone()),
             NewTaskMode::Interactive => config.interactive_args.clone(),
         }
+    }
+
+    /// Returns true when the current CLI has no dedicated resume_args configured.
+    pub fn resume_unconfigured(&self) -> bool {
+        matches!(self.task_mode, NewTaskMode::Resume)
+            && self
+                .cli_configs
+                .get(self.cli_index)
+                .and_then(|c| c.as_ref())
+                .map(|c| c.resume_args.is_none())
+                .unwrap_or(true)
     }
 
     pub fn selected_fallback_args(&self) -> Option<String> {

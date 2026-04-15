@@ -27,7 +27,9 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
         // Tick speed adapts to what needs frequent repaints
         let tick = match app.focus {
-            Focus::Agent | Focus::NewAgentDialog => Duration::from_millis(50),
+            Focus::Agent | Focus::NewAgentDialog | Focus::ContextTransfer => {
+                Duration::from_millis(50)
+            }
             Focus::Preview if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) => {
                 Duration::from_millis(100)
             }
@@ -649,7 +651,7 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                             .context_transfer_modal
                             .as_ref()
                             .map(|m| (m.n_prompts, m.scrollback_lines))
-                            .unwrap();
+                            .unwrap_or((3, 200));
                         let preview = super::context_transfer::build_context_payload(
                             &app.interactive_agents[idx],
                             n_prompts,
@@ -675,7 +677,7 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                             .context_transfer_modal
                             .as_ref()
                             .map(|m| (m.n_prompts, m.scrollback_lines))
-                            .unwrap();
+                            .unwrap_or((3, 200));
                         let preview = super::context_transfer::build_context_payload(
                             &app.interactive_agents[idx],
                             n_prompts,
