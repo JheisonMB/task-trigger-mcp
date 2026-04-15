@@ -66,10 +66,28 @@ pub fn build_context_payload(
         n_prompts,
     );
 
+    // Current history depth — used as the response-end boundary for the
+    // last (still-open) prompt entry whose output_range.1 hasn't been
+    // closed yet by a subsequent prompt.
+    let current_depth = agent.max_scroll();
+
     if !prompts.is_empty() {
         out.push_str("[last prompts]\n");
         for entry in &prompts {
             out.push_str(&format!("> {}\n", entry.input));
+            // Include the agent's response for this prompt.
+            let resp_end = if entry.output_range.1 > entry.output_range.0 {
+                entry.output_range.1
+            } else {
+                current_depth
+            };
+            if resp_end > entry.output_range.0 {
+                let response = agent.lines_at_scrollback_range(entry.output_range.0, resp_end);
+                if !response.is_empty() {
+                    out.push_str(&response);
+                    out.push('\n');
+                }
+            }
         }
     }
 

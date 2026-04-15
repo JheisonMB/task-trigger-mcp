@@ -37,6 +37,64 @@ pub struct PromptEntry {
 /// Maximum number of prompt entries to keep in the ring buffer.
 const MAX_PROMPT_HISTORY: usize = 20;
 
+/// Read absolute buffer lines [from_abs, to_abs) from a vt100 parser.
+///
+/// `set_scrollback(S)` shows the window at absolute positions
+/// `[max_sb - S .. max_sb - S + rows - 1]`.  Stepping down from a high
+/// offset (oldest) to 0 (current screen) in increments of `rows` gives
+/// non-overlapping pages.  `next_expected` ensures each absolute index is
+/// emitted exactly once even when the final clamped page overlaps with the
+/// previous one.
+fn read_abs_range(
+    vt: &mut vt100::Parser,
+    max_sb: usize,
+    rows: usize,
+    from_abs: usize,
+    to_abs: usize,
+) -> Vec<String> {
+    if to_abs <= from_abs || rows == 0 {
+        return Vec::new();
+    }
+
+    // Find the page-aligned scrollback offset that first covers `from_abs`.
+    // set_scrollback(S) starts at abs = max_sb - S.
+    // We need max_sb - S <= from_abs  =>  S >= max_sb - from_abs.
+    // Round up to the nearest multiple of `rows`, capped at max_sb.
+    let s_for_from = max_sb.saturating_sub(from_abs);
+    let s_start = if s_for_from % rows == 0 {
+        s_for_from
+    } else {
+        ((s_for_from / rows) + 1) * rows
+    }
+    .min(max_sb);
+
+    let mut collected: Vec<String> = Vec::with_capacity(to_abs - from_abs);
+    let mut next_expected = from_abs;
+    let mut s = s_start;
+
+    loop {
+        let clamped = s.min(max_sb);
+        let page_start_abs = max_sb - clamped;
+        vt.screen_mut().set_scrollback(clamped);
+        let content = vt.screen().contents();
+
+        for (i, line) in content.lines().enumerate() {
+            let abs_idx = page_start_abs + i;
+            if abs_idx == next_expected && abs_idx < to_abs {
+                collected.push(line.to_string());
+                next_expected += 1;
+            }
+        }
+
+        if next_expected >= to_abs || s == 0 {
+            break;
+        }
+        s = s.saturating_sub(rows);
+    }
+
+    collected
+}
+
 /// Install no-op handlers for SIGHUP and SIGPIPE so that when a PTY child
 /// exits the canopy process is not accidentally terminated.
 #[cfg(unix)]
@@ -181,19 +239,28 @@ impl InteractiveAgent {
     /// Captures the input and the current scrollback length as the start
     /// of the response range.
     pub fn record_prompt(&self, input: &str) {
-        let scrollback_len = if let Ok(vt) = self.vt.lock() {
-            vt.screen().scrollback()
+        // Use the actual scrollback history depth (not the current scroll offset).
+        // set_scrollback(usize::MAX) clamps to the real history size.
+        let history_depth = if let Ok(mut vt) = self.vt.lock() {
+            let prev = vt.screen().scrollback();
+            vt.screen_mut().set_scrollback(usize::MAX);
+            let depth = vt.screen().scrollback();
+            vt.screen_mut().set_scrollback(prev);
+            depth
         } else {
             0
         };
 
         if let Ok(mut history) = self.prompt_history.lock() {
+            // Close out the previous entry's response range.
+            if let Some(last) = history.back_mut() {
+                last.output_range.1 = history_depth;
+            }
             history.push_back(PromptEntry {
                 input: input.to_string(),
-                output_range: (scrollback_len, scrollback_len), // end updated later
+                output_range: (history_depth, history_depth),
                 timestamp: Utc::now(),
             });
-            // Keep only the last MAX_PROMPT_HISTORY entries
             while history.len() > MAX_PROMPT_HISTORY {
                 history.pop_front();
             }
@@ -263,50 +330,50 @@ impl InteractiveAgent {
 
     /// Get the last N lines of the entire history (scrollback + visible screen).
     pub fn last_lines(&self, n: usize) -> String {
+        if n == 0 {
+            return String::new();
+        }
         let Ok(mut vt) = self.vt.lock() else {
             return String::new();
         };
-
-        let (rows, _cols) = vt.screen().size();
-        let total_available = vt.screen().scrollback() + rows as usize;
-        let to_take = n.min(total_available);
-
-        if to_take == 0 {
+        let (rows, _) = vt.screen().size();
+        let rows = rows as usize;
+        if rows == 0 {
             return String::new();
         }
+        let prev_sb = vt.screen().scrollback();
+        vt.screen_mut().set_scrollback(usize::MAX);
+        let max_sb = vt.screen().scrollback();
+        let total_lines = max_sb + rows;
+        let from_abs = total_lines.saturating_sub(n);
+        let result = read_abs_range(&mut vt, max_sb, rows, from_abs, total_lines);
+        vt.screen_mut().set_scrollback(prev_sb);
+        result.join("\n")
+    }
 
-        let prev_scroll = vt.screen().scrollback();
-        let mut lines = Vec::with_capacity(to_take);
-
-        // We want the absolute last 'to_take' lines.
-        // Screen rows are 0..rows. Scrollback 1..N are above row 0.
-        // This is a bit complex in vt100, so we'll use a simpler heuristic:
-        // Read the visible screen, and if we need more, read from scrollback.
-        let visible = vt.screen().contents();
-        let visible_lines: Vec<String> = visible.lines().map(|s| s.to_string()).collect();
-
-        if visible_lines.len() >= to_take {
-            let start = visible_lines.len() - to_take;
-            return visible_lines[start..].join("\n");
+    /// Extract lines at absolute buffer positions [from_abs, to_abs).
+    ///
+    /// `from_abs` and `to_abs` are the scrollback-history-depth values captured
+    /// via `record_prompt` (i.e. the result of `set_scrollback(usize::MAX)` at
+    /// the time of capture, not the current scroll offset).
+    pub fn lines_at_scrollback_range(&self, from_abs: usize, to_abs: usize) -> String {
+        if to_abs <= from_abs {
+            return String::new();
         }
-
-        // Need more from scrollback
-        let remaining = to_take - visible_lines.len();
-        for i in 1..=remaining {
-            vt.screen_mut().set_scrollback(i);
-            // Just take the last line of the screen at this scrollback offset
-            let screen_at_offset = vt.screen().contents();
-            if let Some(last_line) = screen_at_offset.lines().last() {
-                lines.push(last_line.to_string());
-            }
+        let Ok(mut vt) = self.vt.lock() else {
+            return String::new();
+        };
+        let (rows, _) = vt.screen().size();
+        let rows = rows as usize;
+        if rows == 0 {
+            return String::new();
         }
-        vt.screen_mut().set_scrollback(prev_scroll);
-
-        lines.reverse();
-        lines.extend(visible_lines);
-
-        let start = lines.len().saturating_sub(to_take);
-        lines[start..].join("\n")
+        let prev_sb = vt.screen().scrollback();
+        vt.screen_mut().set_scrollback(usize::MAX);
+        let max_sb = vt.screen().scrollback();
+        let result = read_abs_range(&mut vt, max_sb, rows, from_abs, to_abs);
+        vt.screen_mut().set_scrollback(prev_sb);
+        result.join("\n")
     }
 
     /// Check if the process has exited.
