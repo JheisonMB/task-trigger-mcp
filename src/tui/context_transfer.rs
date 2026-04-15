@@ -1,11 +1,9 @@
 //! Context Transfer — capture and inject conversation context between agents.
 //!
 //! Builds a plain-text context block from the source agent's prompt history
-//! and scrollback buffer, persists it to `~/.canopy/ctx/<workdir_hash>/`,
-//! and drives the two-step TUI modal (preview → agent picker).
+//! and scrollback buffer, then drives the two-step TUI modal (preview → agent picker).
+//! The transfer works entirely in memory — no disk I/O required.
 
-use anyhow::Result;
-use chrono::Utc;
 use std::collections::VecDeque;
 
 use super::agent::{InteractiveAgent, PromptEntry};
@@ -17,7 +15,6 @@ pub struct ContextTransferConfig {
     pub default_prompt_history: usize,
     pub default_scrollback_lines: usize,
     pub max_scrollback_lines: usize,
-    pub keep_ctx_history: usize,
     pub auto_switch_tab: bool,
 }
 
@@ -27,7 +24,6 @@ impl Default for ContextTransferConfig {
             default_prompt_history: 3,
             default_scrollback_lines: 200,
             max_scrollback_lines: 2000,
-            keep_ctx_history: 10,
             auto_switch_tab: true,
         }
     }
@@ -104,62 +100,6 @@ fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<Prompt
 }
 
 // ── Persistence ──────────────────────────────────────────────────
-
-/// Persist a context payload to `~/.canopy/ctx/<workdir_hash>/`.
-///
-/// Writes `latest.ctx` plus a timestamped copy.
-/// Rotates old files so at most `keep` entries remain.
-/// A write failure is non-fatal — transfer still proceeds from memory.
-pub fn persist_context(payload: &str, workdir: &str, keep: usize) -> Result<()> {
-    let hash = workdir_hash(workdir);
-    let ctx_dir = context_dir()?.join(&hash);
-    std::fs::create_dir_all(&ctx_dir)?;
-
-    std::fs::write(ctx_dir.join("latest.ctx"), payload)?;
-
-    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
-    std::fs::write(ctx_dir.join(format!("{timestamp}.ctx")), payload)?;
-
-    rotate_ctx_files(&ctx_dir, keep)?;
-    Ok(())
-}
-
-fn context_dir() -> Result<std::path::PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
-    Ok(home.join(".canopy").join("ctx"))
-}
-
-fn workdir_hash(workdir: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-
-    let canonical = std::fs::canonicalize(workdir)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| workdir.to_string());
-
-    let mut hasher = DefaultHasher::new();
-    canonical.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())[..8].to_string()
-}
-
-fn rotate_ctx_files(dir: &std::path::Path, keep: usize) -> Result<()> {
-    let mut timestamped: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().map(|e| e == "ctx").unwrap_or(false)
-                && p.file_stem().map(|s| s != "latest").unwrap_or(false)
-        })
-        .collect();
-
-    timestamped.sort();
-
-    let excess = timestamped.len().saturating_sub(keep);
-    for path in timestamped.into_iter().take(excess) {
-        let _ = std::fs::remove_file(path);
-    }
-    Ok(())
-}
 
 // ── Modal state ──────────────────────────────────────────────────
 

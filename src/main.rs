@@ -91,6 +91,10 @@ enum DaemonAction {
     Restart,
     /// Tail daemon logs.
     Logs,
+    /// Install (or re-enable) the system service so the daemon starts on boot.
+    InstallService,
+    /// Remove the system service.
+    UninstallService,
 }
 
 #[tokio::main]
@@ -395,13 +399,17 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
 
             #[cfg(target_os = "linux")]
             {
-                let home = dirs::home_dir().expect("No home directory");
-                let service_path = home.join(".config/systemd/user/canopy.service");
-                if !service_path.exists() && is_systemd_available() {
-                    print!("  Installing system service... ");
-                    match service_install::install_service(&exe, port) {
-                        Ok(_) => println!("\x1b[32m✅\x1b[0m installed"),
-                        Err(e) => println!("\x1b[33m⚠\x1b[0m  {}", e),
+                if is_systemd_available() {
+                    let home = dirs::home_dir().expect("No home directory");
+                    let service_path = home.join(".config/systemd/user/canopy.service");
+                    // Install if missing, or re-enable if it exists but is disabled.
+                    let needs_install = !service_path.exists() || !is_service_enabled();
+                    if needs_install {
+                        print!("  Installing system service... ");
+                        match service_install::install_service(&exe, port) {
+                            Ok(_) => println!("\x1b[32m✅\x1b[0m installed"),
+                            Err(e) => println!("\x1b[33m⚠\x1b[0m  {}", e),
+                        }
                     }
                 }
             }
@@ -542,6 +550,30 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
                 print_last_n_lines(&log_path, 50)?;
             } else {
                 println!("No daemon logs found at {}", log_path.display());
+            }
+        }
+
+        DaemonAction::InstallService => {
+            let exe = std::env::current_exe()?;
+            let port = resolve_port(port_override);
+            println!("Installing canopy system service...");
+            match service_install::install_service(&exe, port) {
+                Ok(_) => println!("\x1b[32m✅\x1b[0m Service installed and enabled"),
+                Err(e) => {
+                    eprintln!("\x1b[31m✗\x1b[0m  Failed: {e}");
+                    return Err(e);
+                }
+            }
+        }
+
+        DaemonAction::UninstallService => {
+            println!("Removing canopy system service...");
+            match service_install::uninstall_service() {
+                Ok(_) => println!("\x1b[32m✅\x1b[0m Service uninstalled"),
+                Err(e) => {
+                    eprintln!("\x1b[31m✗\x1b[0m  Failed: {e}");
+                    return Err(e);
+                }
             }
         }
     }
@@ -775,6 +807,16 @@ fn is_systemd_available() -> bool {
     {
         false
     }
+}
+
+/// Returns true if the canopy systemd user service is enabled (starts on boot).
+#[cfg(target_os = "linux")]
+fn is_service_enabled() -> bool {
+    std::process::Command::new("systemctl")
+        .args(["--user", "is-enabled", "--quiet", "canopy.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Kill whatever process is currently listening on the given port.

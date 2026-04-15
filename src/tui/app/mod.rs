@@ -390,11 +390,7 @@ impl App {
             modal.scrollback_lines,
         );
 
-        let workdir = self.interactive_agents[src_idx].working_dir.clone();
-        let keep = self.context_transfer_config.keep_ctx_history;
-        if let Err(e) = super::context_transfer::persist_context(&payload, &workdir, keep) {
-            tracing::warn!("context transfer persist failed (non-fatal): {e}");
-        }
+        let _ = self.interactive_agents[src_idx].working_dir.clone(); // source workdir (available if needed)
 
         let _ = self.interactive_agents[dest_ia_idx].inject_context(&payload);
 

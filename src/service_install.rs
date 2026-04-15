@@ -24,7 +24,6 @@ pub fn install_service(exe_path: &std::path::Path, port: u16) -> Result<()> {
 }
 
 /// Uninstall the system service.
-#[allow(dead_code)]
 pub fn uninstall_service() -> Result<()> {
     if cfg!(target_os = "macos") {
         uninstall_launchd_service()
