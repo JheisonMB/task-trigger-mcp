@@ -1,7 +1,4 @@
-//! MCP Server handler implementing all canopy tools.
-//!
-//! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
-//! with `Parameters<T>` for proper MCP protocol compliance.
+
 
 use std::sync::Arc;
 

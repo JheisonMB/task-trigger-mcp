@@ -1,12 +1,4 @@
-//! MCP Configuration Sync — Extract and synchronize MCP servers across platforms.
-//!
-//! This module provides the ability to:
-//! 1. **Extract** all MCP server configurations from installed platforms
-//! 2. **Compare** configurations across platforms
-//! 3. **Sync** selected MCPs to target platforms
-//!
-//! The goal is to homologate MCP configurations so all your agents
-//! have the same set of MCP servers configured.
+
 
 pub mod skills;
 

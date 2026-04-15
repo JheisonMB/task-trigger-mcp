@@ -176,11 +176,13 @@ fn read_abs_range(
         for (i, line) in content.lines().enumerate() {
             let abs_idx = page_start_abs + i;
             if abs_idx == next_expected && abs_idx < to_abs {
+                // Always advance the index — filtering only controls
+                // whether the line is included in output, not whether
+                // subsequent lines are reachable.
+                next_expected += 1;
                 let sanitized = sanitize_line(line).trim_end().to_string();
-                // Skip lines that are only whitespace or box-drawing chars
                 if !sanitized.trim().is_empty() && !is_ui_line(&sanitized) {
                     collected.push(sanitized);
-                    next_expected += 1;
                 }
             }
         }
@@ -232,6 +234,8 @@ pub struct InteractiveAgent {
     pub prompt_history: Arc<Mutex<VecDeque<PromptEntry>>>,
     /// Current accumulated input (characters since last Enter).
     pub input_buffer: Arc<Mutex<String>>,
+    /// Tracks when the screen last changed (for detecting idle state).
+    last_screen_update: Arc<Mutex<DateTime<Utc>>>,
 }
 
 impl InteractiveAgent {
@@ -322,6 +326,7 @@ impl InteractiveAgent {
             last_pty_rows: rows,
             prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
             input_buffer: Arc::new(Mutex::new(String::new())),
+            last_screen_update: Arc::new(Mutex::new(Utc::now())),
         })
     }
 
@@ -366,16 +371,22 @@ impl InteractiveAgent {
         }
     }
 
-    /// Inject a context block into the agent's PTY, followed by Enter.
+    /// Inject a context block into the agent's PTY as a single paste.
     ///
-    /// Replaces Unix newlines with carriage returns (PTY convention) and
-    /// writes the whole payload in one shot rather than char-by-char.
+    /// Uses bracketed paste mode (`ESC[200~` … `ESC[201~`) so the agent
+    /// treats the whole block as one pasted input rather than interpreting
+    /// each newline as a separate Enter press.
     pub fn inject_context(&self, ctx_block: &str) -> Result<()> {
+        // Begin bracketed paste
+        self.write_to_pty(b"\x1b[200~")?;
         let bytes: Vec<u8> = ctx_block
             .bytes()
             .map(|b| if b == b'\n' { b'\r' } else { b })
             .collect();
         self.write_to_pty(&bytes)?;
+        // End bracketed paste
+        self.write_to_pty(b"\x1b[201~")?;
+        // Final Enter to submit
         self.write_to_pty(b"\r")?;
         Ok(())
     }
@@ -410,6 +421,12 @@ impl InteractiveAgent {
 
         let cursor = screen.cursor_position();
         let scrolled = self.scroll_offset > 0;
+
+        // Update last access time (used for idle detection)
+        if let Ok(mut last_update) = self.last_screen_update.lock() {
+            *last_update = Utc::now();
+        }
+
         Some(ScreenSnapshot {
             cells,
             cursor_row: if scrolled { rows } else { cursor.0 },
@@ -473,6 +490,44 @@ impl InteractiveAgent {
         let result = read_abs_range(&mut vt, max_sb, rows, from_abs, to_abs);
         vt.screen_mut().set_scrollback(prev_sb);
         result.join("\n")
+    }
+
+    /// Detect if the agent appears to be waiting for user input.
+    ///
+    /// Heuristics:
+    /// - Cursor is on the last row (indicates prompt area)
+    /// - Screen hasn't been accessed for at least 100ms (idle)
+    /// - Process is still running
+    pub fn is_waiting_for_input(&self) -> bool {
+        if self.status != AgentStatus::Running {
+            return false;
+        }
+
+        let Some(screen) = self.screen_snapshot() else {
+            return false;
+        };
+
+        let (rows, _cols) = (
+            screen.cells.len() as u16,
+            screen.cells.first().map(|r| r.len() as u16).unwrap_or(0),
+        );
+
+        // Not at the bottom of visible area
+        if screen.cursor_row < rows.saturating_sub(2) {
+            return false;
+        }
+
+        // Check if screen is idle (no access in the last 150ms)
+        let idle_threshold = std::time::Duration::from_millis(150);
+        let last_update = self.last_screen_update.lock().ok();
+        if let Some(last_update) = last_update {
+            let elapsed = Utc::now().signed_duration_since(*last_update);
+            if elapsed.num_milliseconds() < idle_threshold.as_millis() as i64 {
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Check if the process has exited.

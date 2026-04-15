@@ -96,6 +96,8 @@ pub struct App {
     pub whimsg: super::whimsg::Whimsg,
     pub context_transfer_modal: Option<ContextTransferModal>,
     pub context_transfer_config: ContextTransferConfig,
+    /// Tick counter for animation (increments every refresh)
+    pub animation_tick: u32,
 }
 
 impl App {
@@ -130,6 +132,7 @@ impl App {
             whimsg: super::whimsg::Whimsg::new(),
             context_transfer_modal: None,
             context_transfer_config: ContextTransferConfig::default(),
+            animation_tick: 0,
         };
         app.refresh()?;
         Ok(app)
@@ -137,6 +140,7 @@ impl App {
 
     /// Reload all data from the database and filesystem.
     pub fn refresh(&mut self) -> Result<()> {
+        self.animation_tick = self.animation_tick.wrapping_add(1);
         self.refresh_daemon_status();
         self.refresh_agents()?;
         self.refresh_active_runs()?;

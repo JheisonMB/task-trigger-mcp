@@ -48,6 +48,9 @@ pub fn build_context_payload(
     n_prompts: usize,
     scrollback_lines: usize,
 ) -> String {
+    let n_prompts = n_prompts.max(1);
+    let scrollback_lines = scrollback_lines.max(1);
+
     let mut out = String::new();
 
     out.push_str(&format!(
@@ -75,7 +78,6 @@ pub fn build_context_payload(
         out.push_str("[last prompts]\n");
         for entry in &prompts {
             out.push_str(&format!("> {}\n", entry.input));
-            // Include the agent's response for this prompt.
             let resp_end = if entry.output_range.1 > entry.output_range.0 {
                 entry.output_range.1
             } else {
@@ -175,7 +177,7 @@ impl ContextTransferModal {
     pub fn decrement_field(&mut self) {
         match self.preview_field {
             0 => self.n_prompts = self.n_prompts.saturating_sub(1).max(1),
-            _ => self.scrollback_lines = self.scrollback_lines.saturating_sub(50).max(10),
+            _ => self.scrollback_lines = self.scrollback_lines.saturating_sub(50).max(50),
         }
     }
 }

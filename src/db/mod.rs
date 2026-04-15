@@ -1,7 +1,4 @@
-//! `SQLite` database layer for persistent storage.
-//!
-//! Handles all CRUD operations for background_agents, watchers, execution logs,
-//! and daemon state using a single persistent connection.
+
 
 use anyhow::Result;
 use chrono::Utc;

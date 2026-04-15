@@ -132,7 +132,7 @@ fn draw_sidebar_card(
         _ => ACCENT,
     };
 
-    let (status_color, agent_type, type_detail) = match agent {
+    let (mut status_color, agent_type, type_detail) = match agent {
         AgentEntry::BackgroundAgent(t) => {
             let has_active = app.active_runs.contains_key(&t.id);
             let color = if !t.enabled {
@@ -169,6 +169,30 @@ fn draw_sidebar_card(
             (color, "pty", a.cli.as_str())
         }
     };
+
+    // Detect if waiting for input and apply pulsing animation
+    let is_waiting = if let AgentEntry::Interactive(idx) = agent {
+        app.interactive_agents[*idx].is_waiting_for_input()
+    } else {
+        false
+    };
+
+    // Pulse animation: cycle every 20 ticks (at ~50ms tick = 1 second)
+    let pulse_cycle = (app.animation_tick / 5) % 4;
+    if is_waiting && pulse_cycle < 2 {
+        // Brighten the color during animation
+        status_color = match status_color {
+            Color::Rgb(r, g, b) => Color::Rgb(
+                r.saturating_add(60),
+                g.saturating_add(60),
+                b.saturating_add(60),
+            ),
+            Color::Yellow => Color::Rgb(255, 255, 100),
+            Color::Cyan => Color::Rgb(100, 255, 255),
+            Color::White => Color::Rgb(255, 255, 255),
+            c => c,
+        };
+    }
 
     // Line 1: accent bar + id
     if area.height >= 1 {
@@ -215,7 +239,15 @@ fn draw_sidebar_card(
             .filter(|d| !d.is_empty())
             .map(last_two_segments)
             .unwrap_or_else(|| "/".to_string());
-        let dir_span = Span::styled(dir_text, Style::default().fg(DIM));
+
+        // Add waiting indicator if applicable
+        let display_text = if is_waiting {
+            format!("{} ⏳", dir_text)
+        } else {
+            dir_text
+        };
+
+        let dir_span = Span::styled(display_text, Style::default().fg(DIM));
         let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);
         let r = Rect::new(area.x, area.y + 2, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
