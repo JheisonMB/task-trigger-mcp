@@ -1,5 +1,3 @@
-//! Data refresh — daemon status, agent list, active runs, logs, MCP calls.
-
 use anyhow::Result;
 
 use crate::application::ports::{
@@ -47,6 +45,8 @@ impl App {
     }
 
     pub(super) fn refresh_active_runs(&mut self) -> Result<()> {
+        let prev_ids = std::mem::take(&mut self.prev_active_run_ids);
+
         self.active_runs.clear();
         for agent in &self.agents {
             let id = agent.id(self);
@@ -54,6 +54,20 @@ impl App {
                 self.active_runs.insert(id.to_string(), run);
             }
         }
+
+        // Detect background task completions: was active last tick, gone now.
+        if self.notifications_enabled {
+            for finished_id in &prev_ids {
+                if !self.active_runs.contains_key(finished_id.as_str()) {
+                    crate::domain::notification::send_notification(
+                        "Canopy — task finished",
+                        &format!("{finished_id} completed"),
+                    );
+                }
+            }
+        }
+        self.prev_active_run_ids = self.active_runs.keys().cloned().collect();
+
         self.recent_runs = self.db.list_all_recent_runs(50)?;
         Ok(())
     }

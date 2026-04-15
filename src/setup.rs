@@ -1,8 +1,3 @@
-//! Setup wizard — runs on first `canopy` invocation (or `canopy setup`).
-//!
-//! Fetches the platform registry from GitHub, detects installed platforms
-//! by config file existence, configures MCP, starts daemon, installs service.
-
 use anyhow::{Context, Result};
 use inquire::{Confirm, MultiSelect, Select, Text};
 use serde::Deserialize;
@@ -186,7 +181,7 @@ pub fn run_setup() -> Result<()> {
             }
         }
 
-        let entry = sanitize_canopy_entry(&p.unsupported_keys, p.canopy_entry.clone());
+        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         let result = if is_toml {
             upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
         } else {
@@ -698,7 +693,7 @@ pub fn run_setup_silent() -> Result<()> {
             let _ = sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys);
         }
 
-        let entry = sanitize_canopy_entry(&p.unsupported_keys, p.canopy_entry.clone());
+        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         if is_toml {
             let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
         } else {
@@ -733,12 +728,25 @@ pub fn run_setup_silent() -> Result<()> {
 /// entries that include keys valid for one CLI but invalid for another
 /// (e.g. `"tools"` is supported by copilot but rejected by gemini).
 fn sanitize_canopy_entry(
+    platform_name: &str,
     unsupported_keys: &[String],
     mut entry: serde_json::Value,
 ) -> serde_json::Value {
     if let Some(obj) = entry.as_object_mut() {
         for key in unsupported_keys {
             obj.remove(key);
+        }
+
+        // Homologate transport type for HTTP servers.
+        // Some clients (copilot, qwen) require "sse", others like "http".
+        // Using "sse" is generally safer and more precise for MCP-over-HTTP.
+        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral")
+            && obj.contains_key("url")
+        {
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("sse".to_string()),
+            );
         }
     }
     entry
@@ -747,12 +755,23 @@ fn sanitize_canopy_entry(
 /// Sanitize an arbitrary MCP server config for a target platform.
 /// Removes keys that the target platform does not support.
 fn sanitize_server_config_for_platform(
+    platform_name: &str,
     unsupported_keys: &[String],
     mut config: serde_json::Value,
 ) -> serde_json::Value {
     if let Some(obj) = config.as_object_mut() {
         for key in unsupported_keys {
             obj.remove(key);
+        }
+
+        // Homologate transport type for HTTP servers.
+        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral")
+            && obj.contains_key("url")
+        {
+            obj.insert(
+                "type".to_string(),
+                serde_json::Value::String("sse".to_string()),
+            );
         }
     }
     config
@@ -1061,6 +1080,7 @@ fn run_sync_action(
             };
 
             let sanitized = sanitize_server_config_for_platform(
+                &platform.name,
                 &platform.unsupported_keys,
                 server.config.clone(),
             );
@@ -1166,8 +1186,11 @@ fn run_add_action(
         let config_path = home.join(&platform.config_path);
         let summary = summaries.entry(platform_name.clone()).or_default();
 
-        let sanitized =
-            sanitize_server_config_for_platform(&platform.unsupported_keys, base_config.clone());
+        let sanitized = sanitize_server_config_for_platform(
+            &platform.name,
+            &platform.unsupported_keys,
+            base_config.clone(),
+        );
         match apply_upsert_to_platform(platform, &config_path, &server_name, &sanitized) {
             Ok(true) => summary.added += 1,
             Ok(false) => summary.skipped += 1,

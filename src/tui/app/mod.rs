@@ -1,8 +1,3 @@
-//! Application state for the TUI.
-//!
-//! Holds cached data from the database, selection state, log content,
-//! and interactive agent processes.
-
 mod agents;
 mod data;
 mod dialog;
@@ -96,6 +91,10 @@ pub struct App {
     pub whimsg: super::whimsg::Whimsg,
     pub context_transfer_modal: Option<ContextTransferModal>,
     pub context_transfer_config: ContextTransferConfig,
+    /// Whether to send OS-level desktop notifications (agent done/failed).
+    pub notifications_enabled: bool,
+    /// IDs of runs that were active on the previous refresh tick.
+    prev_active_run_ids: std::collections::HashSet<String>,
     /// Tick counter for animation (increments every refresh)
     pub animation_tick: u32,
 }
@@ -132,6 +131,8 @@ impl App {
             whimsg: super::whimsg::Whimsg::new(),
             context_transfer_modal: None,
             context_transfer_config: ContextTransferConfig::default(),
+            notifications_enabled: true,
+            prev_active_run_ids: std::collections::HashSet::new(),
             animation_tick: 0,
         };
         app.refresh()?;

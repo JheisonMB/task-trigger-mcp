@@ -1,4 +1,7 @@
-
+//! MCP Server handler implementing all canopy tools.
+//!
+//! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
+//! with `Parameters<T>` for proper MCP protocol compliance.
 
 use std::sync::Arc;
 
@@ -1037,14 +1040,12 @@ impl TaskTriggerHandler {
             }
         };
 
-        // Require summary for terminal states
         if matches!(status, RunStatus::Success | RunStatus::Error) && params.summary.is_none() {
             return Ok(error_result(
                 "A summary is required when reporting 'success' or 'error'.",
             ));
         }
 
-        // Verify run exists and is in a valid state for this transition
         let run = self
             .db
             .get_run(&params.run_id)
@@ -1052,8 +1053,6 @@ impl TaskTriggerHandler {
             .ok_or_else(|| {
                 McpError::internal_error(format!("Run '{}' not found.", params.run_id), None)
             })?;
-
-        // Check if run has timed out
         if run.status.is_active() {
             if let Some(timeout_at) = run.timeout_at {
                 if chrono::Utc::now() > timeout_at {
@@ -1071,13 +1070,12 @@ impl TaskTriggerHandler {
         }
 
         // Validate state transitions
-        let valid = match (&run.status, &status) {
-            (RunStatus::Pending, RunStatus::InProgress) => true,
-            (RunStatus::InProgress, RunStatus::Success | RunStatus::Error) => true,
-            // Allow pending -> success/error for agents that skip in_progress
-            (RunStatus::Pending, RunStatus::Success | RunStatus::Error) => true,
-            _ => false,
-        };
+        let valid = matches!(
+            (&run.status, &status),
+            (RunStatus::Pending, RunStatus::InProgress)
+                | (RunStatus::InProgress, RunStatus::Success | RunStatus::Error)
+                | (RunStatus::Pending, RunStatus::Success | RunStatus::Error)
+        );
         if !valid {
             return Ok(error_result(&format!(
                 "Invalid transition: {} -> {}",

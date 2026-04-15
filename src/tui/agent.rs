@@ -63,53 +63,37 @@ fn sanitize_line(line: &str) -> String {
     out
 }
 
-/// Detect if a line is UI noise (box-drawing, dashed lines, prompts, status bars).
-/// These should be excluded from context transfer.
+/// Returns true if `c` is a box-drawing or block-element character
+/// (Unicode ranges: Box Drawing U+2500–257F, Block Elements U+2580–259F).
+fn is_decoration_char(c: char) -> bool {
+    matches!(c,
+        // Box Drawing (U+2500–U+257F)
+        '─'..='╿'
+        // Block Elements (U+2580–U+259F) — includes █ ░ ▒ ▓ and all half/quarter blocks
+        | '▀'..='▟'
+        // Dashes
+        | '‐' | '–' | '—' | '−'
+    )
+}
+
+/// Detect if a line is UI noise that should be excluded from context transfer.
+///
+/// Catches: box-drawing borders, block-element bars, CLI prompts,
+/// status bars, tool-use indicators, MCP messages, and similar chrome.
 fn is_ui_line(line: &str) -> bool {
     let trimmed = line.trim();
 
-    // All box-drawing or dashes (plus whitespace/spaces)
     if trimmed.is_empty() {
         return true;
     }
 
-    if trimmed.chars().all(|c| {
-        c == ' '
-            || matches!(
-                c,
-                '─' | '│'
-                    | '┌'
-                    | '┐'
-                    | '└'
-                    | '┘'
-                    | '├'
-                    | '┤'
-                    | '┬'
-                    | '┴'
-                    | '┼'
-                    | '╭'
-                    | '╮'
-                    | '╰'
-                    | '╯'
-                    | '━'
-                    | '┃'
-                    | '‐'
-                    | '–'
-                    | '—'
-                    | '−'
-                    | '═'
-                    | '║'
-                    | '╔'
-                    | '╗'
-                    | '╚'
-                    | '╝'
-                    | '╠'
-                    | '╣'
-                    | '╦'
-                    | '╩'
-                    | '╬'
-            )
-    }) {
+    // Lines composed entirely of decoration chars + whitespace
+    if trimmed.chars().all(|c| c == ' ' || is_decoration_char(c)) {
+        return true;
+    }
+
+    // Lines that START with │ (box-drawing vertical border — e.g. │ text │)
+    if trimmed.starts_with('│') || trimmed.starts_with('┃') || trimmed.starts_with('║') {
         return true;
     }
 
@@ -120,12 +104,29 @@ fn is_ui_line(line: &str) -> bool {
         || trimmed.starts_with('>')
         || trimmed.starts_with("...")
         || trimmed.contains("───")
-        || trimmed.starts_with("●")
-        || trimmed.starts_with("▌")
-        || trimmed.starts_with("▣")
+    {
+        return true;
+    }
+
+    // Bullet/status symbols at start
+    if trimmed.starts_with('●')
+        || trimmed.starts_with('▌')
+        || trimmed.starts_with('▣')
         || trimmed.starts_with('▹')
-        || trimmed.contains("Environment")
+        || trimmed.starts_with('ℹ')
+        || trimmed.starts_with('✓')
+    {
+        return true;
+    }
+
+    // Status bar / footer patterns
+    if trimmed.contains("Environment")
         || trimmed.contains("remaining")
+        || trimmed.contains("for shortcuts")
+        || trimmed.contains("Shift+Tab")
+        || trimmed.contains("MCP issues")
+        || trimmed.contains("MCP servers")
+        || trimmed.contains("workspace (")
     {
         return true;
     }

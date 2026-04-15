@@ -1,5 +1,3 @@
-//! Agent lifecycle — PTY polling, Brian's Brain, clipboard, cleanup.
-
 use super::{AgentEntry, App, Focus};
 use crate::tui::agent::AgentStatus;
 
@@ -119,15 +117,29 @@ impl App {
         for &old_idx in &sorted {
             // Notify whimsg about agent completion
             let status = self.interactive_agents[old_idx].status;
+            let agent_id = self.interactive_agents[old_idx].id.clone();
             match status {
                 AgentStatus::Exited(0) => {
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
+                    if self.notifications_enabled {
+                        crate::domain::notification::send_notification(
+                            "Canopy — agent finished",
+                            &format!("{agent_id} completed successfully"),
+                        );
+                    }
                 }
-                _ => {
+                AgentStatus::Exited(code) => {
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
+                    if self.notifications_enabled {
+                        crate::domain::notification::send_notification(
+                            "Canopy — agent failed",
+                            &format!("{agent_id} exited with code {code}"),
+                        );
+                    }
                 }
+                _ => {}
             }
             self.interactive_agents.remove(old_idx);
         }

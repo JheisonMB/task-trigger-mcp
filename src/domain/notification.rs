@@ -1,0 +1,108 @@
+//! System notifications — cross-platform desktop notifications.
+//!
+//! Sends native notifications when agents complete or fail.
+//! Detected platforms: WSL → Windows toast, macOS → osascript, Linux → notify-send.
+//! All notifications are fire-and-forget on a background thread.
+
+use std::process::Command;
+
+/// Detected runtime platform for notification dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Platform {
+    Wsl,
+    MacOs,
+    Linux,
+}
+
+fn detect_platform() -> Platform {
+    if cfg!(target_os = "macos") {
+        return Platform::MacOs;
+    }
+
+    // WSL: /proc/version contains "microsoft" or "Microsoft"
+    if let Ok(ver) = std::fs::read_to_string("/proc/version") {
+        if ver.to_lowercase().contains("microsoft") {
+            return Platform::Wsl;
+        }
+    }
+
+    Platform::Linux
+}
+
+/// Escape a string for use inside a PowerShell single-quoted string.
+fn ps_escape(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Escape a string for use inside an AppleScript double-quoted string.
+fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn send_linux(title: &str, body: &str) {
+    let _ = Command::new("notify-send")
+        .arg("--app-name=Canopy")
+        .arg(title)
+        .arg(body)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn send_macos(title: &str, body: &str) {
+    let script = format!(
+        "display notification \"{}\" with title \"{}\"",
+        applescript_escape(body),
+        applescript_escape(title),
+    );
+    let _ = Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+fn send_wsl(title: &str, body: &str) {
+    // Native Windows toast via PowerShell — no extra modules needed.
+    // Uses the Windows.UI.Notifications API through .NET interop.
+    let ps_script = format!(
+        concat!(
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ",
+            "ContentType = WindowsRuntime] > $null; ",
+            "$template = [Windows.UI.Notifications.ToastNotificationManager]::",
+            "GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); ",
+            "$nodes = $template.GetElementsByTagName('text'); ",
+            "$nodes.Item(0).AppendChild($template.CreateTextNode('{}')) > $null; ",
+            "$nodes.Item(1).AppendChild($template.CreateTextNode('{}')) > $null; ",
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); ",
+            "[Windows.UI.Notifications.ToastNotificationManager]::",
+            "CreateToastNotifier('Canopy').Show($toast)"
+        ),
+        ps_escape(title),
+        ps_escape(body),
+    );
+    let _ = Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&ps_script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Send a desktop notification. Fire-and-forget — spawns a background thread
+/// and never blocks the caller. Failures are silently ignored.
+pub fn send_notification(title: &str, body: &str) {
+    let title = title.to_owned();
+    let body = body.to_owned();
+    std::thread::spawn(move || {
+        let platform = detect_platform();
+        match platform {
+            Platform::Wsl => send_wsl(&title, &body),
+            Platform::MacOs => send_macos(&title, &body),
+            Platform::Linux => send_linux(&title, &body),
+        }
+    });
+}
