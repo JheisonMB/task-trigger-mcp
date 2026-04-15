@@ -49,6 +49,13 @@ pub struct NewAgentDialog {
     pub model_suggestions: Vec<ModelEntry>,
     pub model_suggestion_idx: usize,
     pub model_picker_open: bool,
+    // ── Session picker (canopy-side, for CLIs with session_list_cmd) ──
+    pub session_picker_open: bool,
+    /// Parsed sessions: (id, display_label)
+    pub session_entries: Vec<(String, String)>,
+    pub session_picker_idx: usize,
+    /// The session the user confirmed, if any.
+    pub selected_session: Option<(String, String)>,
 }
 
 impl NewAgentDialog {
@@ -88,6 +95,10 @@ impl NewAgentDialog {
             model_suggestions: Vec::new(),
             model_suggestion_idx: 0,
             model_picker_open: false,
+            session_picker_open: false,
+            session_entries: Vec::new(),
+            session_picker_idx: 0,
+            selected_session: None,
         };
         dialog.refresh_dir_entries();
         dialog.refresh_model_suggestions();
@@ -126,12 +137,20 @@ impl NewAgentDialog {
             .get(self.cli_index)
             .and_then(|c| c.as_ref())?;
         match self.task_mode {
-            // Fall back to interactive_args when resume_args is not configured so
-            // Resume mode doesn't silently launch with NO args (different from New).
-            NewTaskMode::Resume => config
-                .resume_args
-                .clone()
-                .or_else(|| config.interactive_args.clone()),
+            NewTaskMode::Resume => {
+                // If the user picked a specific session via the canopy session picker,
+                // use session_resume_cmd + id (e.g. `--session ses_abc123`).
+                if let Some((ref id, _)) = self.selected_session {
+                    if let Some(ref cmd) = config.session_resume_cmd {
+                        return Some(format!("{cmd} {id}"));
+                    }
+                }
+                // Otherwise fall back to resume_args (e.g. --continue) or interactive_args.
+                config
+                    .resume_args
+                    .clone()
+                    .or_else(|| config.interactive_args.clone())
+            }
             NewTaskMode::Interactive => config.interactive_args.clone(),
         }
     }
@@ -145,6 +164,62 @@ impl NewAgentDialog {
                 .and_then(|c| c.as_ref())
                 .map(|c| c.resume_args.is_none())
                 .unwrap_or(true)
+    }
+
+    /// Returns true when the current CLI supports canopy-side session picking.
+    pub fn has_session_picker(&self) -> bool {
+        matches!(self.task_mode, NewTaskMode::Resume)
+            && self
+                .cli_configs
+                .get(self.cli_index)
+                .and_then(|c| c.as_ref())
+                .map(|c| c.session_list_cmd.is_some())
+                .unwrap_or(false)
+    }
+
+    /// Run the CLI's session_list_cmd, parse the output and populate session_entries.
+    pub fn load_sessions(&mut self) {
+        let Some(config) = self
+            .cli_configs
+            .get(self.cli_index)
+            .and_then(|c| c.as_ref())
+        else {
+            return;
+        };
+        let Some(ref list_cmd) = config.session_list_cmd.clone() else {
+            return;
+        };
+        let binary = config.binary.clone();
+
+        let args: Vec<&str> = list_cmd.split_whitespace().collect();
+        let Ok(output) = std::process::Command::new(&binary).args(&args).output() else {
+            return;
+        };
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        self.session_entries = parse_session_list(&text);
+        self.session_picker_idx = 0;
+    }
+
+    /// Open the session picker: load sessions and set picker_open = true.
+    pub fn open_session_picker(&mut self) {
+        self.load_sessions();
+        if !self.session_entries.is_empty() {
+            self.session_picker_open = true;
+        }
+    }
+
+    /// Confirm the currently highlighted session.
+    pub fn confirm_session_pick(&mut self) {
+        if let Some(entry) = self.session_entries.get(self.session_picker_idx) {
+            self.selected_session = Some(entry.clone());
+        }
+        self.session_picker_open = false;
+    }
+
+    /// Clear the selected session (fall back to --continue / resume_args).
+    pub fn clear_selected_session(&mut self) {
+        self.selected_session = None;
     }
 
     pub fn selected_fallback_args(&self) -> Option<String> {
@@ -165,6 +240,7 @@ impl NewAgentDialog {
 
     pub fn next_cli(&mut self) {
         self.cli_index = (self.cli_index + 1) % self.available_clis.len();
+        self.selected_session = None;
     }
 
     pub fn prev_cli(&mut self) {
@@ -172,6 +248,7 @@ impl NewAgentDialog {
             .cli_index
             .checked_sub(1)
             .unwrap_or(self.available_clis.len() - 1);
+        self.selected_session = None;
     }
 
     pub fn refresh_dir_entries(&mut self) {
@@ -471,4 +548,28 @@ impl App {
         self.db.insert_or_update_watcher(&watcher)?;
         Ok(())
     }
+}
+
+/// Parse the output of a CLI session list command into (id, label) pairs.
+/// Handles the opencode `session list` table format:
+///   ses_<id>  Title...   Updated
+/// Lines that are headers, separators, or do not start with an identifier are skipped.
+fn parse_session_list(output: &str) -> Vec<(String, String)> {
+    output
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !t.starts_with('\u{2500}') // ─ separator
+        })
+        .filter_map(|line| {
+            let mut parts = line.splitn(2, |c: char| c.is_whitespace());
+            let id = parts.next()?.trim().to_string();
+            // Skip header rows — real IDs contain letters+digits+mixed case
+            if id == "Session" || id.len() < 8 {
+                return None;
+            }
+            let label = parts.next().unwrap_or("").trim().to_string();
+            Some((id, label))
+        })
+        .collect()
 }

@@ -418,6 +418,33 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 return Ok(());
             };
 
+            // Session picker intercepts all keys when open
+            if dialog.session_picker_open {
+                match code {
+                    KeyCode::Down => {
+                        let len = dialog.session_entries.len();
+                        if len > 0 {
+                            dialog.session_picker_idx = (dialog.session_picker_idx + 1) % len;
+                        }
+                    }
+                    KeyCode::Up => {
+                        let len = dialog.session_entries.len();
+                        if len > 0 {
+                            dialog.session_picker_idx =
+                                dialog.session_picker_idx.checked_sub(1).unwrap_or(len - 1);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        dialog.confirm_session_pick();
+                    }
+                    KeyCode::Esc | KeyCode::Backspace => {
+                        dialog.session_picker_open = false;
+                    }
+                    _ => {}
+                }
+                return Ok(());
+            }
+
             let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let cli_field: usize = if is_interactive { 2 } else { 1 };
             let model_field: usize = if is_interactive { 3 } else { 2 };
@@ -469,9 +496,21 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 1 if is_interactive => match code {
                     KeyCode::Left => {
                         dialog.task_mode = super::app::NewTaskMode::Interactive;
+                        dialog.selected_session = None;
                     }
                     KeyCode::Right => {
                         dialog.task_mode = super::app::NewTaskMode::Resume;
+                    }
+                    KeyCode::Enter
+                        if matches!(dialog.task_mode, super::app::NewTaskMode::Resume)
+                            && dialog.has_session_picker() =>
+                    {
+                        dialog.open_session_picker();
+                    }
+                    KeyCode::Delete | KeyCode::Backspace
+                        if matches!(dialog.task_mode, super::app::NewTaskMode::Resume) =>
+                    {
+                        dialog.clear_selected_session();
                     }
                     KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
                     KeyCode::Up | KeyCode::BackTab => dialog.field = 0,

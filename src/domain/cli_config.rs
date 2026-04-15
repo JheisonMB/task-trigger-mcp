@@ -31,9 +31,17 @@ pub struct CliConfig {
     /// Fallback interactive args if the primary mode fails to start (e.g. `kiro-cli --tui` → `kiro-cli chat`).
     #[serde(default)]
     pub fallback_interactive_args: Option<String>,
-    /// Arguments to pass when launching in resume picker mode.
+    /// Arguments to pass when launching in resume mode (most recent session).
     #[serde(default)]
     pub resume_args: Option<String>,
+    /// Subcommand/args to run to list sessions, e.g. `"session list"`.
+    /// When set, the new-agent dialog shows a canopy-side session picker.
+    #[serde(default)]
+    pub session_list_cmd: Option<String>,
+    /// Flag to resume a specific session by ID, e.g. `"--session"`.
+    /// The session ID is appended as the next argument.
+    #[serde(default)]
+    pub session_resume_cmd: Option<String>,
     /// RGB accent color for this CLI's agents in the TUI.
     #[serde(default)]
     pub accent_color: Option<[u8; 3]>,

@@ -107,10 +107,29 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 focus_style(mode_field),
             ),
         ];
-        if dialog.resume_unconfigured() {
+        if dialog.resume_unconfigured() && !dialog.has_session_picker() {
             session_line.push(Span::styled(
                 "  (not configured — falls back to new)",
                 Style::default().fg(Color::Yellow),
+            ));
+        }
+        if matches!(dialog.task_mode, crate::tui::app::NewTaskMode::Resume)
+            && dialog.has_session_picker()
+        {
+            let session_label = match &dialog.selected_session {
+                Some((_, title)) => {
+                    let short = if title.len() > 40 {
+                        format!("{}…", &title[..40])
+                    } else {
+                        title.clone()
+                    };
+                    format!("  ↵ pick  [{short}]")
+                }
+                None => "  ↵ pick session  (latest)".to_string(),
+            };
+            session_line.push(Span::styled(
+                session_label,
+                Style::default().fg(Color::Cyan),
             ));
         }
         lines.push(Line::from(session_line));
@@ -193,6 +212,66 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 format!("    … {total} models  ↑↓ scroll  → accept  Esc close"),
                 Style::default().fg(DIM),
             )));
+        }
+    }
+
+    // Session picker dropdown — shown when session_picker_open
+    if dialog.session_picker_open {
+        let max_visible = 6;
+        let total = dialog.session_entries.len();
+        let sel = dialog.session_picker_idx;
+        let scroll = if sel >= max_visible {
+            sel - max_visible + 1
+        } else {
+            0
+        };
+
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                "    (no sessions found)",
+                Style::default().fg(DIM),
+            )));
+        } else {
+            for (i, (id, label)) in dialog
+                .session_entries
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(max_visible)
+            {
+                let is_sel = i == sel;
+                let style = if is_sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let short_label = if label.len() > 36 {
+                    format!("{}…", &label[..36])
+                } else {
+                    label.clone()
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
+                    Span::styled(truncate_str(id, 18), style),
+                    Span::styled(
+                        format!("  {short_label}"),
+                        if is_sel {
+                            style
+                        } else {
+                            Style::default().fg(DIM)
+                        },
+                    ),
+                ]));
+            }
+            if total > max_visible {
+                lines.push(Line::from(Span::styled(
+                    format!("    … {total} sessions  ↑↓ scroll  Enter accept  Esc close"),
+                    Style::default().fg(DIM),
+                )));
+            }
         }
     }
 
