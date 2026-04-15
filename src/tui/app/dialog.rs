@@ -26,6 +26,8 @@ pub enum NewTaskMode {
 
 /// State for the "new agent" dialog.
 pub struct NewAgentDialog {
+    /// When `Some(id)`, the dialog is in edit mode for an existing agent.
+    pub edit_id: Option<String>,
     pub task_type: NewTaskType,
     pub task_mode: NewTaskMode,
     pub cli_index: usize,
@@ -66,6 +68,7 @@ impl NewAgentDialog {
             .unwrap_or_default();
         let catalog = models_db::load_catalog();
         let mut dialog = Self {
+            edit_id: None,
             task_type: NewTaskType::Interactive,
             task_mode: NewTaskMode::Interactive,
             cli_index: 0,
@@ -156,6 +159,10 @@ impl NewAgentDialog {
     }
 
     /// Returns true when the current CLI has no dedicated resume_args configured.
+    pub fn is_edit_mode(&self) -> bool {
+        self.edit_id.is_some()
+    }
+
     pub fn resume_unconfigured(&self) -> bool {
         matches!(self.task_mode, NewTaskMode::Resume)
             && self
@@ -383,11 +390,68 @@ impl NewAgentDialog {
 
 // ── Dialog methods on App ───────────────────────────────────────
 
+use super::AgentEntry;
 use super::App;
-use crate::application::ports::{BackgroundAgentRepository, WatcherRepository};
+use crate::application::ports::{
+    BackgroundAgentRepository, WatcherFieldsUpdate, WatcherRepository,
+};
 use anyhow::Result;
 
 impl App {
+    pub fn open_edit_dialog(&mut self) {
+        let prev_focus = self.focus;
+        let Some(agent) = self.agents.get(self.selected) else {
+            return;
+        };
+        let mut dialog = NewAgentDialog::new();
+        dialog.prev_focus = Some(prev_focus);
+
+        match agent {
+            AgentEntry::BackgroundAgent(t) => {
+                dialog.edit_id = Some(t.id.clone());
+                dialog.task_type = NewTaskType::Scheduled;
+                dialog.prompt = t.prompt.clone();
+                dialog.cron_expr = t.schedule_expr.clone();
+                dialog.working_dir = t.working_dir.clone().unwrap_or_default();
+                dialog.model = t.model.clone().unwrap_or_default();
+                if let Some(idx) = dialog
+                    .available_clis
+                    .iter()
+                    .position(|c| c.as_str() == t.cli.as_str())
+                {
+                    dialog.cli_index = idx;
+                }
+                // Start on first editable field (prompt = field 2 in edit mode)
+                dialog.field = 2;
+            }
+            AgentEntry::Watcher(w) => {
+                dialog.edit_id = Some(w.id.clone());
+                dialog.task_type = NewTaskType::Watcher;
+                dialog.prompt = w.prompt.clone();
+                dialog.watch_path = w.path.clone();
+                dialog.watch_events = w
+                    .events
+                    .iter()
+                    .map(|e| e.to_string().to_lowercase())
+                    .collect();
+                dialog.model = w.model.clone().unwrap_or_default();
+                if let Some(idx) = dialog
+                    .available_clis
+                    .iter()
+                    .position(|c| c.as_str() == w.cli.as_str())
+                {
+                    dialog.cli_index = idx;
+                }
+                dialog.field = 2;
+            }
+            AgentEntry::Interactive(_) => return, // editing interactive agents not supported
+        }
+
+        dialog.refresh_model_suggestions();
+        self.new_agent_dialog = Some(dialog);
+        self.focus = Focus::NewAgentDialog;
+    }
+
     pub fn open_new_agent_dialog(&mut self) {
         let prev_focus = self.focus;
         self.new_agent_dialog = Some(NewAgentDialog::new());
@@ -421,7 +485,27 @@ impl App {
         };
 
         let was_interactive = matches!(dialog.task_type, NewTaskType::Interactive);
+        let prev_focus = dialog.prev_focus;
 
+        if let Some(ref edit_id) = dialog.edit_id {
+            // ── Edit mode: partial-update existing agent ──────────────────
+            let model_ref = model.as_deref();
+            match dialog.task_type {
+                NewTaskType::Scheduled => {
+                    self.update_scheduled(&dialog, model_ref, edit_id)?;
+                }
+                NewTaskType::Watcher => {
+                    self.update_watcher_edit(&dialog, model_ref, edit_id)?;
+                }
+                NewTaskType::Interactive => {}
+            }
+            self.new_agent_dialog = None;
+            self.refresh_agents()?;
+            self.focus = prev_focus.unwrap_or(Focus::Preview);
+            return Ok(());
+        }
+
+        // ── Create mode ───────────────────────────────────────────────────
         match dialog.task_type {
             NewTaskType::Interactive => {
                 self.launch_interactive(&dialog)?;
@@ -434,7 +518,6 @@ impl App {
             }
         }
 
-        let prev_focus = dialog.prev_focus;
         self.new_agent_dialog = None;
 
         self.refresh_agents()?;
@@ -447,6 +530,58 @@ impl App {
         } else {
             prev_focus.unwrap_or(Focus::Home)
         };
+        Ok(())
+    }
+
+    fn update_scheduled(
+        &self,
+        dialog: &NewAgentDialog,
+        model: Option<&str>,
+        id: &str,
+    ) -> Result<()> {
+        use crate::application::ports::BackgroundAgentFieldsUpdate;
+        if dialog.prompt.is_empty() {
+            return Ok(());
+        }
+        let dir = if dialog.working_dir.is_empty() {
+            None
+        } else {
+            Some(dialog.working_dir.as_str())
+        };
+        let cli = dialog.selected_cli();
+        let fields = BackgroundAgentFieldsUpdate {
+            prompt: Some(&dialog.prompt),
+            schedule_expr: Some(&dialog.cron_expr),
+            cli: Some(cli.as_str()),
+            model: Some(model),
+            working_dir: Some(dir),
+            expires_at: None,
+        };
+        self.db.update_background_agent_fields(id, &fields)?;
+        Ok(())
+    }
+
+    fn update_watcher_edit(
+        &self,
+        dialog: &NewAgentDialog,
+        model: Option<&str>,
+        id: &str,
+    ) -> Result<()> {
+        if dialog.prompt.is_empty() || dialog.watch_path.is_empty() {
+            return Ok(());
+        }
+        let events_str = dialog.watch_events.join(",");
+        let cli = dialog.selected_cli();
+        let fields = WatcherFieldsUpdate {
+            prompt: Some(&dialog.prompt),
+            path: Some(&dialog.watch_path),
+            events: Some(&events_str),
+            cli: Some(cli.as_str()),
+            model: Some(model),
+            debounce_seconds: None,
+            recursive: None,
+        };
+        self.db.update_watcher_fields(id, &fields)?;
         Ok(())
     }
 

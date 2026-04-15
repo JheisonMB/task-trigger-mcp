@@ -36,6 +36,9 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         1 + dialog.dir_entries.len().min(4) as u16
     };
 
+    let is_edit = dialog.is_edit_mode();
+
+    // In edit mode: height is the same as the task type's base (no session row)
     // Base heights: fields + 2 borders (no browser rows).
     // Interactive:    11 content rows → base 13
     // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
@@ -49,8 +52,18 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let area = centered_rect(65, height, frame.area());
     frame.render_widget(Clear, area);
 
+    let title = if is_edit {
+        match dialog.task_type {
+            crate::tui::app::NewTaskType::Scheduled => " Edit Task ",
+            crate::tui::app::NewTaskType::Watcher => " Edit Watcher ",
+            crate::tui::app::NewTaskType::Interactive => " Edit Agent ",
+        }
+    } else {
+        " New Agent "
+    };
+
     let block = Block::default()
-        .title(" New Agent ")
+        .title(title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(accent))
         .style(Style::default().bg(Color::Rgb(15, 25, 15)));
@@ -94,12 +107,21 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Type:  ", Style::default().fg(DIM)),
-            Span::styled(format!(" ◀ {} ▶ ", type_names[type_idx]), focus_style(0)),
+            if is_edit {
+                // Locked in edit mode — show type without arrow affordance
+                Span::styled(
+                    format!("  {}  ", type_names[type_idx]),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(format!(" ◀ {} ▶ ", type_names[type_idx]), focus_style(0))
+            },
         ]),
         Line::from(""),
     ];
 
-    if is_interactive {
+    // Session/mode row — only for interactive, and hidden in edit mode
+    if is_interactive && !is_edit {
         let mut session_line = vec![
             Span::styled("  Session:  ", Style::default().fg(DIM)),
             Span::styled(

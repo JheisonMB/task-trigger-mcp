@@ -234,7 +234,10 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
         KeyCode::Up | KeyCode::Char('k') => {
             app.select_prev();
         }
-        KeyCode::Char('e') | KeyCode::Char('d') => {
+        KeyCode::Char('e') => {
+            app.open_edit_dialog();
+        }
+        KeyCode::Char('d') => {
             let _ = app.toggle_enable();
         }
         KeyCode::Char('r') => {

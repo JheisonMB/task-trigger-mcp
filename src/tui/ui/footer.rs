@@ -20,17 +20,18 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Preview => vec![
             ("↑↓", "nav"),
             ("Enter", "focus"),
+            ("e", "edit"),
+            ("d", "toggle"),
             ("D", "delete"),
             ("r", "rerun"),
-            ("e/d", "toggle"),
             ("n", "new"),
             ("q", "quit"),
         ],
         Focus::NewAgentDialog => vec![
             ("↑↓", "fields"),
-            ("←→", "CLI"),
+            ("←→", "change"),
             ("Space", "enter dir"),
-            ("Enter", "launch"),
+            ("Enter", "confirm"),
             ("Esc", "cancel"),
         ],
         Focus::Agent => {
