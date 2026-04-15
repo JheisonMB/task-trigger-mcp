@@ -134,6 +134,9 @@ const ACT_ERROR: &[&str] = &[
     "Exhausted",
     "Imploded",
     "Melted",
+    "Recalibrating",
+    "Simplifying",
+    "Accepting",
 ];
 const ACT_THINKING: &[&str] = &[
     "Evaluating",
@@ -148,6 +151,8 @@ const ACT_THINKING: &[&str] = &[
     "Inferring",
     "Meditating on",
     "Hypothesizing",
+    "Optimizing",
+    "Visualizing",
 ];
 
 // ── Objects ───────────────────────────────────────────────────────
@@ -169,6 +174,8 @@ const OBJ_DEV: &[&str] = &[
     "the borrow checker",
     "the monad",
     "the linker",
+    "clean code",
+    "the refactor",
 ];
 const OBJ_SPACE: &[&str] = &[
     "cosmic background noise",
@@ -182,6 +189,7 @@ const OBJ_SPACE: &[&str] = &[
     "spacetime curvature",
     "void pointers",
     "the flux capacitor",
+    "the golden record",
 ];
 const OBJ_SCIENCE: &[&str] = &[
     "entropy levels",
@@ -255,6 +263,7 @@ const TWIST_FUNNY: &[&str] = &[
     "(allegedly)",
     "(standard procedure)",
     "(error 404: joke not found)",
+    "(oops)",
 ];
 const TWIST_POETIC: &[&str] = &[
     "across dimensions",
@@ -265,6 +274,7 @@ const TWIST_POETIC: &[&str] = &[
     "at the edge of reason",
     "in silence",
     "beyond the known",
+    "under the canopy",
 ];
 const TWIST_ADVICE: &[&str] = &[
     "— keep it simple",
@@ -276,6 +286,20 @@ const TWIST_ADVICE: &[&str] = &[
     "— fail fast",
     "— question assumptions",
     "— try turning it off and on",
+    "— take a deep breath",
+    "— it's just code",
+];
+const TWIST_CHILL: &[&str] = &[
+    "smoothly",
+    "with patience",
+    "calmly",
+    "just fine",
+    "as intended",
+    "all good",
+    "no rush",
+    "step by step",
+    "in harmony",
+    "perfectly",
 ];
 
 // ── Direct phrases (context-driven) ──────────────────────────────
@@ -291,6 +315,7 @@ const PH_IDLE: &[&str] = &[
     "dappled sunlight",
     "garbage collecting dead leaves",
     "waiting for a breeze (or a task)",
+    "watching the shadows move",
 ];
 const PH_SPAWN: &[&str] = &[
     "new growth detected",
@@ -300,6 +325,7 @@ const PH_SPAWN: &[&str] = &[
     "fresh leaves unfurling",
     "welcome to the grove",
     "git checkout -b new-branch-literally",
+    "planting a new seed",
 ];
 const PH_SUCCESS: &[&str] = &[
     "sunlight breaks through",
@@ -309,6 +335,8 @@ const PH_SUCCESS: &[&str] = &[
     "the canopy thrives",
     "fruits of labor",
     "100% test coverage (of my leaves)",
+    "blooming beautifully",
+    "the ecosystem is stable",
 ];
 const PH_ERROR: &[&str] = &[
     "storm damage reported",
@@ -318,6 +346,9 @@ const PH_ERROR: &[&str] = &[
     "roots need attention",
     "the canopy sways hard",
     "wildfire in the server room",
+    "nature finds a way",
+    "a leaf fell prematurely",
+    "rebalancing the soil",
 ];
 const PH_SCROLL: &[&str] = &[
     "exploring the layers",
@@ -674,11 +705,12 @@ impl Whimsg {
                 4 => OBJ_AI,
                 _ => OBJ_ABSURD,
             };
-            let style = self.rng.range(4);
+            let style = self.rng.range(5);
             let twists: &[&str] = match style {
                 0 => TWIST_FUNNY,
                 1 => TWIST_POETIC,
                 2 => TWIST_ADVICE,
+                3 => TWIST_CHILL,
                 _ => &["..."],
             };
 
@@ -697,47 +729,48 @@ impl Whimsg {
     fn pick_intent(&mut self, ctx: WhimContext) -> Intent {
         match ctx {
             WhimContext::Idle => match self.rng.range(10) {
-                0..=4 => Intent::Thinking,
-                5..=7 => Intent::Loading,
+                0..=3 => Intent::Thinking,
+                4..=6 => Intent::Loading,
                 _ => Intent::Success,
             },
             WhimContext::AgentSpawned => {
-                if self.rng.chance(0.7) {
+                if self.rng.chance(0.8) {
                     Intent::Success
                 } else {
                     Intent::Loading
                 }
             }
             WhimContext::AgentDone => {
-                if self.rng.chance(0.8) {
+                if self.rng.chance(0.9) {
                     Intent::Success
                 } else {
                     Intent::Thinking
                 }
             }
             WhimContext::AgentFailed => {
-                if self.rng.chance(0.8) {
-                    Intent::Error
-                } else {
-                    Intent::Thinking
+                // Balance errors: 40% error, 40% thinking (pondering), 20% hopeful/success
+                match self.rng.range(10) {
+                    0..=3 => Intent::Error,
+                    4..=7 => Intent::Thinking,
+                    _ => Intent::Success,
                 }
             }
             WhimContext::TaskRunning => {
-                if self.rng.chance(0.6) {
+                if self.rng.chance(0.7) {
                     Intent::Loading
                 } else {
                     Intent::Thinking
                 }
             }
             WhimContext::Scrolling => {
-                if self.rng.chance(0.6) {
+                if self.rng.chance(0.7) {
                     Intent::Thinking
                 } else {
                     Intent::Loading
                 }
             }
             WhimContext::Busy => {
-                if self.rng.chance(0.6) {
+                if self.rng.chance(0.7) {
                     Intent::Loading
                 } else {
                     Intent::Thinking

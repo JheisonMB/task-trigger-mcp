@@ -89,6 +89,7 @@ impl McpConfigRegistry {
     }
 
     /// Extract all MCP configs from detected platforms.
+    #[allow(dead_code)]
     pub fn extract_all(platforms: &[&crate::setup::Platform]) -> Result<Self> {
         let mut registry = Self::new();
         let home = dirs::home_dir().context("No home directory")?;
@@ -130,6 +131,7 @@ impl McpConfigRegistry {
     }
 
     /// Get servers that exist in one platform but not another.
+    #[allow(dead_code)]
     pub fn server_diff(&self, from: &str, to: &str) -> Vec<&McpServerEntry> {
         let from_servers: Vec<&McpServerEntry> = self
             .platforms

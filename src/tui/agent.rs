@@ -37,6 +37,101 @@ pub struct PromptEntry {
 /// Maximum number of prompt entries to keep in the ring buffer.
 const MAX_PROMPT_HISTORY: usize = 20;
 
+/// Sanitize a line of terminal output: strip ANSI escape sequences and
+/// control characters, but preserve printable text.
+fn sanitize_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_escape = false;
+
+    for ch in line.chars() {
+        if ch == '\x1b' {
+            // ESC — start of ANSI sequence
+            in_escape = true;
+        } else if in_escape {
+            // Inside escape sequence: keep going until we see a letter or ~
+            if ch.is_ascii_alphabetic() || ch == '~' || ch == 'K' || ch == 'H' {
+                in_escape = false;
+            }
+            // Drop the escape char and the sequence
+        } else if ch.is_control() && ch != '\t' {
+            // Drop other control chars except tab
+        } else {
+            out.push(ch);
+        }
+    }
+
+    out
+}
+
+/// Detect if a line is UI noise (box-drawing, dashed lines, prompts, status bars).
+/// These should be excluded from context transfer.
+fn is_ui_line(line: &str) -> bool {
+    let trimmed = line.trim();
+
+    // All box-drawing or dashes (plus whitespace/spaces)
+    if trimmed.is_empty() {
+        return true;
+    }
+
+    if trimmed.chars().all(|c| {
+        c == ' '
+            || matches!(
+                c,
+                '─' | '│'
+                    | '┌'
+                    | '┐'
+                    | '└'
+                    | '┘'
+                    | '├'
+                    | '┤'
+                    | '┬'
+                    | '┴'
+                    | '┼'
+                    | '╭'
+                    | '╮'
+                    | '╰'
+                    | '╯'
+                    | '━'
+                    | '┃'
+                    | '‐'
+                    | '–'
+                    | '—'
+                    | '−'
+                    | '═'
+                    | '║'
+                    | '╔'
+                    | '╗'
+                    | '╚'
+                    | '╝'
+                    | '╠'
+                    | '╣'
+                    | '╦'
+                    | '╩'
+                    | '╬'
+            )
+    }) {
+        return true;
+    }
+
+    // Common CLI prompts/status indicators
+    if trimmed.starts_with('❯')
+        || trimmed.starts_with('$')
+        || trimmed.starts_with('#')
+        || trimmed.starts_with('>')
+        || trimmed.starts_with("...")
+        || trimmed.contains("───")
+        || trimmed.starts_with("●")
+        || trimmed.starts_with("▌")
+        || trimmed.starts_with("▣")
+        || trimmed.starts_with('▹')
+        || trimmed.contains("Environment")
+        || trimmed.contains("remaining")
+    {
+        return true;
+    }
+
+    false
+}
 /// Read absolute buffer lines [from_abs, to_abs) from a vt100 parser.
 ///
 /// `set_scrollback(S)` shows the window at absolute positions
@@ -81,8 +176,12 @@ fn read_abs_range(
         for (i, line) in content.lines().enumerate() {
             let abs_idx = page_start_abs + i;
             if abs_idx == next_expected && abs_idx < to_abs {
-                collected.push(line.to_string());
-                next_expected += 1;
+                let sanitized = sanitize_line(line).trim_end().to_string();
+                // Skip lines that are only whitespace or box-drawing chars
+                if !sanitized.trim().is_empty() && !is_ui_line(&sanitized) {
+                    collected.push(sanitized);
+                    next_expected += 1;
+                }
             }
         }
 

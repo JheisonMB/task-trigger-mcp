@@ -235,18 +235,15 @@ impl App {
         let now = Utc::now();
         for run in &self.recent_runs {
             if let Some(finished) = run.finished_at {
-                // If a run failed or timed out in the last 2 minutes, notify event
-                if (now - finished).num_seconds() < 120 {
+                let seconds_since = (now - finished).num_seconds();
+                if seconds_since < 60 {
                     match run.status {
                         crate::domain::models::RunStatus::Error
                         | crate::domain::models::RunStatus::Timeout => {
                             self.whimsg.notify_event(WhimContext::AgentFailed);
                         }
                         crate::domain::models::RunStatus::Success => {
-                            // Only notify success if it was very recent (30s) to avoid noise
-                            if (now - finished).num_seconds() < 30 {
-                                self.whimsg.notify_event(WhimContext::AgentDone);
-                            }
+                            self.whimsg.notify_event(WhimContext::AgentDone);
                         }
                         _ => {}
                     }

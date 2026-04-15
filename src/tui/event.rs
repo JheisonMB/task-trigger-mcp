@@ -498,11 +498,18 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 // Mode selector (Interactive only)
                 1 if is_interactive => match code {
                     KeyCode::Left => {
-                        dialog.task_mode = super::app::NewTaskMode::Interactive;
+                        dialog.task_mode = match dialog.task_mode {
+                            super::app::NewTaskMode::Interactive => super::app::NewTaskMode::Resume,
+                            super::app::NewTaskMode::Resume => super::app::NewTaskMode::Interactive,
+                        };
                         dialog.selected_session = None;
                     }
                     KeyCode::Right => {
-                        dialog.task_mode = super::app::NewTaskMode::Resume;
+                        dialog.task_mode = match dialog.task_mode {
+                            super::app::NewTaskMode::Interactive => super::app::NewTaskMode::Resume,
+                            super::app::NewTaskMode::Resume => super::app::NewTaskMode::Interactive,
+                        };
+                        dialog.selected_session = None;
                     }
                     KeyCode::Enter
                         if matches!(dialog.task_mode, super::app::NewTaskMode::Resume)

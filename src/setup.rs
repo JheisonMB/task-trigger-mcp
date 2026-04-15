@@ -4,7 +4,7 @@
 //! by config file existence, configures MCP, starts daemon, installs service.
 
 use anyhow::{Context, Result};
-use inquire::MultiSelect;
+use inquire::{Confirm, MultiSelect, Select, Text};
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -86,6 +86,7 @@ pub fn is_configured() -> bool {
 }
 
 /// Fetch the platform registry (public for use by config commands).
+#[allow(dead_code)]
 pub fn fetch_registry_raw() -> Result<RegistryRaw> {
     fetch_registry()
 }
@@ -171,6 +172,16 @@ pub fn run_setup() -> Result<()> {
             for old_key in &p.deprecated_keys {
                 if let Ok(true) = remove_json_key(&path, servers_parent, old_key) {
                     println!("  🗑  Removed old '{}' from {}", old_key, p.name);
+                }
+            }
+            if let Ok(removed) =
+                sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys)
+            {
+                if removed > 0 {
+                    println!(
+                        "  \x1b[32m✓\x1b[0m Sanitized {} unsupported key(s) in {}",
+                        removed, p.name
+                    );
                 }
             }
         }
@@ -413,6 +424,113 @@ fn remove_json_key(path: &Path, parent_key: &str, key: &str) -> Result<bool> {
     Ok(false)
 }
 
+fn remove_json_nested_key(path: &Path, keys: &[&str]) -> Result<bool> {
+    if keys.is_empty() || !path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let clean = strip_jsonc_comments(&content);
+    let mut root: serde_json::Value = serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
+
+    let mut current = &mut root;
+    for key in &keys[..keys.len() - 1] {
+        let Some(next) = current.get_mut(*key) else {
+            return Ok(false);
+        };
+        current = next;
+    }
+
+    let Some(obj) = current.as_object_mut() else {
+        return Ok(false);
+    };
+
+    let removed = obj.remove(keys[keys.len() - 1]).is_some();
+    if removed {
+        std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    }
+    Ok(removed)
+}
+
+fn remove_toml_key(path: &Path, section: &str, entry_key: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let header = format!("[{section}.{entry_key}]");
+    let mut out = String::with_capacity(content.len());
+    let mut in_target_section = false;
+    let mut removed = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if trimmed == header {
+                in_target_section = true;
+                removed = true;
+                continue;
+            }
+            in_target_section = false;
+        }
+
+        if !in_target_section {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    if removed {
+        std::fs::write(path, out)?;
+    }
+    Ok(removed)
+}
+
+fn sanitize_existing_json_servers(
+    path: &Path,
+    servers_key: &[String],
+    unsupported_keys: &[String],
+) -> Result<usize> {
+    if unsupported_keys.is_empty() || !path.exists() {
+        return Ok(0);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let clean = strip_jsonc_comments(&content);
+    let mut root: serde_json::Value = serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
+
+    let mut current = &mut root;
+    for key in servers_key {
+        let Some(next) = current.get_mut(key) else {
+            return Ok(0);
+        };
+        current = next;
+    }
+
+    let Some(servers_obj) = current.as_object_mut() else {
+        return Ok(0);
+    };
+
+    let mut removed_count = 0usize;
+    for (_, server_cfg) in servers_obj.iter_mut() {
+        let Some(server_obj) = server_cfg.as_object_mut() else {
+            continue;
+        };
+        for key in unsupported_keys {
+            if server_obj.remove(key).is_some() {
+                removed_count += 1;
+            }
+        }
+    }
+
+    if removed_count > 0 {
+        std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
+    }
+
+    Ok(removed_count)
+}
+
 pub(crate) fn strip_jsonc_comments(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -577,6 +695,7 @@ pub fn run_setup_silent() -> Result<()> {
             for old_key in &p.deprecated_keys {
                 let _ = remove_json_key(&path, servers_parent, old_key);
             }
+            let _ = sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys);
         }
 
         let entry = sanitize_canopy_entry(&p.unsupported_keys, p.canopy_entry.clone());
@@ -719,14 +838,24 @@ fn extract_all_mcp_configs(
     for p in selected {
         let config_path = home.join(&p.config_path);
         if !config_path.exists() {
+            configs.push(crate::config::PlatformMcpConfig {
+                platform: p.name.clone(),
+                config_path: config_path.to_string_lossy().to_string(),
+                servers: Vec::new(),
+            });
             continue;
         }
-        if let Ok(cfg) = crate::config::McpConfigRegistry::extract_from_platform(
+        match crate::config::McpConfigRegistry::extract_from_platform(
             &p.name,
             &config_path,
             &p.mcp_servers_key,
         ) {
-            configs.push(cfg);
+            Ok(cfg) => configs.push(cfg),
+            Err(_) => configs.push(crate::config::PlatformMcpConfig {
+                platform: p.name.clone(),
+                config_path: config_path.to_string_lossy().to_string(),
+                servers: Vec::new(),
+            }),
         }
     }
     configs
@@ -757,151 +886,420 @@ fn collect_unique_servers(
     server_map.into_values().collect()
 }
 
-/// Run the interactive MCP sync step.
-fn run_sync_step(home: &Path, selected: &[&Platform]) -> Result<()> {
-    use inquire::Confirm;
-
-    println!();
-    let all_configs = extract_all_mcp_configs(home, selected);
+fn print_mcp_matrix(all_configs: &[crate::config::PlatformMcpConfig]) {
+    use std::collections::BTreeSet;
 
     if all_configs.is_empty() {
-        return Ok(());
+        return;
     }
 
-    // Show summary
-    println!("  MCP configurations:");
-    for cfg in &all_configs {
-        println!(
-            "    \x1b[1m{}\x1b[0m: {} server(s)",
-            cfg.platform,
-            cfg.servers.len()
-        );
-        for s in &cfg.servers {
-            let status = if s.enabled { "🟢" } else { "⚫" };
-            println!("      {} {}", status, s.name);
+    let all_servers: BTreeSet<String> = all_configs
+        .iter()
+        .flat_map(|c| c.servers.iter().map(|s| s.name.clone()))
+        .collect();
+
+    let server_col = 20usize;
+    let cell_col = 3usize;
+    let total_width = 2 + server_col + 1 + (all_configs.len() * (cell_col + 1));
+
+    println!("  MCP overview:");
+    println!(
+        "  {:<server_col$} {}",
+        "Server",
+        (1..=all_configs.len())
+            .map(|i| format!("{:>cell_col$}", i, cell_col = cell_col))
+            .collect::<Vec<_>>()
+            .join(" "),
+        server_col = server_col
+    );
+    println!("  {:─<width$}", "", width = total_width.max(34));
+    for server_name in &all_servers {
+        let mut row = format!("  {:<server_col$}", server_name, server_col = server_col);
+        for config in all_configs {
+            let has = config.servers.iter().any(|s| s.name == *server_name);
+            let icon = if has {
+                "\x1b[32m✓\x1b[0m"
+            } else {
+                "\x1b[31m✗\x1b[0m"
+            };
+            row.push_str(&format!(" {:>cell_col$}", icon, cell_col = cell_col));
         }
+        println!("{}", row);
     }
     println!();
-
-    let unique_servers = collect_unique_servers(&all_configs);
-
-    // Ask if user wants to sync
-    let do_sync = Confirm::new("Sync MCP configurations across platforms?")
-        .with_default(false)
-        .prompt()
-        .unwrap_or(false);
-
-    if !do_sync {
-        return Ok(());
+    println!("  Platforms:");
+    for (idx, cfg) in all_configs.iter().enumerate() {
+        println!("    {:>2}: {}", idx + 1, cfg.platform);
     }
+}
 
-    // Select which MCP servers to sync
+fn clear_wizard_screen() -> Result<()> {
+    print!("\x1b[2J\x1b[H");
+    io::stdout().flush()?;
+    Ok(())
+}
+
+fn wait_continue() -> Result<()> {
+    println!();
+    println!("  Press Enter to continue...");
+    let mut buf = String::new();
+    io::stdin().read_line(&mut buf)?;
+    println!();
+    Ok(())
+}
+
+#[derive(Default)]
+struct OperationSummary {
+    added: usize,
+    removed: usize,
+    skipped: usize,
+    failed: usize,
+}
+
+fn apply_upsert_to_platform(
+    platform: &Platform,
+    config_path: &Path,
+    server_name: &str,
+    config: &serde_json::Value,
+) -> Result<bool> {
+    let is_toml = platform.config_format.as_deref() == Some("toml");
+    if is_toml {
+        upsert_toml_key(
+            config_path,
+            &platform.mcp_servers_key[0],
+            server_name,
+            config,
+        )
+    } else {
+        let mut key_refs: Vec<&str> = platform
+            .mcp_servers_key
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        key_refs.push(server_name);
+        upsert_json_key(config_path, &key_refs, config)
+    }
+}
+
+fn apply_remove_to_platform(
+    platform: &Platform,
+    config_path: &Path,
+    server_name: &str,
+) -> Result<bool> {
+    let is_toml = platform.config_format.as_deref() == Some("toml");
+    if is_toml {
+        remove_toml_key(config_path, &platform.mcp_servers_key[0], server_name)
+    } else {
+        let mut key_refs: Vec<&str> = platform
+            .mcp_servers_key
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        key_refs.push(server_name);
+        remove_json_nested_key(config_path, &key_refs)
+    }
+}
+
+fn select_target_platforms(selected: &[&Platform]) -> Result<Vec<String>> {
+    let platform_names: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
+    let chosen = MultiSelect::new("Select target platforms:", platform_names)
+        .with_all_selected_by_default()
+        .prompt()
+        .unwrap_or_default();
+    Ok(chosen)
+}
+
+fn run_sync_action(
+    home: &Path,
+    selected: &[&Platform],
+    unique_servers: &[SyncConfigEntry],
+) -> Result<()> {
     let server_choices: Vec<String> = unique_servers
         .iter()
         .map(|s| s.server_name.clone())
         .collect();
     if server_choices.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No servers available to sync.");
         return Ok(());
     }
 
-    use inquire::MultiSelect;
     let selected_servers = MultiSelect::new("Select MCP servers to sync:", server_choices)
         .with_all_selected_by_default()
         .prompt()
         .unwrap_or_default();
 
     if selected_servers.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping sync.");
+        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping.");
         return Ok(());
     }
 
-    // Select target platforms (all pre-selected except the ones that already have all selected servers)
-    let platform_names: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
-
-    let target_platforms = MultiSelect::new("Select target platforms:", platform_names)
-        .with_all_selected_by_default()
-        .prompt()
-        .unwrap_or_default();
-
+    let target_platforms = select_target_platforms(selected)?;
     if target_platforms.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping sync.");
+        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
         return Ok(());
     }
 
-    // Apply sync
-    println!();
+    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
+        std::collections::BTreeMap::new();
+    let source_by_name: std::collections::HashMap<&str, &SyncConfigEntry> = unique_servers
+        .iter()
+        .map(|s| (s.server_name.as_str(), s))
+        .collect();
+
     for platform_name in &target_platforms {
         let platform = selected
             .iter()
-            .find(|p| &p.name == platform_name)
+            .find(|p| p.name == *platform_name)
             .expect("platform should exist");
-
         let config_path = home.join(&platform.config_path);
-        let is_toml = platform.config_format.as_deref() == Some("toml");
+        let summary = summaries.entry(platform_name.clone()).or_default();
 
         for server_name in &selected_servers {
-            let server = unique_servers
-                .iter()
-                .find(|s| &s.server_name == server_name)
-                .unwrap();
+            let Some(server) = source_by_name.get(server_name.as_str()) else {
+                summary.failed += 1;
+                continue;
+            };
 
-            // Skip if already configured
-            if let Ok(existing) = crate::config::McpConfigRegistry::extract_from_platform(
-                &platform.name,
-                &config_path,
-                &platform.mcp_servers_key,
-            ) {
-                if existing
-                    .servers
-                    .iter()
-                    .any(|s| s.name == server.server_name)
-                {
-                    println!(
-                        "  \x1b[33m⏭\x1b[0m  {} → {} already configured",
-                        server.server_name, platform_name
-                    );
-                    continue;
-                }
-            }
-
-            // Sanitize config for target platform
-            let config = sanitize_server_config_for_platform(
+            let sanitized = sanitize_server_config_for_platform(
                 &platform.unsupported_keys,
                 server.config.clone(),
             );
-
-            // Upsert the server config
-            let result = if is_toml {
-                crate::setup::upsert_toml_key(
-                    &config_path,
-                    &platform.mcp_servers_key[0],
-                    &server.server_name,
-                    &config,
-                )
-            } else {
-                let mut key_refs: Vec<&str> = platform
-                    .mcp_servers_key
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect();
-                key_refs.push(&server.server_name);
-                crate::setup::upsert_json_key(&config_path, &key_refs, &config)
-            };
-
-            match result {
-                Ok(true) => println!(
-                    "  \x1b[32m✅\x1b[0m {} → {}",
-                    server.server_name, platform_name
-                ),
-                Ok(false) => println!(
-                    "  \x1b[33m⏭\x1b[0m  {} → {} already configured",
-                    server.server_name, platform_name
-                ),
-                Err(e) => println!(
-                    "  \x1b[31m❌\x1b[0m {} → {}: {}",
-                    server.server_name, platform_name, e
-                ),
+            match apply_upsert_to_platform(platform, &config_path, server_name, &sanitized) {
+                Ok(true) => summary.added += 1,
+                Ok(false) => summary.skipped += 1,
+                Err(_) => summary.failed += 1,
             }
+        }
+    }
+
+    println!();
+    println!("  Sync summary:");
+    for (platform, s) in summaries {
+        println!(
+            "    {} -> added: {}, skipped: {}, failed: {}",
+            platform, s.added, s.skipped, s.failed
+        );
+    }
+    println!();
+    Ok(())
+}
+
+fn run_add_action(
+    home: &Path,
+    selected: &[&Platform],
+    unique_servers: &[SyncConfigEntry],
+) -> Result<()> {
+    let server_name = Text::new("New MCP server name:")
+        .with_validator(|input: &str| {
+            if input.trim().is_empty() {
+                Ok(inquire::validator::Validation::Invalid(
+                    "Name cannot be empty".into(),
+                ))
+            } else {
+                Ok(inquire::validator::Validation::Valid)
+            }
+        })
+        .prompt()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if server_name.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  Invalid name, skipping.");
+        return Ok(());
+    }
+
+    let source_mode = Select::new(
+        "Config source:",
+        vec![
+            "Copy from existing server".to_string(),
+            "Paste JSON config".to_string(),
+        ],
+    )
+    .prompt()
+    .unwrap_or_else(|_| "Copy from existing server".to_string());
+
+    let base_config = if source_mode == "Paste JSON config" {
+        let raw = Text::new("Paste server config as JSON object:")
+            .with_initial_value("{}")
+            .prompt()
+            .unwrap_or_else(|_| "{}".to_string());
+        let parsed: serde_json::Value = serde_json::from_str(raw.trim())
+            .map_err(|e| anyhow::anyhow!("Invalid JSON config: {}", e))?;
+        if !parsed.is_object() {
+            return Err(anyhow::anyhow!("Config must be a JSON object"));
+        }
+        parsed
+    } else {
+        let source_choices: Vec<String> = unique_servers
+            .iter()
+            .map(|s| s.server_name.clone())
+            .collect();
+        if source_choices.is_empty() {
+            return Err(anyhow::anyhow!(
+                "No existing servers available to copy from"
+            ));
+        }
+        let template_name = Select::new("Template server:", source_choices)
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Selection cancelled: {}", e))?;
+        unique_servers
+            .iter()
+            .find(|s| s.server_name == template_name)
+            .map(|s| s.config.clone())
+            .ok_or_else(|| anyhow::anyhow!("Template server not found"))?
+    };
+
+    let target_platforms = select_target_platforms(selected)?;
+    if target_platforms.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
+        return Ok(());
+    }
+
+    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
+        std::collections::BTreeMap::new();
+    for platform_name in &target_platforms {
+        let platform = selected
+            .iter()
+            .find(|p| p.name == *platform_name)
+            .expect("platform should exist");
+        let config_path = home.join(&platform.config_path);
+        let summary = summaries.entry(platform_name.clone()).or_default();
+
+        let sanitized =
+            sanitize_server_config_for_platform(&platform.unsupported_keys, base_config.clone());
+        match apply_upsert_to_platform(platform, &config_path, &server_name, &sanitized) {
+            Ok(true) => summary.added += 1,
+            Ok(false) => summary.skipped += 1,
+            Err(_) => summary.failed += 1,
+        }
+    }
+
+    println!();
+    println!("  Add summary (server: {}):", server_name);
+    for (platform, s) in summaries {
+        println!(
+            "    {} -> added: {}, skipped: {}, failed: {}",
+            platform, s.added, s.skipped, s.failed
+        );
+    }
+    println!();
+    Ok(())
+}
+
+fn run_remove_action(
+    home: &Path,
+    selected: &[&Platform],
+    unique_servers: &[SyncConfigEntry],
+) -> Result<()> {
+    let server_choices: Vec<String> = unique_servers
+        .iter()
+        .map(|s| s.server_name.clone())
+        .collect();
+    if server_choices.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No servers available to remove.");
+        return Ok(());
+    }
+
+    let selected_servers = MultiSelect::new("Select MCP servers to remove:", server_choices)
+        .prompt()
+        .unwrap_or_default();
+    if selected_servers.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping.");
+        return Ok(());
+    }
+
+    let confirmed = Confirm::new("Apply deletion on selected platforms?")
+        .with_default(false)
+        .prompt()
+        .unwrap_or(false);
+    if !confirmed {
+        println!("  \x1b[33m⏭\x1b[0m  Deletion cancelled.");
+        return Ok(());
+    }
+
+    let target_platforms = select_target_platforms(selected)?;
+    if target_platforms.is_empty() {
+        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
+        return Ok(());
+    }
+
+    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
+        std::collections::BTreeMap::new();
+    for platform_name in &target_platforms {
+        let platform = selected
+            .iter()
+            .find(|p| p.name == *platform_name)
+            .expect("platform should exist");
+        let config_path = home.join(&platform.config_path);
+        let summary = summaries.entry(platform_name.clone()).or_default();
+
+        for server_name in &selected_servers {
+            match apply_remove_to_platform(platform, &config_path, server_name) {
+                Ok(true) => summary.removed += 1,
+                Ok(false) => summary.skipped += 1,
+                Err(_) => summary.failed += 1,
+            }
+        }
+    }
+
+    println!();
+    println!("  Remove summary:");
+    for (platform, s) in summaries {
+        println!(
+            "    {} -> removed: {}, skipped: {}, failed: {}",
+            platform, s.removed, s.skipped, s.failed
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// Run the interactive MCP setup/management step.
+fn run_sync_step(home: &Path, selected: &[&Platform]) -> Result<()> {
+    if selected.is_empty() {
+        return Ok(());
+    }
+
+    loop {
+        clear_wizard_screen()?;
+        println!("  \x1b[1mMCP Manager\x1b[0m");
+        println!("  ─────────────────────────────────────────────");
+        println!();
+
+        let all_configs = extract_all_mcp_configs(home, selected);
+        if all_configs.is_empty() {
+            return Ok(());
+        }
+        let unique_servers = collect_unique_servers(&all_configs);
+        print_mcp_matrix(&all_configs);
+
+        let action = Select::new(
+            "MCP action:",
+            vec![
+                "Sync servers across platforms".to_string(),
+                "Add server to platforms".to_string(),
+                "Remove server from platforms".to_string(),
+                "Continue setup".to_string(),
+            ],
+        )
+        .prompt()
+        .unwrap_or_else(|_| "Continue setup".to_string());
+
+        match action.as_str() {
+            "Sync servers across platforms" => {
+                run_sync_action(home, selected, &unique_servers)?;
+                wait_continue()?;
+            }
+            "Add server to platforms" => {
+                run_add_action(home, selected, &unique_servers)?;
+                wait_continue()?;
+            }
+            "Remove server from platforms" => {
+                run_remove_action(home, selected, &unique_servers)?;
+                wait_continue()?;
+            }
+            _ => break,
         }
     }
 

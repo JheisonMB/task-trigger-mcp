@@ -51,32 +51,15 @@ enum Commands {
         #[command(subcommand)]
         action: DaemonAction,
     },
-    /// Sync MCP configurations across platforms (extract, compare, apply).
-    Sync {
-        #[command(subcommand)]
-        action: SyncAction,
-    },
     /// Diagnose environment and canopy health.
     Doctor,
     /// Run in stdio MCP transport mode (legacy/fallback for clients without SSE).
     Stdio,
-    /// Launch the Agent Hub TUI.
-    Tui,
     /// Run the setup wizard (configure MCP, start daemon, install service).
     Setup,
     /// Start the MCP server in foreground (used internally by daemon start).
     #[command(hide = true)]
     Serve,
-}
-
-#[derive(Subcommand)]
-enum SyncAction {
-    /// Extract MCP configurations from all platforms.
-    Extract,
-    /// Compare MCP configurations across platforms.
-    Compare,
-    /// Sync selected MCPs to target platforms.
-    Apply,
 }
 
 #[derive(Subcommand)]
@@ -103,20 +86,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
-        Some(Commands::Sync { action }) => handle_sync_action(action).await,
         Some(Commands::Doctor) => handle_doctor().await,
         Some(Commands::Stdio) => handle_stdio().await,
         Some(Commands::Serve) => handle_http_server(cli.port).await,
-        Some(Commands::Tui) => {
-            // Auto-setup if not configured
-            if setup::needs_setup() {
-                setup::run_setup_silent()?;
-            }
-            // Background daily registry refresh
-            setup::maybe_refresh_registry();
-            tui::run_tui()?;
-            Ok(())
-        }
         Some(Commands::Setup) => {
             setup::run_setup()?;
             Ok(())
@@ -154,137 +126,6 @@ async fn shutdown_signal() {
     {
         ctrl_c.await.ok();
     }
-}
-
-/// Handle MCP configuration actions.
-async fn handle_sync_action(action: SyncAction) -> anyhow::Result<()> {
-    use anyhow::Context;
-    use config::McpConfigRegistry;
-    use std::io;
-
-    let _home = dirs::home_dir().context("No home directory")?;
-    print!("  Fetching platform registry... ");
-    io::Write::flush(&mut io::stdout())?;
-    let registry = setup::fetch_registry_raw()?;
-    println!("\x1b[32m✓\x1b[0m {} platform(s)", registry.platforms.len());
-    println!();
-
-    match action {
-        SyncAction::Extract => {
-            println!("  Extracting MCP configurations...\n");
-
-            let platforms: Vec<_> = registry.platforms.iter().collect();
-            let mcp_registry = McpConfigRegistry::extract_all(&platforms)?;
-
-            for platform_config in &mcp_registry.platforms {
-                println!(
-                    "  \x1b[32m✓\x1b[0m {} ({} servers)",
-                    platform_config.platform,
-                    platform_config.servers.len()
-                );
-                for server in &platform_config.servers {
-                    let status = if server.enabled { "🟢" } else { "⚫" };
-                    println!("      {} {}", status, server.name);
-                }
-            }
-
-            if mcp_registry.platforms.is_empty() {
-                println!("  \x1b[33m⏭\x1b[0m  No platforms with config files found.");
-            }
-        }
-
-        SyncAction::Compare => {
-            println!("  Comparing MCP configurations across platforms...\n");
-
-            let platforms: Vec<_> = registry.platforms.iter().collect();
-            let mcp_registry = McpConfigRegistry::extract_all(&platforms)?;
-
-            let all_configs = &mcp_registry.platforms;
-            if all_configs.len() < 2 {
-                println!("  Need at least 2 platforms with configs to compare.");
-                return Ok(());
-            }
-
-            let all_servers: std::collections::HashSet<String> = all_configs
-                .iter()
-                .flat_map(|c| c.servers.iter().map(|s| s.name.clone()))
-                .collect();
-
-            let max_name_len = all_configs
-                .iter()
-                .map(|c| c.platform.len())
-                .max()
-                .unwrap_or(8);
-
-            println!(
-                "  {:<20} {}",
-                "Server",
-                all_configs
-                    .iter()
-                    .map(|c| format!("{:^width$}", c.platform, width = max_name_len))
-                    .collect::<Vec<_>>()
-                    .join("  ")
-            );
-            println!("  {:─<50}", "");
-
-            for server_name in &all_servers {
-                let mut row = format!("  {:<20}", server_name);
-                for config in all_configs {
-                    let has = config.servers.iter().any(|s| s.name == *server_name);
-                    let icon = if has {
-                        "\x1b[32m✓\x1b[0m"
-                    } else {
-                        "\x1b[31m✗\x1b[0m"
-                    };
-                    row.push_str(&format!("  {:^width$}", icon, width = max_name_len));
-                }
-                println!("{}", row);
-            }
-            println!();
-
-            // Show diff summary
-            for (i, config) in all_configs.iter().enumerate() {
-                for other in &all_configs[i + 1..] {
-                    let only_in_from = mcp_registry.server_diff(&config.platform, &other.platform);
-                    let only_in_to = mcp_registry.server_diff(&other.platform, &config.platform);
-
-                    if !only_in_from.is_empty() || !only_in_to.is_empty() {
-                        println!("  \x1b[1m{} vs {}\x1b[0m", config.platform, other.platform);
-                        if !only_in_from.is_empty() {
-                            println!(
-                                "    Only in {}: {}",
-                                config.platform,
-                                only_in_from
-                                    .iter()
-                                    .map(|s| s.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-                        if !only_in_to.is_empty() {
-                            println!(
-                                "    Only in {}: {}",
-                                other.platform,
-                                only_in_to
-                                    .iter()
-                                    .map(|s| s.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            );
-                        }
-                        println!();
-                    }
-                }
-            }
-        }
-
-        SyncAction::Apply => {
-            println!("  MCP configuration sync — interactive mode\n");
-            println!("  This feature will be available in a future release.");
-        }
-    }
-
-    Ok(())
 }
 
 /// Start the Streamable HTTP MCP server in foreground.

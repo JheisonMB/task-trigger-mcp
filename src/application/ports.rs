@@ -1,8 +1,3 @@
-//! Port definitions (traits) for the application layer.
-//!
-//! These traits define the contracts that infrastructure adapters must fulfill.
-//! The application layer programs against these abstractions, not concrete types.
-
 use anyhow::Result;
 
 use crate::domain::models::{BackgroundAgent, RunLog, RunStatus, Watcher};
