@@ -1,63 +1,5 @@
-//! Domain validation rules for identifiers, prompts, and paths.
+use super::*;
 
-pub const MAX_ID_LENGTH: usize = 64;
-pub const MAX_PROMPT_LENGTH: usize = 50_000;
-pub const MAX_PATH_LENGTH: usize = 4096;
-
-/// Validate an identifier: non-empty, max length, alphanumeric + hyphens/underscores.
-pub fn validate_id(id: &str) -> Result<(), String> {
-    if id.is_empty() {
-        return Err("ID cannot be empty".to_string());
-    }
-    if id.len() > MAX_ID_LENGTH {
-        return Err(format!(
-            "ID exceeds maximum length of {MAX_ID_LENGTH} characters"
-        ));
-    }
-    if !id
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(
-            "ID must contain only alphanumeric characters, hyphens, and underscores".to_string(),
-        );
-    }
-    Ok(())
-}
-
-/// Validate a prompt string: non-empty, max length.
-pub fn validate_prompt(prompt: &str) -> Result<(), String> {
-    if prompt.trim().is_empty() {
-        return Err("Prompt cannot be empty".to_string());
-    }
-    if prompt.len() > MAX_PROMPT_LENGTH {
-        return Err(format!(
-            "Prompt exceeds maximum length of {MAX_PROMPT_LENGTH} characters"
-        ));
-    }
-    Ok(())
-}
-
-/// Validate a path string: non-empty, max length, absolute.
-pub fn validate_watch_path(path: &str) -> Result<(), String> {
-    if path.trim().is_empty() {
-        return Err("Path cannot be empty".to_string());
-    }
-    if path.len() > MAX_PATH_LENGTH {
-        return Err(format!(
-            "Path exceeds maximum length of {MAX_PATH_LENGTH} characters"
-        ));
-    }
-    if !std::path::Path::new(path).is_absolute() {
-        return Err("Path must be absolute".to_string());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-#[path = "validation_tests.rs"]
-mod tests {
-    use super::*;
 
     // ── validate_id ───────────────────────────────────────────────
 
@@ -139,4 +81,3 @@ mod tests {
         let long = format!("/{}", "a".repeat(MAX_PATH_LENGTH));
         assert!(validate_watch_path(&long).is_err());
     }
-}

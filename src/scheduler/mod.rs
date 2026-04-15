@@ -67,6 +67,7 @@ pub fn validate_cron(expr: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "tests.rs"]
 mod tests {
     use super::*;
 

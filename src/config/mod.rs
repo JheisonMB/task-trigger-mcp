@@ -1,5 +1,3 @@
-
-
 pub mod skills;
 
 use anyhow::{Context, Result};
