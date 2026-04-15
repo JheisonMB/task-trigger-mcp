@@ -601,9 +601,16 @@ fn draw_ctx_picker(frame: &mut Frame, app: &App) {
     };
 
     let agents = &app.interactive_agents;
-    let visible = agents.len().min(8) as u16;
-    let height = 6 + visible.max(1);
-    let area = centered_rect(60, height, frame.area());
+    // 3 lines per agent card (id / cli / dir) + 1 blank between cards
+    let card_h = 3u16;
+    let visible_cards = agents.len().min(5) as u16;
+    let list_h = if agents.is_empty() {
+        1
+    } else {
+        visible_cards * card_h + visible_cards.saturating_sub(1)
+    };
+    let height = 4 + list_h + 2; // top blank + list + hint + bottom blank
+    let area = centered_rect(66, height, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -624,38 +631,81 @@ fn draw_ctx_picker(frame: &mut Frame, app: &App) {
         )));
     } else {
         for (i, agent) in agents.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::from(""));
+            }
             let is_sel = i == modal.picker_selected;
             let is_src = i == modal.source_agent_idx;
-            let label = if is_src {
-                format!(
-                    "  {} {}  (source)",
-                    if is_sel { "›" } else { " " },
-                    agent.id
-                )
-            } else {
-                format!("  {} {}", if is_sel { "›" } else { " " }, agent.id)
-            };
-            let style = if is_sel {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD)
+
+            let bar_color = if is_src { DIM } else { ACCENT };
+            let id_color = if is_sel {
+                Color::Black
             } else if is_src {
-                Style::default().fg(DIM)
+                DIM
             } else {
-                Style::default().fg(Color::White)
+                Color::White
             };
-            lines.push(Line::from(Span::styled(label, style)));
+            let bg = if is_sel {
+                ACCENT
+            } else {
+                Color::Rgb(15, 25, 15)
+            };
+
+            let cursor = if is_sel { "›" } else { " " };
+            let src_tag = if is_src { "  (source)" } else { "" };
+
+            // Line 1: cursor + id + (source) tag
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", cursor),
+                    Style::default().fg(bar_color).bg(bg),
+                ),
+                Span::styled(
+                    format!("{}{}", agent.id, src_tag),
+                    Style::default()
+                        .fg(id_color)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+
+            // Line 2: type · cli
+            lines.push(Line::from(vec![
+                Span::styled("    ", Style::default().bg(bg)),
+                Span::styled(
+                    format!("pty · {}", agent.cli.as_str()),
+                    Style::default().fg(DIM).bg(bg),
+                ),
+            ]));
+
+            // Line 3: working dir (truncated)
+            let dir = truncate_path(&agent.working_dir, inner.width.saturating_sub(6) as usize);
+            lines.push(Line::from(vec![
+                Span::styled("    ", Style::default().bg(bg)),
+                Span::styled(dir, Style::default().fg(Color::Cyan).bg(bg)),
+            ]));
         }
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  ↑↓: navigate · Enter: transfer · Esc: back",
+        "  ↑↓ navigate · Enter transfer · Esc back",
         Style::default().fg(DIM),
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Shorten a file-system path to fit `max_chars`, keeping the tail.
+/// e.g. "/home/user/projects/very/long/path" → "…/very/long/path"
+fn truncate_path(path: &str, max_chars: usize) -> String {
+    if path.len() <= max_chars {
+        return path.to_string();
+    }
+    let trimmed = &path[path.len() - max_chars.saturating_sub(1)..];
+    // advance to the next '/' so we don't cut mid-component
+    let start = trimmed.find('/').map(|p| p + 1).unwrap_or(0);
+    format!("…/{}", &trimmed[start..])
 }
 
 // ── suppress unused import warning until all variants are referenced ──
