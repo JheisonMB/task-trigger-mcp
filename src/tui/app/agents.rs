@@ -1,6 +1,29 @@
 use super::{AgentEntry, App, Focus};
 use crate::tui::agent::AgentStatus;
 
+/// Strip ANSI escape sequences from a string for plain-text display.
+fn strip_ansi_codes(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip CSI sequences: ESC [ ... final_byte
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() || next == 'm' {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 impl App {
     pub fn tick_brians_brain(&mut self) {
         if self.focus != Focus::Home {
@@ -132,12 +155,39 @@ impl App {
                 }
                 AgentStatus::Exited(code) => {
                     let _ = self.db.finish_interactive_session(&agent_id, code);
+                    // Capture last PTY output for error diagnosis
+                    let last_lines = self.interactive_agents[old_idx].last_output_lines(5);
+                    let output_snippet = if last_lines.is_empty() {
+                        String::new()
+                    } else {
+                        // Strip ANSI escape codes for notification readability
+                        let clean: Vec<String> = last_lines
+                            .iter()
+                            .map(|l| strip_ansi_codes(l))
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        if clean.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", clean.join("\n"))
+                        }
+                    };
+                    tracing::warn!(
+                        "Agent '{agent_id}' ({}) exited with code {code}.{}",
+                        self.interactive_agents[old_idx].cli.as_str(),
+                        if output_snippet.is_empty() { "" } else { &output_snippet }
+                    );
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
                     if self.notifications_enabled {
+                        let msg = if output_snippet.is_empty() {
+                            format!("{agent_id} exited with code {code}")
+                        } else {
+                            format!("{agent_id} exited ({code}){output_snippet}")
+                        };
                         crate::domain::notification::send_notification(
                             "Canopy — agent failed",
-                            &format!("{agent_id} exited with code {code}"),
+                            &msg,
                         );
                     }
                 }

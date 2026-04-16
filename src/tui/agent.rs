@@ -575,6 +575,36 @@ impl InteractiveAgent {
         }
     }
 
+    /// Extract the last N non-empty lines from the PTY output.
+    /// Useful for capturing error messages from agents that exit immediately.
+    pub fn last_output_lines(&self, n: usize) -> Vec<String> {
+        let Ok(parser) = self.vt.lock() else {
+            return Vec::new();
+        };
+        let screen = parser.screen();
+        let rows = screen.size().0;
+        let mut lines: Vec<String> = Vec::new();
+        for row in 0..rows {
+            let line = screen.rows_formatted(row, row + 1).next().unwrap_or_default();
+            let text = String::from_utf8_lossy(&line).trim().to_string();
+            if !text.is_empty() {
+                lines.push(text);
+            }
+        }
+        // Also check scrollback
+        let scrollback = screen.scrollback();
+        if scrollback > 0 {
+            let saved = parser.screen().rows_formatted(0, 0);
+            for line in saved {
+                let text = String::from_utf8_lossy(&line).trim().to_string();
+                if !text.is_empty() {
+                    lines.push(text);
+                }
+            }
+        }
+        lines.into_iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+    }
+
     /// Kill the agent process.
     pub fn kill(&mut self) {
         if let Ok(mut child) = self.child.lock() {
