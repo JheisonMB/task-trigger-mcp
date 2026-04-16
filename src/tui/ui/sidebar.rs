@@ -170,12 +170,9 @@ fn draw_sidebar_card(
         }
     };
 
-    // Detect if waiting for input - use multiple signals for better detection:
-    // 1. is_waiting_for_input() - PTY heuristic (cursor on last row + idle)
-    // 2. Running interactive agents are usually waiting for user input
+    // Detect if waiting for input - primary detection via PTY heuristics
     let is_waiting = if let AgentEntry::Interactive(idx) = agent {
-        let a = &app.interactive_agents[*idx];
-        a.is_waiting_for_input() || matches!(a.status, AgentStatus::Running)
+        app.interactive_agents[*idx].is_waiting_for_input()
     } else {
         false
     };

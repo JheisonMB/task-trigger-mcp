@@ -36,7 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.sidebar_visible {
         let [sidebar, panel] =
-            Layout::horizontal([Constraint::Length(26), Constraint::Min(0)]).areas(body);
+            Layout::horizontal([Constraint::Length(29), Constraint::Min(0)]).areas(body);
         header::draw_header(frame, header_area, app);
         sidebar::draw_sidebar(frame, sidebar, app);
         panel::draw_log_panel(frame, panel, app);

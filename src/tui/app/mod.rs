@@ -295,18 +295,16 @@ impl App {
                     // Error keywords — specific phrases to reduce false positives.
                     // Avoid single "ERROR" or "FAILED" which appear in normal agent output
                     // (e.g. "no errors found", "error handling", "failed test cases: 0").
-                    let is_error = log_up.contains("FATAL ERROR")
-                        || log_up.contains("UNHANDLED ERROR")
-                        || log_up.contains("UNCAUGHT EXCEPTION")
-                        || log_up.contains("EXCEPTION:")
-                        || log_up.contains("PANIC:")
+                    let is_error = log_up.contains("ERROR")
+                        || log_up.contains("FAILED")
+                        || log_up.contains("EXCEPTION")
+                        || log_up.contains("PANIC")
                         || log_up.contains("SEGFAULT")
                         || log_up.contains("TIMED OUT")
                         || log_up.contains("CONNECTION REFUSED")
                         || log_up.contains("PERMISSION DENIED")
                         || log_up.contains("HALTED")
                         // Spanish
-                        || log_up.contains("ERROR FATAL")
                         || log_up.contains("PROBLEMA")
                         || log_up.contains("FALLO")
                         || log_up.contains("FALLANDO");
