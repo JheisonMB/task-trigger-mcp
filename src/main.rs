@@ -94,9 +94,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            // Auto-setup if not configured
+            // First-run: launch interactive setup wizard
             if setup::needs_setup() {
-                setup::run_setup_silent()?;
+                setup::run_setup()?;
             }
             // Background daily registry refresh
             setup::maybe_refresh_registry();

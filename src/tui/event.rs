@@ -411,42 +411,64 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
         return Ok(());
     }
 
+    {
+        let Some(dialog) = &mut app.new_agent_dialog else {
+            return Ok(());
+        };
+
+        // Session picker intercepts ALL keys when open
+        if dialog.session_picker_open {
+            match code {
+                KeyCode::Down => {
+                    let len = dialog.session_entries.len();
+                    if len > 0 {
+                        dialog.session_picker_idx = (dialog.session_picker_idx + 1) % len;
+                    }
+                }
+                KeyCode::Up => {
+                    let len = dialog.session_entries.len();
+                    if len > 0 {
+                        dialog.session_picker_idx =
+                            dialog.session_picker_idx.checked_sub(1).unwrap_or(len - 1);
+                    }
+                }
+                KeyCode::Enter => {
+                    dialog.confirm_session_pick();
+                }
+                KeyCode::Esc | KeyCode::Backspace => {
+                    dialog.session_picker_open = false;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+    }
+
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Enter => {
-            let _ = app.launch_new_agent();
+            // If on mode field in Resume mode with session picker, open picker instead of launching
+            let should_pick = app.new_agent_dialog.as_ref().is_some_and(|d| {
+                let is_interactive =
+                    matches!(d.task_type, super::app::NewTaskType::Interactive);
+                let mode_field: usize = 1;
+                is_interactive
+                    && d.field == mode_field
+                    && matches!(d.task_mode, super::app::NewTaskMode::Resume)
+                    && d.has_session_picker()
+            });
+            if should_pick {
+                if let Some(dialog) = &mut app.new_agent_dialog {
+                    dialog.open_session_picker();
+                }
+            } else {
+                let _ = app.launch_new_agent();
+            }
         }
         _ => {
             let Some(dialog) = &mut app.new_agent_dialog else {
                 return Ok(());
             };
-
-            // Session picker intercepts all keys when open
-            if dialog.session_picker_open {
-                match code {
-                    KeyCode::Down => {
-                        let len = dialog.session_entries.len();
-                        if len > 0 {
-                            dialog.session_picker_idx = (dialog.session_picker_idx + 1) % len;
-                        }
-                    }
-                    KeyCode::Up => {
-                        let len = dialog.session_entries.len();
-                        if len > 0 {
-                            dialog.session_picker_idx =
-                                dialog.session_picker_idx.checked_sub(1).unwrap_or(len - 1);
-                        }
-                    }
-                    KeyCode::Enter => {
-                        dialog.confirm_session_pick();
-                    }
-                    KeyCode::Esc | KeyCode::Backspace => {
-                        dialog.session_picker_open = false;
-                    }
-                    _ => {}
-                }
-                return Ok(());
-            }
 
             let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let name_field: usize = 2; // interactive only
@@ -511,12 +533,6 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             super::app::NewTaskMode::Resume => super::app::NewTaskMode::Interactive,
                         };
                         dialog.selected_session = None;
-                    }
-                    KeyCode::Enter
-                        if matches!(dialog.task_mode, super::app::NewTaskMode::Resume)
-                            && dialog.has_session_picker() =>
-                    {
-                        dialog.open_session_picker();
                     }
                     KeyCode::Delete | KeyCode::Backspace
                         if matches!(dialog.task_mode, super::app::NewTaskMode::Resume) =>
@@ -638,7 +654,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     },
                     _ => {}
                 },
-                // Directory browser — ↑↓ navigate entries, ↑ at top exits up
+                // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
                 n if n == dir_field => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
@@ -654,8 +670,11 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             dialog.dir_selected += 1;
                         }
                     }
-                    KeyCode::Char(' ') => {
+                    KeyCode::Right | KeyCode::Char(' ') => {
                         dialog.navigate_to_selected();
+                    }
+                    KeyCode::Left => {
+                        dialog.go_up();
                     }
                     _ => {}
                 },

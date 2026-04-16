@@ -476,6 +476,8 @@ impl App {
                 accent,
                 Some(&session.name),
                 &existing_ids,
+                None,
+                None,
             ) {
                 Ok(agent) => {
                     let _ = self.db.insert_interactive_session(

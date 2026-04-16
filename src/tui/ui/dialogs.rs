@@ -384,7 +384,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         let browser_label = if is_watcher {
             "  Browse  (↑↓ navigate, Space to select):"
         } else {
-            "  Directories  (↑↓ navigate, Space to enter):"
+            "  Directories  (↑↓ navigate  → enter  ← go up):"
         };
         // Browser label uses the selected CLI's accent color for emphasis
         let browser_field_idx = if is_watcher { extra_field } else { dir_field };
@@ -428,13 +428,13 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let help_text = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => {
-            "  ↑↓: fields · ←→: CLI/mode · Space: navigate dirs · Enter: launch · Esc: cancel"
+            "  ↑↓: fields · ←→: CLI/mode  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
         }
         crate::tui::app::NewTaskType::Scheduled => {
-            "  ↑↓: fields · ←→: type/CLI · Space: navigate dirs · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI  (in dirs: → enter  ← up) · Enter: create · Esc: cancel"
         }
         crate::tui::app::NewTaskType::Watcher => {
-            "  ↑↓: fields · ←→: type/CLI · Space: navigate dirs · Enter: create · Esc: cancel"
+            "  ↑↓: fields · ←→: type/CLI · Space: select · Enter: create · Esc: cancel"
         }
     };
 

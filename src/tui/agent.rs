@@ -80,6 +80,8 @@ fn is_decoration_char(c: char) -> bool {
 ///
 /// Catches: box-drawing borders, block-element bars, CLI prompts,
 /// status bars, tool-use indicators, MCP messages, and similar chrome.
+/// Lines with box-drawing borders that contain text content between them
+/// are NOT treated as UI lines — the content is extracted by `strip_borders`.
 fn is_ui_line(line: &str) -> bool {
     let trimmed = line.trim();
 
@@ -92,16 +94,18 @@ fn is_ui_line(line: &str) -> bool {
         return true;
     }
 
-    // Lines that START with │ (box-drawing vertical border — e.g. │ text │)
+    // Lines with box-drawing borders: extract inner text and check if it's empty.
+    // TUI agents (opencode, claude, copilot) render responses inside │ borders.
     if trimmed.starts_with('│') || trimmed.starts_with('┃') || trimmed.starts_with('║') {
-        return true;
+        let inner = strip_borders(trimmed);
+        // If inner is empty after stripping, it's a purely decorative border
+        return inner.trim().is_empty();
     }
 
     // Common CLI prompts/status indicators
     if trimmed.starts_with('❯')
         || trimmed.starts_with('$')
         || trimmed.starts_with('#')
-        || trimmed.starts_with('>')
         || trimmed.starts_with("...")
         || trimmed.contains("───")
     {
@@ -132,6 +136,27 @@ fn is_ui_line(line: &str) -> bool {
     }
 
     false
+}
+
+/// Strip box-drawing border characters from the beginning and end of a line.
+/// E.g. `│ Hello world │` → `Hello world`.
+fn strip_borders(line: &str) -> &str {
+    let trimmed = line.trim();
+    // Strip leading border char(s) + whitespace
+    let start = trimmed
+        .char_indices()
+        .find(|(_, c)| !is_decoration_char(*c) && *c != ' ')
+        .map(|(i, _)| i)
+        .unwrap_or(trimmed.len());
+    let inner = &trimmed[start..];
+    // Strip trailing border char(s) + whitespace
+    let end = inner
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !is_decoration_char(*c) && *c != ' ')
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    &inner[..end]
 }
 /// Read absolute buffer lines [from_abs, to_abs) from a vt100 parser.
 ///
@@ -183,7 +208,14 @@ fn read_abs_range(
                 next_expected += 1;
                 let sanitized = sanitize_line(line).trim_end().to_string();
                 if !sanitized.trim().is_empty() && !is_ui_line(&sanitized) {
-                    collected.push(sanitized);
+                    // Strip box-drawing borders from response lines (TUI agents
+                    // render output inside │ borders).
+                    let cleaned = strip_borders(&sanitized);
+                    if !cleaned.is_empty() {
+                        collected.push(cleaned.to_string());
+                    } else {
+                        collected.push(sanitized);
+                    }
                 }
             }
         }
@@ -212,6 +244,8 @@ const RANDOM_NAMES: &[&str] = &[
     "andromeda", "orion", "nova", "atlas", "phoenix",
     "nebula", "vega", "helios", "lyra", "titan",
     "aurora", "cosmo", "polaris", "iris", "zenith",
+    "quasar", "celeste", "nimbus", "ember", "zephyr",
+    "solaris", "astrid", "comet", "pulsar", "echo",
 ];
 
 /// Pick a random name from `RANDOM_NAMES` that isn't already in use.
@@ -260,6 +294,8 @@ pub struct InteractiveAgent {
     pub input_buffer: Arc<Mutex<String>>,
     /// Tracks when the screen last changed (for detecting idle state).
     last_screen_update: Arc<Mutex<DateTime<Utc>>>,
+    /// Whether the exit notification has already been sent (avoids repeats).
+    pub exit_notified: bool,
 }
 
 impl InteractiveAgent {
@@ -270,6 +306,7 @@ impl InteractiveAgent {
     /// `fallback_args` are tried if the primary args fail (e.g. kiro `chat`).
     /// `name` is an optional user-provided session name (random if None).
     /// `existing_ids` is used to avoid name collisions.
+    /// `model` and `model_flag` allow passing a model selection (e.g. `-m gpt-4`).
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         cli: Cli,
@@ -281,6 +318,8 @@ impl InteractiveAgent {
         accent_color: Color,
         name: Option<&str>,
         existing_ids: &[&str],
+        model: Option<&str>,
+        model_flag: Option<&str>,
     ) -> Result<Self> {
         #[cfg(unix)]
         ignore_signals();
@@ -307,6 +346,13 @@ impl InteractiveAgent {
                 if !arg.is_empty() {
                     cmd.arg(arg);
                 }
+            }
+        }
+        // Apply model flag if user selected a model (e.g. `-m gpt-4`)
+        if let (Some(flag), Some(m)) = (model_flag, model) {
+            if !m.is_empty() {
+                cmd.arg(flag);
+                cmd.arg(m);
             }
         }
         cmd.cwd(working_dir);
@@ -360,6 +406,7 @@ impl InteractiveAgent {
             prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
             input_buffer: Arc::new(Mutex::new(String::new())),
             last_screen_update: Arc::new(Mutex::new(Utc::now())),
+            exit_notified: false,
         })
     }
 

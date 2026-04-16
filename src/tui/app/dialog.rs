@@ -308,41 +308,40 @@ impl NewAgentDialog {
         let mut result = dirs;
         result.extend(files);
 
-        if self.current_path != "/" {
-            result.insert(0, "..".to_string());
-        }
-
         self.dir_entries = result;
         self.dir_selected = 0;
         self.dir_scroll = 0;
     }
 
+    /// Go up one directory level (← key).
+    pub fn go_up(&mut self) {
+        if self.current_path == "/" {
+            return;
+        }
+        let new_path = if let Some(pos) = self.current_path.rfind('/') {
+            if pos == 0 {
+                "/".to_string()
+            } else {
+                self.current_path[..pos].to_string()
+            }
+        } else {
+            return;
+        };
+        self.current_path = new_path;
+        self.working_dir = self.current_path.clone();
+        if self.task_type == NewTaskType::Watcher {
+            self.watch_path = self.current_path.clone();
+        }
+        self.refresh_dir_entries();
+    }
+
+    /// Enter the selected directory entry (→ key or Space).
     pub fn navigate_to_selected(&mut self) {
         if self.dir_selected >= self.dir_entries.len() {
             return;
         }
 
         let selected = self.dir_entries[self.dir_selected].clone();
-
-        // ".." — go up one level
-        if selected == ".." {
-            let new_path = if let Some(pos) = self.current_path.rfind('/') {
-                if pos == 0 {
-                    "/".to_string()
-                } else {
-                    self.current_path[..pos].to_string()
-                }
-            } else {
-                ".".to_string()
-            };
-            self.current_path = new_path;
-            self.working_dir = self.current_path.clone();
-            if self.task_type == NewTaskType::Watcher {
-                self.watch_path = self.current_path.clone();
-            }
-            self.refresh_dir_entries();
-            return;
-        }
 
         // Strip prefix icons to get actual name
         let name = selected.trim_start_matches("📁 ").trim_start_matches("  ");
@@ -600,13 +599,28 @@ impl App {
         } else {
             Some(dialog.agent_name.trim().to_string())
         };
+        let model = if dialog.model.is_empty() {
+            None
+        } else {
+            Some(dialog.model.clone())
+        };
+        let model_flag = dialog
+            .cli_configs
+            .get(dialog.cli_index)
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.model_flag.clone());
         let (cols, rows) = if self.last_panel_inner != (0, 0) {
             self.last_panel_inner
         } else {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
             (tw.saturating_sub(28), th.saturating_sub(4))
         };
-        let existing_ids: Vec<&str> = self.interactive_agents.iter().map(|a| a.id.as_str()).collect();
+        let mut existing_ids: Vec<String> = self.interactive_agents.iter().map(|a| a.id.clone()).collect();
+        // Include historical DB session names to avoid collisions
+        if let Ok(history) = self.db.get_all_session_names() {
+            existing_ids.extend(history);
+        }
+        let existing_refs: Vec<&str> = existing_ids.iter().map(|s| s.as_str()).collect();
         let agent = InteractiveAgent::spawn(
             cli,
             &dir,
@@ -616,7 +630,9 @@ impl App {
             fallback.as_deref(),
             accent,
             name.as_deref(),
-            &existing_ids,
+            &existing_refs,
+            model.as_deref(),
+            model_flag.as_deref(),
         )?;
         // Persist session in registry
         let _ = self.db.insert_interactive_session(

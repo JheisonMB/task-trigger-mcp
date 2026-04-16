@@ -38,6 +38,10 @@ pub struct Platform {
     pub config_path: String,
     #[serde(default)]
     pub config_format: Option<String>,
+    /// When true, TOML uses `[[section]]` array-of-tables with `name = "key"`
+    /// instead of the default `[section.key]` table format.
+    #[serde(default)]
+    pub toml_array_format: bool,
     #[serde(alias = "servers_key")]
     pub mcp_servers_key: Vec<String>,
     #[serde(default)]
@@ -95,9 +99,165 @@ pub fn is_platform_available(p: &Platform) -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve the actual config file path for a platform.
+///
+/// Handles the `.json` ↔ `.jsonc` ambiguity (e.g. opencode supports both).
+/// Returns the existing file if found, falling back to an alternate extension,
+/// and finally the registry default.
+fn resolve_config_path(home: &Path, config_path: &str) -> std::path::PathBuf {
+    let primary = home.join(config_path);
+    if primary.exists() {
+        return primary;
+    }
+
+    // Try alternate JSON extension
+    let ext = primary.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let alternate = match ext {
+        "jsonc" => primary.with_extension("json"),
+        "json" => primary.with_extension("jsonc"),
+        _ => return primary,
+    };
+    if alternate.exists() {
+        return alternate;
+    }
+
+    primary
+}
+
 /// Check if a binary is in PATH.
 fn is_binary_available(binary: &str) -> bool {
     which::which(binary).is_ok()
+}
+
+/// Ensure MCP runtime dependencies (npx, uvx) are available.
+/// Attempts to install missing ones automatically.
+/// Returns a summary message for the wizard.
+fn ensure_mcp_dependencies() -> String {
+    let mut installed = Vec::new();
+    let mut already = Vec::new();
+    let mut failed = Vec::new();
+
+    // npx comes with Node.js/npm
+    if is_binary_available("npx") {
+        already.push("npx");
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  npx not found. Attempting to install Node.js...");
+        if try_install_node() {
+            installed.push("npx (via Node.js)");
+        } else {
+            failed.push("npx — install Node.js: https://nodejs.org");
+        }
+    }
+
+    // uvx comes with uv (Python package manager)
+    if is_binary_available("uvx") {
+        already.push("uvx");
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m  uvx not found. Attempting to install uv...");
+        if try_install_uv() {
+            installed.push("uvx (via uv)");
+        } else {
+            failed.push("uvx — install uv: https://docs.astral.sh/uv");
+        }
+    }
+
+    let mut parts = Vec::new();
+    if !already.is_empty() {
+        parts.push(format!("{} present", already.join(", ")));
+    }
+    if !installed.is_empty() {
+        parts.push(format!("{} installed", installed.join(", ")));
+    }
+    if !failed.is_empty() {
+        return format!(
+            "\x1b[31m✗\x1b[0m Dependencies: missing — {}",
+            failed.join("; ")
+        );
+    }
+
+    format!("\x1b[32m✓\x1b[0m Dependencies: {}", parts.join(", "))
+}
+
+/// Ensure MCP dependencies silently (no prompts). Returns true if all ok.
+fn ensure_mcp_dependencies_silent() -> bool {
+    let has_npx = is_binary_available("npx") || try_install_node();
+    let has_uvx = is_binary_available("uvx") || try_install_uv();
+    has_npx && has_uvx
+}
+
+/// Try to install Node.js (which provides npx).
+fn try_install_node() -> bool {
+    #[cfg(unix)]
+    {
+        // Try nvm if available
+        if let Ok(home) = std::env::var("HOME") {
+            let nvm_dir = format!("{home}/.nvm");
+            if std::path::Path::new(&nvm_dir).exists() {
+                let status = std::process::Command::new("bash")
+                    .args([
+                        "-c",
+                        &format!(
+                            "source {nvm_dir}/nvm.sh && nvm install --lts 2>/dev/null"
+                        ),
+                    ])
+                    .status();
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    return true;
+                }
+            }
+        }
+        // Try apt (Debian/Ubuntu)
+        if is_binary_available("apt-get") {
+            let status = std::process::Command::new("sudo")
+                .args(["apt-get", "install", "-y", "nodejs", "npm"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
+                return is_binary_available("npx");
+            }
+        }
+        // Try brew
+        if is_binary_available("brew") {
+            let status = std::process::Command::new("brew")
+                .args(["install", "node"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
+                return is_binary_available("npx");
+            }
+        }
+    }
+    false
+}
+
+/// Try to install uv (which provides uvx).
+fn try_install_uv() -> bool {
+    #[cfg(unix)]
+    {
+        // Official installer: curl -LsSf https://astral.sh/uv/install.sh | sh
+        let status = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh 2>/dev/null",
+            ])
+            .stdout(std::process::Stdio::null())
+            .status();
+        if status.map(|s| s.success()).unwrap_or(false) {
+            // uv installs to ~/.local/bin — may not be in PATH yet for this process
+            if let Ok(home) = std::env::var("HOME") {
+                let uv_bin = format!("{home}/.local/bin");
+                if let Ok(path) = std::env::var("PATH") {
+                    if !path.contains(&uv_bin) {
+                        std::env::set_var("PATH", format!("{uv_bin}:{path}"));
+                    }
+                }
+            }
+            return is_binary_available("uvx");
+        }
+    }
+    false
 }
 
 #[allow(dead_code)]
@@ -174,23 +334,20 @@ pub fn run_setup() -> Result<()> {
         }
     ));
 
+    // ── Step 2.5: Verify MCP runtime dependencies ─────────────
+    wiz.render()?;
+    let dep_msg = ensure_mcp_dependencies();
+    wiz.add(dep_msg);
+
     // ── Step 3: Configure MCP entries ───────────────────────────
     wiz.render()?;
     let (mut configured, mut skipped, mut failed) = (0usize, 0usize, 0usize);
 
     for p in &selected {
-        let path = home.join(&p.config_path);
+        let path = resolve_config_path(&home, &p.config_path);
         let is_toml = p.config_format.as_deref() == Some("toml");
 
         if !path.exists() {
-            let create = Confirm::new(&format!("{} config not found. Create it?", p.name))
-                .with_default(true)
-                .prompt()
-                .unwrap_or(false);
-            if !create {
-                skipped += 1;
-                continue;
-            }
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -213,7 +370,11 @@ pub fn run_setup() -> Result<()> {
 
         let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         let result = if is_toml {
-            upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
+            if p.toml_array_format {
+                upsert_toml_array(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
+            } else {
+                upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
+            }
         } else {
             let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
             key_refs.push(&p.canopy_entry_key);
@@ -278,8 +439,10 @@ pub fn run_setup() -> Result<()> {
     // ── Step 6: Daemon + service ────────────────────────────────
     wiz.render()?;
 
+    // Always restart daemon to pick up new MCP configs
+    let _ = stop_daemon();
     let daemon_msg = match start_daemon_if_needed() {
-        Ok(true) => "\x1b[32m✓\x1b[0m Daemon: started",
+        Ok(true) => "\x1b[32m✓\x1b[0m Daemon: (re)started",
         Ok(false) => "\x1b[32m✓\x1b[0m Daemon: already running",
         Err(_) => "\x1b[31m✗\x1b[0m Daemon: failed to start",
     };
@@ -602,6 +765,125 @@ fn remove_toml_key(path: &Path, section: &str, entry_key: &str) -> Result<bool> 
     Ok(removed)
 }
 
+/// Upsert a TOML entry using `[[section]]` array-of-tables format (e.g. mistral).
+///
+/// Each entry is identified by `name = "entry_key"` within the array.
+/// Example: `[[mcp_servers]]\nname = "fetch"\ncommand = "uvx"\n`
+fn upsert_toml_array(
+    path: &Path,
+    section: &str,
+    entry_key: &str,
+    value: &serde_json::Value,
+) -> Result<bool> {
+    let array_header = format!("[[{section}]]");
+
+    let content = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else {
+        String::new()
+    };
+
+    // Check if an entry with this name already exists
+    let name_line = format!("name = \"{entry_key}\"");
+    if content.contains(&name_line) {
+        return Ok(false);
+    }
+
+    // Build the TOML fragment
+    let mut fragment = format!("\n{array_header}\nname = \"{entry_key}\"\n");
+    if let Some(obj) = value.as_object() {
+        for (k, v) in obj {
+            match v {
+                serde_json::Value::String(s) => {
+                    fragment.push_str(&format!("{k} = \"{s}\"\n"));
+                }
+                serde_json::Value::Bool(b) => {
+                    fragment.push_str(&format!("{k} = {b}\n"));
+                }
+                serde_json::Value::Number(n) => {
+                    fragment.push_str(&format!("{k} = {n}\n"));
+                }
+                _ => {
+                    let toml_val: toml::Value = serde_json::from_value(v.clone())?;
+                    fragment.push_str(&format!("{k} = {toml_val}\n"));
+                }
+            }
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut out = content;
+    out.push_str(&fragment);
+    std::fs::write(path, out)?;
+    Ok(true)
+}
+
+/// Remove a `[[section]]` array entry identified by `name = "entry_key"`.
+fn remove_toml_array(path: &Path, section: &str, entry_key: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    let array_header = format!("[[{section}]]");
+    let name_line = format!("name = \"{entry_key}\"");
+
+    if !content.contains(&name_line) {
+        return Ok(false);
+    }
+
+    let mut out = String::with_capacity(content.len());
+    let mut in_target = false;
+    let mut removed = false;
+    let mut pending_header: Option<String> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == array_header {
+            // Start of an array entry — buffer the header and check the next lines
+            pending_header = Some(line.to_string());
+            continue;
+        }
+
+        if let Some(ref header) = pending_header {
+            if trimmed == name_line {
+                // This is the entry to remove
+                in_target = true;
+                removed = true;
+                pending_header = None;
+                continue;
+            }
+            // Not the target entry — flush the buffered header
+            out.push_str(header);
+            out.push('\n');
+            pending_header = None;
+        }
+
+        if in_target {
+            // End of the target entry when we hit the next section header
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                in_target = false;
+                out.push_str(line);
+                out.push('\n');
+            }
+            // Skip lines within the target entry
+            continue;
+        }
+
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    if removed {
+        std::fs::write(path, out)?;
+    }
+    Ok(removed)
+}
+
 fn sanitize_existing_json_servers(
     path: &Path,
     servers_key: &[String],
@@ -691,6 +973,29 @@ pub(crate) fn strip_jsonc_comments(input: &str) -> String {
         }
     }
     out
+}
+
+/// Stop the daemon if it is running.
+fn stop_daemon() -> Result<()> {
+    let data_dir = crate::ensure_data_dir()?;
+    let pid_path = data_dir.join("daemon.pid");
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+        if let Ok(pid) = pid_str.trim().parse::<i32>() {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+            // Wait for process to stop (up to 3s)
+            for _ in 0..12 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                if !is_process_running(pid as u32) {
+                    break;
+                }
+            }
+            let _ = std::fs::remove_file(&pid_path);
+        }
+    }
+    Ok(())
 }
 
 fn start_daemon_if_needed() -> Result<bool> {
@@ -783,8 +1088,13 @@ pub fn needs_setup() -> bool {
 }
 
 /// Run setup silently (no prompts, auto-detect all platforms).
+#[allow(dead_code)]
 pub fn run_setup_silent() -> Result<()> {
     let home = dirs::home_dir().context("No home directory")?;
+
+    // Ensure MCP runtime dependencies
+    ensure_mcp_dependencies_silent();
+
     let mut registry = fetch_registry()?;
 
     for p in &mut registry.platforms {
@@ -802,8 +1112,21 @@ pub fn run_setup_silent() -> Result<()> {
 
     // Configure MCP for all detected platforms
     for p in &detected {
-        let path = home.join(&p.config_path);
+        let path = resolve_config_path(&home, &p.config_path);
         let is_toml = p.config_format.as_deref() == Some("toml");
+
+        // Auto-create config file if missing
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let initial = if is_toml {
+                format!("[{}]\n", &p.mcp_servers_key[0])
+            } else {
+                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
+            };
+            let _ = std::fs::write(&path, &initial);
+        }
 
         if !is_toml {
             let servers_parent = &p.mcp_servers_key[0];
@@ -815,7 +1138,11 @@ pub fn run_setup_silent() -> Result<()> {
 
         let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         if is_toml {
-            let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
+            if p.toml_array_format {
+                let _ = upsert_toml_array(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
+            } else {
+                let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
+            }
         } else {
             let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
             key_refs.push(&p.canopy_entry_key);
@@ -860,6 +1187,10 @@ pub fn run_setup_silent() -> Result<()> {
     let marker = home.join(".canopy/.configured");
     std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
 
+    // Restart daemon so it picks up new configs
+    let _ = stop_daemon();
+    let _ = start_daemon_if_needed();
+
     Ok(())
 }
 
@@ -878,14 +1209,13 @@ fn sanitize_canopy_entry(
         }
 
         // Homologate transport type for HTTP servers.
-        // Some clients (copilot, qwen) require "sse", others like "http".
-        // Using "sse" is generally safer and more precise for MCP-over-HTTP.
-        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral")
+        // Modern MCP clients use "remote" for HTTP-based transports.
+        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral" | "gemini")
             && obj.contains_key("url")
         {
             obj.insert(
                 "type".to_string(),
-                serde_json::Value::String("sse".to_string()),
+                serde_json::Value::String("remote".to_string()),
             );
         }
     }
@@ -905,12 +1235,12 @@ fn sanitize_server_config_for_platform(
         }
 
         // Homologate transport type for HTTP servers.
-        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral")
+        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral" | "gemini")
             && obj.contains_key("url")
         {
             obj.insert(
                 "type".to_string(),
-                serde_json::Value::String("sse".to_string()),
+                serde_json::Value::String("remote".to_string()),
             );
         }
     }
@@ -960,7 +1290,7 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
     let detected: Vec<&Platform> = registry
         .platforms
         .iter()
-        .filter(|p| home.join(&p.config_path).exists())
+        .filter(|p| resolve_config_path(home, &p.config_path).exists())
         .collect();
 
     let platforms_with_cli: Vec<PlatformWithCli> = detected
@@ -1003,6 +1333,119 @@ fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &s
     }
 }
 
+/// Interactive directory browser using `inquire::Select`.
+/// Lets the user navigate the filesystem and select a directory.
+/// Interactive directory picker using arrow-key navigation.
+///
+/// Keys: ↑↓ navigate  →  enter directory  ←  go up  Enter  confirm  Esc  cancel
+fn browse_directory(start_dir: &str) -> String {
+    use ratatui::crossterm::event::{read, Event, KeyCode, KeyEventKind};
+    use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+    fn list_subdirs(path: &std::path::Path) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return Vec::new();
+        };
+        let mut dirs: Vec<String> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') { None } else { Some(name) }
+            })
+            .collect();
+        dirs.sort();
+        dirs
+    }
+
+    let mut current = std::path::PathBuf::from(start_dir);
+    if !current.is_dir() {
+        current = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+    }
+
+    let mut cursor: usize = 0;
+    let visible: usize = 10;
+    let mut prev_rows: usize = 0;
+
+    let _ = enable_raw_mode();
+
+    loop {
+        let subdirs = list_subdirs(&current);
+        let list_rows = if subdirs.is_empty() { 1 } else { subdirs.len().min(visible) };
+        let total_rows = 4 + list_rows; // blank + path + blank + hint + entries
+
+        // Erase previous draw
+        if prev_rows > 0 {
+            for _ in 0..prev_rows {
+                print!("\x1b[1A\x1b[2K");
+            }
+        }
+        prev_rows = total_rows;
+
+        // Clamp cursor
+        if !subdirs.is_empty() && cursor >= subdirs.len() {
+            cursor = subdirs.len().saturating_sub(1);
+        }
+
+        // Draw path header
+        print!("\r\n\x1b[2K  \x1b[36m»\x1b[0m  {}\r\n", current.display());
+        print!("\x1b[2K  \x1b[90m↑↓ navigate  → enter dir  ← go up  Enter select  Esc cancel\x1b[0m\r\n");
+
+        // Draw directory list
+        if subdirs.is_empty() {
+            print!("\x1b[2K  \x1b[90m(no subdirectories)\x1b[0m\r\n");
+        } else {
+            let scroll = if cursor >= visible { cursor - visible + 1 } else { 0 };
+            for (i, name) in subdirs.iter().enumerate().skip(scroll).take(visible) {
+                if i == cursor {
+                    print!("\x1b[2K  \x1b[1;32m▶\x1b[0m \x1b[7m {name} \x1b[0m\r\n");
+                } else {
+                    print!("\x1b[2K    {name}\r\n");
+                }
+            }
+        }
+
+        let _ = io::stdout().flush();
+
+        match read() {
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
+                KeyCode::Enter => {
+                    let _ = disable_raw_mode();
+                    println!("\r");
+                    return current.to_string_lossy().to_string();
+                }
+                KeyCode::Esc => {
+                    let _ = disable_raw_mode();
+                    println!("\r");
+                    return start_dir.to_string();
+                }
+                KeyCode::Up => {
+                    cursor = cursor.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if !subdirs.is_empty() && cursor + 1 < subdirs.len() {
+                        cursor += 1;
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(name) = subdirs.get(cursor) {
+                        current = current.join(name);
+                        cursor = 0;
+                    }
+                }
+                KeyCode::Left => {
+                    if let Some(parent) = current.parent() {
+                        current = parent.to_path_buf();
+                        cursor = 0;
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
 /// Install recommended MCP servers (mandatory) across all selected platforms.
 /// Uses `recommended_servers` from each platform's registry entry.
 fn install_recommended_mcp_servers(
@@ -1035,11 +1478,7 @@ fn install_recommended_mcp_servers(
         let default_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| home.to_string_lossy().to_string());
-        fs_dir = Text::new("Filesystem root directory:")
-            .with_default(&default_dir)
-            .with_help_message("The agent will have read/write access to this directory")
-            .prompt()
-            .unwrap_or(default_dir);
+        fs_dir = browse_directory(&default_dir);
     }
 
     // Ensure memory directory exists
@@ -1056,7 +1495,7 @@ fn install_recommended_mcp_servers(
     let mut skipped = 0usize;
 
     for p in selected {
-        let config_path = home.join(&p.config_path);
+        let config_path = resolve_config_path(home, &p.config_path);
         if !config_path.exists() {
             continue;
         }
@@ -1113,7 +1552,7 @@ fn extract_all_mcp_configs(
 ) -> Vec<crate::config::PlatformMcpConfig> {
     let mut configs = Vec::new();
     for p in selected {
-        let config_path = home.join(&p.config_path);
+        let config_path = resolve_config_path(home, &p.config_path);
         if !config_path.exists() {
             configs.push(crate::config::PlatformMcpConfig {
                 platform: p.name.clone(),
@@ -1242,12 +1681,21 @@ fn apply_upsert_to_platform(
 ) -> Result<bool> {
     let is_toml = platform.config_format.as_deref() == Some("toml");
     if is_toml {
-        upsert_toml_key(
-            config_path,
-            &platform.mcp_servers_key[0],
-            server_name,
-            config,
-        )
+        if platform.toml_array_format {
+            upsert_toml_array(
+                config_path,
+                &platform.mcp_servers_key[0],
+                server_name,
+                config,
+            )
+        } else {
+            upsert_toml_key(
+                config_path,
+                &platform.mcp_servers_key[0],
+                server_name,
+                config,
+            )
+        }
     } else {
         let mut key_refs: Vec<&str> = platform
             .mcp_servers_key
@@ -1266,7 +1714,11 @@ fn apply_remove_to_platform(
 ) -> Result<bool> {
     let is_toml = platform.config_format.as_deref() == Some("toml");
     if is_toml {
-        remove_toml_key(config_path, &platform.mcp_servers_key[0], server_name)
+        if platform.toml_array_format {
+            remove_toml_array(config_path, &platform.mcp_servers_key[0], server_name)
+        } else {
+            remove_toml_key(config_path, &platform.mcp_servers_key[0], server_name)
+        }
     } else {
         let mut key_refs: Vec<&str> = platform
             .mcp_servers_key
@@ -1329,7 +1781,7 @@ fn run_sync_action(
             .iter()
             .find(|p| p.name == *platform_name)
             .expect("platform should exist");
-        let config_path = home.join(&platform.config_path);
+        let config_path = resolve_config_path(home, &platform.config_path);
         let summary = summaries.entry(platform_name.clone()).or_default();
 
         for server_name in &selected_servers {
@@ -1442,7 +1894,7 @@ fn run_add_action(
             .iter()
             .find(|p| p.name == *platform_name)
             .expect("platform should exist");
-        let config_path = home.join(&platform.config_path);
+        let config_path = resolve_config_path(home, &platform.config_path);
         let summary = summaries.entry(platform_name.clone()).or_default();
 
         let sanitized = sanitize_server_config_for_platform(
@@ -1513,7 +1965,7 @@ fn run_remove_action(
             .iter()
             .find(|p| p.name == *platform_name)
             .expect("platform should exist");
-        let config_path = home.join(&platform.config_path);
+        let config_path = resolve_config_path(home, &platform.config_path);
         let summary = summaries.entry(platform_name.clone()).or_default();
 
         for server_name in &selected_servers {

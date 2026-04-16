@@ -111,11 +111,84 @@ impl App {
             agent.poll();
         }
 
-        let removed_indices: Vec<usize> = self
+        // Collect indices that just exited (any code) for notification handling.
+        let newly_exited: Vec<usize> = self
             .interactive_agents
             .iter()
             .enumerate()
             .filter(|(_, a)| matches!(a.status, AgentStatus::Exited(_)))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Send notifications / record DB finish for all newly-exited agents.
+        // Track which ones we already notified to avoid repeats on next poll.
+        for &idx in &newly_exited {
+            let agent = &self.interactive_agents[idx];
+            if agent.exit_notified {
+                continue;
+            }
+            let status = agent.status;
+            let agent_id = agent.id.clone();
+            match status {
+                AgentStatus::Exited(0) => {
+                    let _ = self.db.finish_interactive_session(&agent_id, 0);
+                    self.whimsg
+                        .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
+                    if self.notifications_enabled {
+                        crate::domain::notification::send_notification(
+                            "Canopy — agent finished",
+                            &format!("{agent_id} completed successfully"),
+                        );
+                    }
+                }
+                AgentStatus::Exited(code) => {
+                    let _ = self.db.finish_interactive_session(&agent_id, code);
+                    let last_lines = self.interactive_agents[idx].last_output_lines(5);
+                    let output_snippet = if last_lines.is_empty() {
+                        String::new()
+                    } else {
+                        let clean: Vec<String> = last_lines
+                            .iter()
+                            .map(|l| strip_ansi_codes(l))
+                            .filter(|l| !l.is_empty())
+                            .collect();
+                        if clean.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", clean.join("\n"))
+                        }
+                    };
+                    tracing::warn!(
+                        "Agent '{agent_id}' ({}) exited with code {code}.{}",
+                        self.interactive_agents[idx].cli.as_str(),
+                        if output_snippet.is_empty() { "" } else { &output_snippet }
+                    );
+                    self.whimsg
+                        .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
+                    if self.notifications_enabled {
+                        let msg = if output_snippet.is_empty() {
+                            format!("{agent_id} exited with code {code}")
+                        } else {
+                            format!("{agent_id} exited ({code}){output_snippet}")
+                        };
+                        crate::domain::notification::send_notification(
+                            "Canopy — agent failed",
+                            &msg,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            self.interactive_agents[idx].exit_notified = true;
+        }
+
+        // Only auto-remove agents that exited SUCCESSFULLY (code 0).
+        // Failed agents stay in the list so the user can inspect output.
+        let removed_indices: Vec<usize> = self
+            .interactive_agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a.status, AgentStatus::Exited(0)))
             .map(|(i, _)| i)
             .collect();
 
@@ -138,61 +211,6 @@ impl App {
         sorted.sort_unstable();
         sorted.reverse();
         for &old_idx in &sorted {
-            // Notify whimsg about agent completion
-            let status = self.interactive_agents[old_idx].status;
-            let agent_id = self.interactive_agents[old_idx].id.clone();
-            match status {
-                AgentStatus::Exited(0) => {
-                    let _ = self.db.finish_interactive_session(&agent_id, 0);
-                    self.whimsg
-                        .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
-                    if self.notifications_enabled {
-                        crate::domain::notification::send_notification(
-                            "Canopy — agent finished",
-                            &format!("{agent_id} completed successfully"),
-                        );
-                    }
-                }
-                AgentStatus::Exited(code) => {
-                    let _ = self.db.finish_interactive_session(&agent_id, code);
-                    // Capture last PTY output for error diagnosis
-                    let last_lines = self.interactive_agents[old_idx].last_output_lines(5);
-                    let output_snippet = if last_lines.is_empty() {
-                        String::new()
-                    } else {
-                        // Strip ANSI escape codes for notification readability
-                        let clean: Vec<String> = last_lines
-                            .iter()
-                            .map(|l| strip_ansi_codes(l))
-                            .filter(|l| !l.is_empty())
-                            .collect();
-                        if clean.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n{}", clean.join("\n"))
-                        }
-                    };
-                    tracing::warn!(
-                        "Agent '{agent_id}' ({}) exited with code {code}.{}",
-                        self.interactive_agents[old_idx].cli.as_str(),
-                        if output_snippet.is_empty() { "" } else { &output_snippet }
-                    );
-                    self.whimsg
-                        .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
-                    if self.notifications_enabled {
-                        let msg = if output_snippet.is_empty() {
-                            format!("{agent_id} exited with code {code}")
-                        } else {
-                            format!("{agent_id} exited ({code}){output_snippet}")
-                        };
-                        crate::domain::notification::send_notification(
-                            "Canopy — agent failed",
-                            &msg,
-                        );
-                    }
-                }
-                _ => {}
-            }
             self.interactive_agents.remove(old_idx);
         }
 
