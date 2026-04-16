@@ -426,26 +426,33 @@ impl InteractiveAgent {
     }
 
     /// Record a user prompt submission. Called when Enter is pressed.
-    /// Captures the input and the current total depth (scrollback + visible screen)
-    /// as the start of the response range.
+    /// Captures the input and the current scrollback depth as the start
+    /// of the response range (visible screen content starts at max_sb).
     pub fn record_prompt(&self, input: &str) {
-        // Use total depth (scrollback + visible screen rows) so that the range
-        // correctly starts after all currently visible content.
+        // Use scrollback depth only — visible screen lines are indexed from max_sb
+        // upward, so this is the correct start for the response range.
         let history_depth = if let Ok(mut vt) = self.vt.lock() {
             let prev = vt.screen().scrollback();
             vt.screen_mut().set_scrollback(usize::MAX);
-            let max_sb = vt.screen().scrollback();
-            let (rows, _) = vt.screen().size();
+            let depth = vt.screen().scrollback();
             vt.screen_mut().set_scrollback(prev);
-            max_sb + rows as usize
+            depth
         } else {
             0
         };
 
         if let Ok(mut history) = self.prompt_history.lock() {
-            // Close out the previous entry's response range.
+            // Close out the previous entry's response range using total_depth
+            // so that visible screen lines (not yet in scrollback) are included.
             if let Some(last) = history.back_mut() {
-                last.output_range.1 = history_depth;
+                last.output_range.1 = history_depth + {
+                    // Re-lock vt to get rows for total depth
+                    if let Ok(vt) = self.vt.lock() {
+                        vt.screen().size().0 as usize
+                    } else {
+                        0
+                    }
+                };
             }
             history.push_back(PromptEntry {
                 input: input.to_string(),
