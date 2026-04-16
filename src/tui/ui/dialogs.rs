@@ -43,7 +43,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Interactive:    11 content rows → base 13
     // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
     let base_height: u16 = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => 13 + dir_rows,
+        crate::tui::app::NewTaskType::Interactive => 15 + dir_rows,
         crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher => {
             15 + dir_rows
         }
@@ -101,7 +101,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let mode_field = 1;
 
     let is_interactive = matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
-    let cli_field = if is_interactive { 2 } else { 1 };
+    let name_field = 2usize; // interactive only
+    let cli_field = if is_interactive { 3 } else { 1 };
 
     let mut lines = vec![
         Line::from(""),
@@ -158,6 +159,22 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
+    // Name row — only for interactive, hidden in edit mode
+    if is_interactive && !is_edit {
+        lines.push(Line::from(vec![
+            Span::styled("  Name:  ", Style::default().fg(DIM)),
+            Span::styled(
+                if dialog.agent_name.is_empty() {
+                    " (optional — random if empty)".to_string()
+                } else {
+                    format!(" {}▏", dialog.agent_name)
+                },
+                focus_style(name_field),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
     lines.push(Line::from(vec![
         Span::styled("  CLI:   ", Style::default().fg(DIM)),
         if is_focused(cli_field) {
@@ -171,10 +188,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
 
-    let model_field = if is_interactive { 3 } else { 2 };
+    let model_field = if is_interactive { 4 } else { 2 };
     let prompt_field = 3usize; // non-interactive only (field 3)
     let extra_field = 4usize; // non-interactive only (field 4)
-    let dir_field = if is_interactive { 4 } else { 5 };
+    let dir_field = if is_interactive {
+        5
+    } else if dialog.task_type == crate::tui::app::NewTaskType::Watcher {
+        4
+    } else {
+        5
+    };
 
     lines.push(Line::from(vec![
         Span::styled("  Model: ", Style::default().fg(DIM)),
@@ -522,7 +545,7 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
 
     let preview_lines: Vec<&str> = modal.payload_preview.lines().collect();
     let visible_preview = preview_lines.len().min(8) as u16;
-    let height = 12 + visible_preview;
+    let height = 10 + visible_preview;
     let area = centered_rect(70, height, frame.area());
     frame.render_widget(Clear, area);
 
@@ -541,33 +564,17 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let focus_style = |active: bool| {
-        if active {
-            Style::default()
-                .fg(Color::Black)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        }
-    };
+    let active_style = Style::default()
+        .fg(Color::Black)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD);
 
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Prompts:   ", Style::default().fg(DIM)),
-            Span::styled(
-                format!(" ◀ {} ▶ ", modal.n_prompts),
-                focus_style(modal.preview_field == 0),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Scrollback:", Style::default().fg(DIM)),
-            Span::styled(
-                format!(" ◀ {} lines ▶ ", modal.scrollback_lines),
-                focus_style(modal.preview_field == 1),
-            ),
+            Span::styled("  From prompt: ", Style::default().fg(DIM)),
+            Span::styled(format!(" ◀ {} ▶ ", modal.n_prompts), active_style),
+            Span::styled("  (most recent N prompts + responses)", Style::default().fg(DIM)),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Preview:", Style::default().fg(DIM))),
@@ -588,7 +595,7 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  ↑↓: field · ←→: adjust · Enter: pick destination · Esc: cancel",
+        "  ←→: adjust prompts · Enter: pick destination · Esc: cancel",
         Style::default().fg(DIM),
     )));
 

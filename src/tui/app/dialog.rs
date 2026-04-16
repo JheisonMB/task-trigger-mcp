@@ -30,6 +30,8 @@ pub struct NewAgentDialog {
     pub edit_id: Option<String>,
     pub task_type: NewTaskType,
     pub task_mode: NewTaskMode,
+    /// Optional user-provided name for interactive agents.
+    pub agent_name: String,
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
     pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
@@ -71,6 +73,7 @@ impl NewAgentDialog {
             edit_id: None,
             task_type: NewTaskType::Interactive,
             task_mode: NewTaskMode::Interactive,
+            agent_name: String::new(),
             cli_index: 0,
             available_clis: if available.is_empty() {
                 vec![Cli::new("opencode"), Cli::new("kiro"), Cli::new("qwen")]
@@ -592,12 +595,18 @@ impl App {
         let args = dialog.selected_args();
         let fallback = dialog.selected_fallback_args();
         let accent = dialog.selected_accent_color();
+        let name = if dialog.agent_name.trim().is_empty() {
+            None
+        } else {
+            Some(dialog.agent_name.trim().to_string())
+        };
         let (cols, rows) = if self.last_panel_inner != (0, 0) {
             self.last_panel_inner
         } else {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
             (tw.saturating_sub(28), th.saturating_sub(4))
         };
+        let existing_ids: Vec<&str> = self.interactive_agents.iter().map(|a| a.id.as_str()).collect();
         let agent = InteractiveAgent::spawn(
             cli,
             &dir,
@@ -606,6 +615,8 @@ impl App {
             args.as_deref(),
             fallback.as_deref(),
             accent,
+            name.as_deref(),
+            &existing_ids,
         )?;
         self.interactive_agents.push(agent);
         self.whimsg

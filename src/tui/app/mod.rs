@@ -389,7 +389,6 @@ impl App {
         let payload = super::context_transfer::build_context_payload(
             &self.interactive_agents[src_idx],
             modal.n_prompts,
-            modal.scrollback_lines,
         );
 
         let _ = self.interactive_agents[src_idx].working_dir.clone(); // source workdir (available if needed)

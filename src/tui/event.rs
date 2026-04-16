@@ -449,13 +449,14 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             }
 
             let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
-            let cli_field: usize = if is_interactive { 2 } else { 1 };
-            let model_field: usize = if is_interactive { 3 } else { 2 };
+            let name_field: usize = 2; // interactive only
+            let cli_field: usize = if is_interactive { 3 } else { 1 };
+            let model_field: usize = if is_interactive { 4 } else { 2 };
             // Non-interactive only fields (prompt=3, extra=4 are before dir)
             let prompt_field: usize = 3;
             let extra_field: usize = 4;
             let dir_field: usize = if is_interactive {
-                4
+                5
             } else if dialog.task_type == super::app::NewTaskType::Watcher {
                 // Watcher reuses the extra_field (4) as the browser field so there is
                 // no separate Dir field for Watchers.
@@ -463,7 +464,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             } else {
                 5
             };
-            let _ = (prompt_field, extra_field); // used in non-interactive branches below
+            let _ = (prompt_field, extra_field, name_field); // used in specific branches below
 
             match dialog.field {
                 // BackgroundAgent type selector
@@ -522,8 +523,16 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     {
                         dialog.clear_selected_session();
                     }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
+                    KeyCode::Down | KeyCode::Tab => dialog.field = name_field,
                     KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
+                    _ => {}
+                },
+                // Name field (Interactive only — field 2)
+                2 if is_interactive => match code {
+                    KeyCode::Char(c) => dialog.agent_name.push(c),
+                    KeyCode::Backspace => { dialog.agent_name.pop(); }
+                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = 1,
                     _ => {}
                 },
                 // CLI selector
@@ -538,7 +547,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => dialog.field = model_field,
                     KeyCode::Up => {
-                        dialog.field = if is_interactive { 1 } else { 0 };
+                        dialog.field = if is_interactive { name_field } else { 0 };
                     }
                     _ => {}
                 },
@@ -679,15 +688,9 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 app.context_transfer_to_picker();
             }
-            KeyCode::Up | KeyCode::Down => {
-                if let Some(modal) = app.context_transfer_modal.as_mut() {
-                    modal.preview_field = 1 - modal.preview_field;
-                }
-            }
             KeyCode::Right | KeyCode::Char('+') => {
-                let max = app.context_transfer_config.max_scrollback_lines;
                 if let Some(modal) = app.context_transfer_modal.as_mut() {
-                    modal.increment_field(max);
+                    modal.increment_field();
                 }
                 let src_idx = app
                     .context_transfer_modal
@@ -695,16 +698,14 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                     .map(|m| m.source_agent_idx);
                 if let Some(idx) = src_idx {
                     if idx < app.interactive_agents.len() {
-                        // Reborrow safely via index
-                        let (n_prompts, scrollback_lines) = app
+                        let n_prompts = app
                             .context_transfer_modal
                             .as_ref()
-                            .map(|m| (m.n_prompts, m.scrollback_lines))
-                            .unwrap_or((3, 200));
+                            .map(|m| m.n_prompts)
+                            .unwrap_or(3);
                         let preview = super::context_transfer::build_context_payload(
                             &app.interactive_agents[idx],
                             n_prompts,
-                            scrollback_lines,
                         );
                         if let Some(modal) = app.context_transfer_modal.as_mut() {
                             modal.payload_preview = preview;
@@ -722,15 +723,14 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                     .map(|m| m.source_agent_idx);
                 if let Some(idx) = src_idx {
                     if idx < app.interactive_agents.len() {
-                        let (n_prompts, scrollback_lines) = app
+                        let n_prompts = app
                             .context_transfer_modal
                             .as_ref()
-                            .map(|m| (m.n_prompts, m.scrollback_lines))
-                            .unwrap_or((3, 200));
+                            .map(|m| m.n_prompts)
+                            .unwrap_or(3);
                         let preview = super::context_transfer::build_context_payload(
                             &app.interactive_agents[idx],
                             n_prompts,
-                            scrollback_lines,
                         );
                         if let Some(modal) = app.context_transfer_modal.as_mut() {
                             modal.payload_preview = preview;

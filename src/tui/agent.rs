@@ -207,6 +207,29 @@ fn ignore_signals() {
     }
 }
 
+/// Creative session names assigned when the user doesn't provide one.
+const RANDOM_NAMES: &[&str] = &[
+    "andromeda", "orion", "nova", "atlas", "phoenix",
+    "nebula", "vega", "helios", "lyra", "titan",
+    "aurora", "cosmo", "polaris", "iris", "zenith",
+];
+
+/// Pick a random name from `RANDOM_NAMES` that isn't already in use.
+/// Falls back to UUID-based ID if all names are taken.
+fn pick_random_name(existing_ids: &[&str]) -> String {
+    use rand::prelude::IndexedRandom;
+    let available: Vec<&str> = RANDOM_NAMES
+        .iter()
+        .copied()
+        .filter(|n| !existing_ids.iter().any(|e| e == n))
+        .collect();
+    if let Some(name) = available.choose(&mut rand::rng()) {
+        name.to_string()
+    } else {
+        format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8])
+    }
+}
+
 /// An interactive agent with a virtual terminal screen.
 pub struct InteractiveAgent {
     pub id: String,
@@ -245,6 +268,9 @@ impl InteractiveAgent {
     /// `cols` and `rows` should match the panel area where the agent will render.
     /// `interactive_args` come from the registry (e.g. `--tui`, `-c`, etc.).
     /// `fallback_args` are tried if the primary args fail (e.g. kiro `chat`).
+    /// `name` is an optional user-provided session name (random if None).
+    /// `existing_ids` is used to avoid name collisions.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         cli: Cli,
         working_dir: &str,
@@ -253,6 +279,8 @@ impl InteractiveAgent {
         interactive_args: Option<&str>,
         fallback_args: Option<&str>,
         accent_color: Color,
+        name: Option<&str>,
+        existing_ids: &[&str],
     ) -> Result<Self> {
         #[cfg(unix)]
         ignore_signals();
@@ -309,7 +337,11 @@ impl InteractiveAgent {
             }
         });
 
-        let id = format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let id = if let Some(n) = name {
+            n.to_string()
+        } else {
+            pick_random_name(existing_ids)
+        };
 
         Ok(Self {
             id,
