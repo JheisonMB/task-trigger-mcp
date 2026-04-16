@@ -241,11 +241,10 @@ fn ignore_signals() {
 
 /// Creative session names assigned when the user doesn't provide one.
 const RANDOM_NAMES: &[&str] = &[
-    "andromeda", "orion", "nova", "atlas", "phoenix",
-    "nebula", "vega", "helios", "lyra", "titan",
-    "aurora", "cosmo", "polaris", "iris", "zenith",
-    "quasar", "celeste", "nimbus", "ember", "zephyr",
-    "solaris", "astrid", "comet", "pulsar", "echo",
+    "mushroom", "shiitake", "truffle", "spore", "mycelium", "reishi", "amanita", "oak", "maple",
+    "willow", "pine", "birch", "fern", "moss", "lichen", "root", "seed", "axolotl", "quokka",
+    "pangolin", "capybara", "lemur", "okapi", "tapir", "meerkat", "fennec", "sloth", "iguana",
+    "rhea", "jerboa", "gibbon", "dew", "pollen", "sap", "humus", "bark", "petal",
 ];
 
 /// Pick a random name from `RANDOM_NAMES` that isn't already in use.
@@ -471,10 +470,8 @@ impl InteractiveAgent {
             .map(|b| if b == b'\n' { b'\r' } else { b })
             .collect();
         self.write_to_pty(&bytes)?;
-        // End bracketed paste
+        // End bracketed paste (without sending Enter — allows user to add instructions)
         self.write_to_pty(b"\x1b[201~")?;
-        // Final Enter to submit
-        self.write_to_pty(b"\r")?;
         Ok(())
     }
 
@@ -633,7 +630,10 @@ impl InteractiveAgent {
         let rows = screen.size().0;
         let mut lines: Vec<String> = Vec::new();
         for row in 0..rows {
-            let line = screen.rows_formatted(row, row + 1).next().unwrap_or_default();
+            let line = screen
+                .rows_formatted(row, row + 1)
+                .next()
+                .unwrap_or_default();
             let text = String::from_utf8_lossy(&line).trim().to_string();
             if !text.is_empty() {
                 lines.push(text);
@@ -650,7 +650,14 @@ impl InteractiveAgent {
                 }
             }
         }
-        lines.into_iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+        lines
+            .into_iter()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     /// Kill the agent process.

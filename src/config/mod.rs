@@ -60,15 +60,15 @@ impl McpConfigRegistry {
         let content = std::fs::read_to_string(config_path)?;
 
         // Parse file — TOML or JSON depending on extension
-        let root: serde_json::Value =
-            if config_path.extension().and_then(|e| e.to_str()) == Some("toml") {
-                let toml_val: toml::Value =
-                    content.parse().context("Failed to parse TOML config")?;
-                serde_json::to_value(&toml_val).context("Failed to convert TOML to JSON")?
-            } else {
-                let clean = crate::setup::strip_jsonc_comments(&content);
-                serde_json::from_str(&clean).context("Failed to parse config file")?
-            };
+        let root: serde_json::Value = if config_path.extension().and_then(|e| e.to_str())
+            == Some("toml")
+        {
+            let toml_val: toml::Value = content.parse().context("Failed to parse TOML config")?;
+            serde_json::to_value(&toml_val).context("Failed to convert TOML to JSON")?
+        } else {
+            let clean = crate::setup::strip_jsonc_comments(&content);
+            serde_json::from_str(&clean).context("Failed to parse config file")?
+        };
 
         let mut current = &root;
         for key in servers_key {

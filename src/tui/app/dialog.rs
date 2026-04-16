@@ -615,7 +615,11 @@ impl App {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
             (tw.saturating_sub(28), th.saturating_sub(4))
         };
-        let mut existing_ids: Vec<String> = self.interactive_agents.iter().map(|a| a.id.clone()).collect();
+        let mut existing_ids: Vec<String> = self
+            .interactive_agents
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
         // Include historical DB session names to avoid collisions
         if let Ok(history) = self.db.get_all_session_names() {
             existing_ids.extend(history);

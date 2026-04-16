@@ -4,8 +4,7 @@ use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
 
-const REGISTRY_BASE_URL: &str =
-    "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/";
+const REGISTRY_BASE_URL: &str = "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/";
 
 const REGISTRY_LEGACY_URL: &str =
     "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/platforms.json";
@@ -223,9 +222,7 @@ fn try_install_node() -> bool {
                 let status = std::process::Command::new("bash")
                     .args([
                         "-c",
-                        &format!(
-                            "source {nvm_dir}/nvm.sh && nvm install --lts 2>/dev/null"
-                        ),
+                        &format!("source {nvm_dir}/nvm.sh && nvm install --lts 2>/dev/null"),
                     ])
                     .status();
                 if status.map(|s| s.success()).unwrap_or(false) {
@@ -1102,7 +1099,9 @@ fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &s
     match value {
         serde_json::Value::String(s) => {
             if s.contains("{filesystem_dir}") || s.contains("{home}") {
-                *s = s.replace("{filesystem_dir}", fs_dir).replace("{home}", home);
+                *s = s
+                    .replace("{filesystem_dir}", fs_dir)
+                    .replace("{home}", home);
             }
         }
         serde_json::Value::Array(arr) => {
@@ -1137,7 +1136,11 @@ fn browse_directory(start_dir: &str) -> String {
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') { None } else { Some(name) }
+                if name.starts_with('.') {
+                    None
+                } else {
+                    Some(name)
+                }
             })
             .collect();
         dirs.sort();
@@ -1157,7 +1160,11 @@ fn browse_directory(start_dir: &str) -> String {
 
     loop {
         let subdirs = list_subdirs(&current);
-        let list_rows = if subdirs.is_empty() { 1 } else { subdirs.len().min(visible) };
+        let list_rows = if subdirs.is_empty() {
+            1
+        } else {
+            subdirs.len().min(visible)
+        };
         let total_rows = 4 + list_rows; // blank + path + blank + hint + entries
 
         // Erase previous draw
@@ -1181,7 +1188,11 @@ fn browse_directory(start_dir: &str) -> String {
         if subdirs.is_empty() {
             print!("\x1b[2K  \x1b[90m(no subdirectories)\x1b[0m\r\n");
         } else {
-            let scroll = if cursor >= visible { cursor - visible + 1 } else { 0 };
+            let scroll = if cursor >= visible {
+                cursor - visible + 1
+            } else {
+                0
+            };
             for (i, name) in subdirs.iter().enumerate().skip(scroll).take(visible) {
                 if i == cursor {
                     print!("\x1b[2K  \x1b[1;32m▶\x1b[0m \x1b[7m {name} \x1b[0m\r\n");
@@ -1411,7 +1422,12 @@ fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
         }
 
         // Write canopy entry directly from registry
-        let _ = apply_upsert_to_platform(p, &config_path, &p.canopy_entry_key.clone(), &p.canopy_entry.clone());
+        let _ = apply_upsert_to_platform(
+            p,
+            &config_path,
+            &p.canopy_entry_key.clone(),
+            &p.canopy_entry.clone(),
+        );
 
         // Write recommended servers with placeholder substitution
         for (server_name, template) in &p.recommended_servers {
@@ -1450,7 +1466,5 @@ fn run_sync_step(
         print_mcp_matrix(&all_configs);
     }
 
-    Ok(Some(
-        "\x1b[32m✓\x1b[0m MCP servers updated".to_string(),
-    ))
+    Ok(Some("\x1b[32m✓\x1b[0m MCP servers updated".to_string()))
 }

@@ -574,7 +574,10 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("  From prompt: ", Style::default().fg(DIM)),
             Span::styled(format!(" ◀ {} ▶ ", modal.n_prompts), active_style),
-            Span::styled("  (most recent N prompts + responses)", Style::default().fg(DIM)),
+            Span::styled(
+                "  (most recent N prompts + responses)",
+                Style::default().fg(DIM),
+            ),
         ]),
         Line::from(""),
         Line::from(Span::styled("  Preview:", Style::default().fg(DIM))),

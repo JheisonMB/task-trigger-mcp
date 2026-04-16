@@ -463,8 +463,11 @@ impl App {
             // Use resume_args if available, otherwise fall back to original args
             let args = resume_args.or(session.args.as_deref());
 
-            let existing_ids: Vec<&str> =
-                self.interactive_agents.iter().map(|a| a.id.as_str()).collect();
+            let existing_ids: Vec<&str> = self
+                .interactive_agents
+                .iter()
+                .map(|a| a.id.as_str())
+                .collect();
 
             match super::agent::InteractiveAgent::spawn(
                 cli.clone(),

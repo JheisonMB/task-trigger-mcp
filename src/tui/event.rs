@@ -458,8 +458,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Enter => {
             // If on mode field in Resume mode with session picker, open picker instead of launching
             let should_pick = app.new_agent_dialog.as_ref().is_some_and(|d| {
-                let is_interactive =
-                    matches!(d.task_type, super::app::NewTaskType::Interactive);
+                let is_interactive = matches!(d.task_type, super::app::NewTaskType::Interactive);
                 let mode_field: usize = 1;
                 is_interactive
                     && d.field == mode_field
@@ -555,7 +554,9 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 // Name field (Interactive only — field 2)
                 2 if is_interactive => match code {
                     KeyCode::Char(c) => dialog.agent_name.push(c),
-                    KeyCode::Backspace => { dialog.agent_name.pop(); }
+                    KeyCode::Backspace => {
+                        dialog.agent_name.pop();
+                    }
                     KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
                     KeyCode::Up | KeyCode::BackTab => dialog.field = 1,
                     _ => {}

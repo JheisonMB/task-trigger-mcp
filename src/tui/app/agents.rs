@@ -180,7 +180,11 @@ impl App {
                     tracing::warn!(
                         "Agent '{agent_id}' ({}) exited with code {code}.{}",
                         self.interactive_agents[idx].cli.as_str(),
-                        if output_snippet.is_empty() { "" } else { &output_snippet }
+                        if output_snippet.is_empty() {
+                            ""
+                        } else {
+                            &output_snippet
+                        }
                     );
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
