@@ -371,7 +371,7 @@ pub fn run_setup() -> Result<()> {
         let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         let result = if is_toml {
             if p.toml_array_format {
-                upsert_toml_array(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
+                upsert_toml_array(&path, &p.mcp_servers_key.join("."), &p.canopy_entry_key, &entry)
             } else {
                 upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
             }
@@ -1139,7 +1139,7 @@ pub fn run_setup_silent() -> Result<()> {
         let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
         if is_toml {
             if p.toml_array_format {
-                let _ = upsert_toml_array(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
+                let _ = upsert_toml_array(&path, &p.mcp_servers_key.join("."), &p.canopy_entry_key, &entry);
             } else {
                 let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
             }
@@ -1478,6 +1478,11 @@ fn install_recommended_mcp_servers(
         let default_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| home.to_string_lossy().to_string());
+        println!();
+        println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
+        println!("  Agents will have read/write access to everything inside this directory.");
+        println!("  Choose a project folder or workspace root (e.g. ~/Documents/Projects).");
+        println!();
         fs_dir = browse_directory(&default_dir);
     }
 
@@ -1684,7 +1689,7 @@ fn apply_upsert_to_platform(
         if platform.toml_array_format {
             upsert_toml_array(
                 config_path,
-                &platform.mcp_servers_key[0],
+                &platform.mcp_servers_key.join("."),
                 server_name,
                 config,
             )
@@ -1715,7 +1720,7 @@ fn apply_remove_to_platform(
     let is_toml = platform.config_format.as_deref() == Some("toml");
     if is_toml {
         if platform.toml_array_format {
-            remove_toml_array(config_path, &platform.mcp_servers_key[0], server_name)
+            remove_toml_array(config_path, &platform.mcp_servers_key.join("."), server_name)
         } else {
             remove_toml_key(config_path, &platform.mcp_servers_key[0], server_name)
         }

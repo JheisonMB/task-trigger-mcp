@@ -58,9 +58,17 @@ impl McpConfigRegistry {
         }
 
         let content = std::fs::read_to_string(config_path)?;
-        let clean = crate::setup::strip_jsonc_comments(&content);
+
+        // Parse file — TOML or JSON depending on extension
         let root: serde_json::Value =
-            serde_json::from_str(&clean).context("Failed to parse config file")?;
+            if config_path.extension().and_then(|e| e.to_str()) == Some("toml") {
+                let toml_val: toml::Value =
+                    content.parse().context("Failed to parse TOML config")?;
+                serde_json::to_value(&toml_val).context("Failed to convert TOML to JSON")?
+            } else {
+                let clean = crate::setup::strip_jsonc_comments(&content);
+                serde_json::from_str(&clean).context("Failed to parse config file")?
+            };
 
         let mut current = &root;
         for key in servers_key {
@@ -69,7 +77,11 @@ impl McpConfigRegistry {
                 .ok_or_else(|| anyhow::anyhow!("Key '{}' not found in config", key))?;
         }
 
-        let servers = extract_servers_from_object(current);
+        let servers = if current.is_array() {
+            extract_servers_from_array(current)
+        } else {
+            extract_servers_from_object(current)
+        };
 
         Ok(PlatformMcpConfig {
             platform: platform_name.to_string(),
@@ -198,6 +210,37 @@ fn extract_servers_from_object(servers_object: &serde_json::Value) -> Vec<McpSer
             servers.push(McpServerEntry {
                 name: name.clone(),
                 config: config.clone(),
+                enabled,
+            });
+        }
+    }
+
+    servers
+}
+
+/// Extract named servers from a TOML array-of-tables (`[[section]]` format).
+/// Each entry must have a `name` field; that field is used as the server key.
+fn extract_servers_from_array(array: &serde_json::Value) -> Vec<McpServerEntry> {
+    let mut servers = Vec::new();
+
+    if let Some(arr) = array.as_array() {
+        for item in arr {
+            let Some(name) = item.get("name").and_then(|n| n.as_str()) else {
+                continue;
+            };
+            let mut config = item.clone();
+            if let Some(obj) = config.as_object_mut() {
+                obj.remove("name");
+            }
+            let enabled = config
+                .get("disabled")
+                .and_then(|v| v.as_bool())
+                .map(|d| !d)
+                .or_else(|| config.get("enabled").and_then(|v| v.as_bool()))
+                .unwrap_or(true);
+            servers.push(McpServerEntry {
+                name: name.to_string(),
+                config,
                 enabled,
             });
         }
