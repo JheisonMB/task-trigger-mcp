@@ -87,10 +87,12 @@ pub fn fetch_registry_raw() -> Result<RegistryRaw> {
 }
 
 pub fn run_setup() -> Result<()> {
-    print_banner();
-
+    let mut wiz = WizardState::new();
     let home = dirs::home_dir().context("No home directory")?;
 
+    // ── Step 1: Fetch registry ──────────────────────────────────
+    clear_wizard_screen()?;
+    print_banner();
     print!("  Fetching platform registry... ");
     io::stdout().flush()?;
     let mut registry = fetch_registry()?;
@@ -100,9 +102,7 @@ pub fn run_setup() -> Result<()> {
             p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
         }
     }
-
-    println!("\x1b[32m✓\x1b[0m {} platform(s)", registry.platforms.len());
-    println!();
+    println!("\x1b[32m✓\x1b[0m");
 
     let detected: Vec<&Platform> = registry
         .platforms
@@ -110,10 +110,22 @@ pub fn run_setup() -> Result<()> {
         .filter(|p| is_platform_available(p))
         .collect();
 
+    let detected_names: Vec<&str> = detected.iter().map(|p| p.name.as_str()).collect();
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m Fetched registry — {} detected: {}",
+        detected.len(),
+        if detected_names.is_empty() {
+            "(none)".to_string()
+        } else {
+            detected_names.join(", ")
+        }
+    ));
+
+    // ── Step 2: Select platforms ─────────────────────────────────
+    wiz.render()?;
     if detected.is_empty() {
-        println!("  No supported platforms detected.");
         println!(
-            "  Supported: {}",
+            "  No supported platforms detected. Supported: {}",
             registry
                 .platforms
                 .iter()
@@ -122,32 +134,34 @@ pub fn run_setup() -> Result<()> {
                 .join(", ")
         );
         println!();
-    } else {
-        println!("  Detected platforms:");
-        for p in &detected {
-            println!("    \x1b[32m✓\x1b[0m {}", p.name);
-        }
-        println!();
     }
 
     let selected = select_platforms(&detected)?;
+    let selected_names: Vec<&str> = selected.iter().map(|p| p.name.as_str()).collect();
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m Platforms: {}",
+        if selected_names.is_empty() {
+            "(none)".to_string()
+        } else {
+            selected_names.join(", ")
+        }
+    ));
+
+    // ── Step 3: Configure MCP entries ───────────────────────────
+    wiz.render()?;
+    let (mut configured, mut skipped, mut failed) = (0usize, 0usize, 0usize);
 
     for p in &selected {
         let path = home.join(&p.config_path);
         let is_toml = p.config_format.as_deref() == Some("toml");
 
-        // Create config file if it doesn't exist
         if !path.exists() {
-            print!(
-                "  \x1b[33m?\x1b[0m {} config not found. Create it? [y/N] ",
-                p.name
-            );
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let input = input.trim().to_lowercase();
-            if input != "y" && input != "yes" {
-                println!("  \x1b[33m⏭\x1b[0m  Skipping {}", p.name);
+            let create = Confirm::new(&format!("{} config not found. Create it?", p.name))
+                .with_default(true)
+                .prompt()
+                .unwrap_or(false);
+            if !create {
+                skipped += 1;
                 continue;
             }
             if let Some(parent) = path.parent() {
@@ -159,26 +173,15 @@ pub fn run_setup() -> Result<()> {
                 format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
             };
             std::fs::write(&path, &initial_content)?;
-            println!("  \x1b[32m✓\x1b[0m Created {}", path.display());
         }
 
         if !is_toml {
             let servers_parent = &p.mcp_servers_key[0];
             for old_key in &p.deprecated_keys {
-                if let Ok(true) = remove_json_key(&path, servers_parent, old_key) {
-                    println!("  🗑  Removed old '{}' from {}", old_key, p.name);
-                }
+                let _ = remove_json_key(&path, servers_parent, old_key);
             }
-            if let Ok(removed) =
-                sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys)
-            {
-                if removed > 0 {
-                    println!(
-                        "  \x1b[32m✓\x1b[0m Sanitized {} unsupported key(s) in {}",
-                        removed, p.name
-                    );
-                }
-            }
+            let _ =
+                sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys);
         }
 
         let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
@@ -191,15 +194,25 @@ pub fn run_setup() -> Result<()> {
         };
 
         match result {
-            Ok(true) => println!("  \x1b[32m✅\x1b[0m Configured MCP for {}", p.name),
-            Ok(false) => println!("  \x1b[33m⏭\x1b[0m  {} already configured", p.name),
-            Err(e) => println!("  \x1b[31m❌\x1b[0m Failed to configure {}: {}", p.name, e),
+            Ok(true) => configured += 1,
+            Ok(false) => skipped += 1,
+            Err(_) => failed += 1,
         }
     }
-    println!();
 
-    print!("  Saving CLI configuration... ");
-    io::stdout().flush()?;
+    let mut mcp_parts = vec![format!("{configured} configured")];
+    if skipped > 0 {
+        mcp_parts.push(format!("{skipped} skipped"));
+    }
+    if failed > 0 {
+        mcp_parts.push(format!("{failed} failed"));
+    }
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m MCP entries: {}",
+        mcp_parts.join(", ")
+    ));
+
+    // ── Step 4: Save CLI configuration ──────────────────────────
     let platforms_with_cli: Vec<PlatformWithCli> = selected
         .iter()
         .map(|p| p.to_platform_with_cli())
@@ -211,45 +224,47 @@ pub fn run_setup() -> Result<()> {
     let canopy_dir = home.join(".canopy");
     std::fs::create_dir_all(&canopy_dir)?;
 
-    match cli_registry.save(&canopy_dir.join("cli_config.json")) {
-        Ok(_) => {
-            println!(
-                "\x1b[32m✅\x1b[0m {} CLI(s) saved",
-                cli_registry.available_clis.len()
-            );
-        }
-        Err(e) => println!("\x1b[33m⚠\x1b[0m  Failed to save CLI config: {}", e),
-    }
+    let cli_step = match cli_registry.save(&canopy_dir.join("cli_config.json")) {
+        Ok(_) => format!(
+            "\x1b[32m✓\x1b[0m CLI config: {} CLI(s) saved",
+            cli_registry.available_clis.len()
+        ),
+        Err(e) => format!("\x1b[33m⚠\x1b[0m CLI config: {e}"),
+    };
+    wiz.add(cli_step);
 
-    // Sync MCP configurations across platforms
+    // ── Step 5: MCP Manager (sync/add/remove) ───────────────────
     if !selected.is_empty() {
-        let _ = run_sync_step(&home, &selected);
+        let sync_summary = run_sync_step(&mut wiz, &home, &selected)?;
+        if let Some(s) = sync_summary {
+            wiz.add(s);
+        }
     }
 
-    // Start daemon
-    print!("  Starting daemon... ");
-    io::stdout().flush()?;
-    match start_daemon_if_needed() {
-        Ok(true) => println!("\x1b[32m✅\x1b[0m started"),
-        Ok(false) => println!("\x1b[32m✅\x1b[0m already running"),
-        Err(e) => println!("\x1b[31m❌\x1b[0m {e}"),
-    }
+    // ── Step 6: Daemon + service ────────────────────────────────
+    wiz.render()?;
 
-    // Install service
-    print!("  Installing system service... ");
-    io::stdout().flush()?;
-    match install_service_if_needed() {
-        Ok(true) => println!("\x1b[32m✅\x1b[0m installed"),
-        Ok(false) => println!("\x1b[32m✅\x1b[0m already installed"),
-        Err(e) => println!("\x1b[31m❌\x1b[0m {e}"),
-    }
+    let daemon_msg = match start_daemon_if_needed() {
+        Ok(true) => "\x1b[32m✓\x1b[0m Daemon: started",
+        Ok(false) => "\x1b[32m✓\x1b[0m Daemon: already running",
+        Err(_) => "\x1b[31m✗\x1b[0m Daemon: failed to start",
+    };
+    wiz.add(daemon_msg.to_string());
+
+    let service_msg = match install_service_if_needed() {
+        Ok(true) => "\x1b[32m✓\x1b[0m Service: installed",
+        Ok(false) => "\x1b[32m✓\x1b[0m Service: already installed",
+        Err(_) => "\x1b[31m✗\x1b[0m Service: failed to install",
+    };
+    wiz.add(service_msg.to_string());
 
     // Mark configured
     let marker = home.join(".canopy/.configured");
     std::fs::create_dir_all(marker.parent().unwrap())?;
     std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
 
-    println!();
+    // ── Final summary ───────────────────────────────────────────
+    wiz.render()?;
     println!("  \x1b[1;32m✅ Setup complete! canopy is ready.\x1b[0m");
     println!("  Run \x1b[1mcanopy\x1b[0m or \x1b[1mcanopy tui\x1b[0m to launch the interface.");
     println!();
@@ -288,6 +303,35 @@ fn print_banner() {
     println!("  \x1b[1mAgent Hub — Setup Wizard\x1b[0m");
     println!("  ─────────────────────────────────────────────");
     println!();
+}
+
+/// Tracks completed wizard steps so we can re-render a clean summary
+/// after clearing the screen between interactive phases.
+struct WizardState {
+    steps: Vec<String>,
+}
+
+impl WizardState {
+    fn new() -> Self {
+        Self { steps: vec![] }
+    }
+
+    fn add(&mut self, summary: String) {
+        self.steps.push(summary);
+    }
+
+    /// Clear screen → banner → all completed step summaries.
+    fn render(&self) -> Result<()> {
+        clear_wizard_screen()?;
+        print_banner();
+        for step in &self.steps {
+            println!("  {step}");
+        }
+        if !self.steps.is_empty() {
+            println!();
+        }
+        Ok(())
+    }
 }
 
 fn select_platforms<'a>(detected: &[&'a Platform]) -> Result<Vec<&'a Platform>> {
@@ -941,7 +985,8 @@ fn print_mcp_matrix(all_configs: &[crate::config::PlatformMcpConfig]) {
             } else {
                 "\x1b[31m✗\x1b[0m"
             };
-            row.push_str(&format!(" {:>cell_col$}", icon, cell_col = cell_col));
+            // Manual padding: ANSI codes break format width, so pad explicitly
+            row.push_str(&format!(" {}{}", " ".repeat(cell_col - 1), icon));
         }
         println!("{}", row);
     }
@@ -1279,20 +1324,24 @@ fn run_remove_action(
 }
 
 /// Run the interactive MCP setup/management step.
-fn run_sync_step(home: &Path, selected: &[&Platform]) -> Result<()> {
+fn run_sync_step(
+    wiz: &mut WizardState,
+    home: &Path,
+    selected: &[&Platform],
+) -> Result<Option<String>> {
     if selected.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
 
     loop {
-        clear_wizard_screen()?;
+        wiz.render()?;
         println!("  \x1b[1mMCP Manager\x1b[0m");
         println!("  ─────────────────────────────────────────────");
         println!();
 
         let all_configs = extract_all_mcp_configs(home, selected);
         if all_configs.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         let unique_servers = collect_unique_servers(&all_configs);
         print_mcp_matrix(&all_configs);
@@ -1326,5 +1375,7 @@ fn run_sync_step(home: &Path, selected: &[&Platform]) -> Result<()> {
         }
     }
 
-    Ok(())
+    Ok(Some(
+        "\x1b[32m✓\x1b[0m MCP servers synced".to_string(),
+    ))
 }
