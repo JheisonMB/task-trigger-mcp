@@ -52,6 +52,9 @@ pub fn run_tui() -> Result<()> {
     let db = Arc::new(Database::new(&db_path).context("Failed to open database")?);
     let mut app = App::new(Arc::clone(&db), &data_dir)?;
 
+    // Auto-resume previously active interactive sessions
+    app.auto_resume_sessions();
+
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();

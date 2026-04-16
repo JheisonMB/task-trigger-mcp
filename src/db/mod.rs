@@ -88,6 +88,18 @@ impl Database {
             CREATE TABLE IF NOT EXISTS daemon_state (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS interactive_sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                cli TEXT NOT NULL,
+                working_dir TEXT NOT NULL,
+                args TEXT,
+                started_at TEXT NOT NULL,
+                exited_at TEXT,
+                exit_code INTEGER,
+                status TEXT NOT NULL DEFAULT 'active'
             );",
         )?;
 
@@ -170,6 +182,84 @@ impl Database {
             )?;
         }
 
+        Ok(())
+    }
+}
+
+// ── Interactive session registry ────────────────────────────────────────
+
+/// Record of an interactive agent session (persisted in SQLite).
+#[allow(dead_code)]
+pub struct InteractiveSession {
+    pub id: String,
+    pub name: String,
+    pub cli: String,
+    pub working_dir: String,
+    pub args: Option<String>,
+    pub started_at: String,
+    pub status: String, // active, completed, error
+}
+
+impl Database {
+    /// Insert a new interactive session as active.
+    pub fn insert_interactive_session(
+        &self,
+        id: &str,
+        name: &str,
+        cli: &str,
+        working_dir: &str,
+        args: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO interactive_sessions (id, name, cli, working_dir, args, started_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active')",
+            params![id, name, cli, working_dir, args, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a session as exited with a status and optional exit code.
+    pub fn finish_interactive_session(&self, id: &str, exit_code: i32) -> Result<()> {
+        let status = if exit_code == 0 { "completed" } else { "error" };
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "UPDATE interactive_sessions SET exited_at = ?1, exit_code = ?2, status = ?3 WHERE id = ?4",
+            params![Utc::now().to_rfc3339(), exit_code, status, id],
+        )?;
+        Ok(())
+    }
+
+    /// Get all sessions with status = 'active'.
+    pub fn get_active_sessions(&self) -> Result<Vec<InteractiveSession>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, cli, working_dir, args, started_at, status
+             FROM interactive_sessions WHERE status = 'active' ORDER BY started_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(InteractiveSession {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    cli: row.get(2)?,
+                    working_dir: row.get(3)?,
+                    args: row.get(4)?,
+                    started_at: row.get(5)?,
+                    status: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Mark all 'active' sessions as 'orphaned' (called on startup cleanup).
+    pub fn mark_orphaned_sessions(&self) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "UPDATE interactive_sessions SET status = 'orphaned' WHERE status = 'active'",
+            [],
+        )?;
         Ok(())
     }
 }

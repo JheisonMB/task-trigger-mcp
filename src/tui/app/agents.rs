@@ -120,6 +120,7 @@ impl App {
             let agent_id = self.interactive_agents[old_idx].id.clone();
             match status {
                 AgentStatus::Exited(0) => {
+                    let _ = self.db.finish_interactive_session(&agent_id, 0);
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
                     if self.notifications_enabled {
@@ -130,6 +131,7 @@ impl App {
                     }
                 }
                 AgentStatus::Exited(code) => {
+                    let _ = self.db.finish_interactive_session(&agent_id, code);
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
                     if self.notifications_enabled {
@@ -221,6 +223,7 @@ impl App {
 
     pub fn cleanup(&mut self) {
         for agent in &mut self.interactive_agents {
+            let _ = self.db.finish_interactive_session(&agent.id, 0);
             agent.kill();
         }
     }

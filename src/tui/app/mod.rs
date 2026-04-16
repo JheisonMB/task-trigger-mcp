@@ -418,6 +418,82 @@ impl App {
             .map(|(i, _)| i)
             .collect()
     }
+
+    /// Auto-resume previously active interactive sessions from the registry.
+    ///
+    /// On startup, any sessions marked 'active' are from a previous canopy run
+    /// where the PTY processes have since died. For CLIs that support resume
+    /// (e.g. `--continue`), we re-launch in resume mode in the same directory.
+    pub fn auto_resume_sessions(&mut self) {
+        let Ok(sessions) = self.db.get_active_sessions() else {
+            return;
+        };
+
+        if sessions.is_empty() {
+            return;
+        }
+
+        // Mark all old active sessions as orphaned first
+        let _ = self.db.mark_orphaned_sessions();
+
+        let home = dirs::home_dir().unwrap_or_default();
+        let config_path = home.join(".canopy/cli_config.json");
+        let registry = crate::domain::cli_config::CliRegistry::load(&config_path);
+
+        let (cols, rows) = {
+            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+            (tw.saturating_sub(28), th.saturating_sub(4))
+        };
+
+        for session in &sessions {
+            let cli = crate::domain::models::Cli::from_str(&session.cli);
+
+            // Get CLI config for resume args and accent color
+            let cli_config = registry.as_ref().and_then(|r| r.get(cli.as_str()));
+            let resume_args = cli_config.and_then(|c| c.resume_args.as_deref());
+            let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
+            let accent = cli_config
+                .and_then(|c| c.accent_color)
+                .map(|[r, g, b]| ratatui::style::Color::Rgb(r, g, b))
+                .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
+
+            // Use resume_args if available, otherwise fall back to original args
+            let args = resume_args.or(session.args.as_deref());
+
+            let existing_ids: Vec<&str> =
+                self.interactive_agents.iter().map(|a| a.id.as_str()).collect();
+
+            match super::agent::InteractiveAgent::spawn(
+                cli.clone(),
+                &session.working_dir,
+                cols,
+                rows,
+                args,
+                fallback,
+                accent,
+                Some(&session.name),
+                &existing_ids,
+            ) {
+                Ok(agent) => {
+                    let _ = self.db.insert_interactive_session(
+                        &agent.id,
+                        &agent.id,
+                        cli.as_str(),
+                        &session.working_dir,
+                        args,
+                    );
+                    self.interactive_agents.push(agent);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to auto-resume session '{}': {e}", session.name);
+                }
+            }
+        }
+
+        if !self.interactive_agents.is_empty() {
+            let _ = self.refresh_agents();
+        }
+    }
 }
 
 // ── Free functions ──────────────────────────────────────────────

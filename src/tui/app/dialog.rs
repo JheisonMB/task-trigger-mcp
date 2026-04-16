@@ -618,6 +618,14 @@ impl App {
             name.as_deref(),
             &existing_ids,
         )?;
+        // Persist session in registry
+        let _ = self.db.insert_interactive_session(
+            &agent.id,
+            &agent.id,
+            agent.cli.as_str(),
+            &dir,
+            args.as_deref(),
+        );
         self.interactive_agents.push(agent);
         self.whimsg
             .notify_event(crate::tui::whimsg::WhimContext::AgentSpawned);
