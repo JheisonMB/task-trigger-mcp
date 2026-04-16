@@ -212,6 +212,13 @@ pub fn run_setup() -> Result<()> {
         mcp_parts.join(", ")
     ));
 
+    // ── Step 3.5: Recommended MCP servers ───────────────────────
+    wiz.render()?;
+    let rec_summary = install_recommended_mcp_servers(&home, &selected)?;
+    if let Some(s) = rec_summary {
+        wiz.add(s);
+    }
+
     // ── Step 4: Save CLI configuration ──────────────────────────
     let platforms_with_cli: Vec<PlatformWithCli> = selected
         .iter()
@@ -881,6 +888,153 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+// ── Recommended MCP servers ───────────────────────────────────────────────
+
+/// Recommended MCP server definitions.
+#[allow(dead_code)]
+struct RecommendedServer {
+    name: &'static str,
+    label: &'static str,
+    /// Build the config JSON for this server. `fs_dir` is only used for filesystem.
+    build_config: fn(fs_dir: &str) -> serde_json::Value,
+    needs_dir: bool,
+}
+
+const RECOMMENDED_SERVERS: &[RecommendedServer] = &[
+    RecommendedServer {
+        name: "filesystem",
+        label: "filesystem — local file access",
+        build_config: |dir| {
+            serde_json::json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", dir]
+            })
+        },
+        needs_dir: true,
+    },
+    RecommendedServer {
+        name: "fetch",
+        label: "fetch — HTTP requests",
+        build_config: |_| {
+            serde_json::json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-fetch"]
+            })
+        },
+        needs_dir: false,
+    },
+    RecommendedServer {
+        name: "memory",
+        label: "memory — knowledge graph",
+        build_config: |_| {
+            let memory_dir = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".canopy/memory")
+                .to_string_lossy()
+                .to_string();
+            serde_json::json!({
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-memory"],
+                "env": { "MEMORY_FILE_PATH": format!("{memory_dir}/memory.json") }
+            })
+        },
+        needs_dir: false,
+    },
+];
+
+/// Interactively install recommended MCP servers across selected platforms.
+fn install_recommended_mcp_servers(
+    home: &Path,
+    selected: &[&Platform],
+) -> Result<Option<String>> {
+    if selected.is_empty() {
+        return Ok(None);
+    }
+
+    println!();
+    println!("  \x1b[1mRecommended MCP servers\x1b[0m");
+    println!("  These provide essential capabilities alongside canopy:");
+    println!();
+
+    let choices: Vec<String> = RECOMMENDED_SERVERS.iter().map(|s| s.label.to_string()).collect();
+    let chosen = MultiSelect::new("Install recommended servers:", choices)
+        .with_all_selected_by_default()
+        .prompt()
+        .unwrap_or_default();
+
+    if chosen.is_empty() {
+        return Ok(Some(
+            "\x1b[33m⏭\x1b[0m Recommended servers: skipped".to_string(),
+        ));
+    }
+
+    // For filesystem, ask the user to pick a directory
+    let mut fs_dir = String::new();
+    let needs_filesystem = chosen.iter().any(|c| c.starts_with("filesystem"));
+    if needs_filesystem {
+        let default_dir = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| home.to_string_lossy().to_string());
+        fs_dir = Text::new("Filesystem root directory:")
+            .with_default(&default_dir)
+            .with_help_message("The agent will have read/write access to this directory")
+            .prompt()
+            .unwrap_or(default_dir);
+    }
+
+    // Ensure memory directory exists
+    let needs_memory = chosen.iter().any(|c| c.starts_with("memory"));
+    if needs_memory {
+        let memory_dir = home.join(".canopy/memory");
+        let _ = std::fs::create_dir_all(&memory_dir);
+    }
+
+    let mut installed = 0usize;
+    let mut skipped = 0usize;
+
+    for server in RECOMMENDED_SERVERS {
+        if !chosen.iter().any(|c| c.starts_with(server.name)) {
+            continue;
+        }
+
+        let config = (server.build_config)(&fs_dir);
+
+        for p in selected {
+            let path = home.join(&p.config_path);
+            if !path.exists() {
+                continue;
+            }
+            let sanitized = sanitize_server_config_for_platform(
+                &p.name,
+                &p.unsupported_keys,
+                config.clone(),
+            );
+            match apply_upsert_to_platform(p, &path, server.name, &sanitized) {
+                Ok(true) => installed += 1,
+                Ok(false) => skipped += 1,
+                Err(_) => {}
+            }
+        }
+    }
+
+    let mut parts = Vec::new();
+    if installed > 0 {
+        parts.push(format!("{installed} installed"));
+    }
+    if skipped > 0 {
+        parts.push(format!("{skipped} already present"));
+    }
+    let label = if parts.is_empty() {
+        "no changes".to_string()
+    } else {
+        parts.join(", ")
+    };
+
+    Ok(Some(format!(
+        "\x1b[32m✓\x1b[0m Recommended servers: {label}"
+    )))
 }
 
 // ── MCP Sync ──────────────────────────────────────────────────────────────
