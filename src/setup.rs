@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use inquire::{MultiSelect, Select};
+use inquire::MultiSelect;
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -52,6 +52,7 @@ pub struct Platform {
     /// Keys that this platform's MCP schema does not support.
     /// Used to sanitize configs when syncing across platforms.
     #[serde(default)]
+    #[allow(dead_code)]
     pub unsupported_keys: Vec<String>,
     /// MCP servers that canopy always installs alongside its own entry.
     /// Keys are server names, values are their config templates.
@@ -137,7 +138,9 @@ fn load_mcp_fs_root(home: &Path) -> String {
             }
         }
     }
-    "/".to_string()
+    dirs::home_dir()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|| "/".to_string())
 }
 
 /// Persist the chosen filesystem root path for reuse across setups and updates.
@@ -363,72 +366,12 @@ pub fn run_setup() -> Result<()> {
     let dep_msg = ensure_mcp_dependencies();
     wiz.add(dep_msg);
 
-    // ── Step 3: Configure MCP entries ───────────────────────────
-    wiz.render()?;
-    let (mut configured, mut skipped, mut failed) = (0usize, 0usize, 0usize);
-
-    for p in &selected {
-        let path = resolve_config_path(&home, &p.config_path);
-        let is_toml = p.config_format.as_deref() == Some("toml");
-
-        if !path.exists() {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let initial_content = if is_toml {
-                format!("[{}]\n", &p.mcp_servers_key[0])
-            } else {
-                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
-            };
-            std::fs::write(&path, &initial_content)?;
+    // ── Step 3: Install MCP servers + show matrix ───────────────
+    if !selected.is_empty() {
+        let sync_summary = run_sync_step(&mut wiz, &home, &selected)?;
+        if let Some(s) = sync_summary {
+            wiz.add(s);
         }
-
-        if !is_toml {
-            let servers_parent = &p.mcp_servers_key[0];
-            for old_key in &p.deprecated_keys {
-                let _ = remove_json_key(&path, servers_parent, old_key);
-            }
-            let _ =
-                sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys);
-        }
-
-        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
-        let result = if is_toml {
-            if p.toml_array_format {
-                upsert_toml_array(&path, &p.mcp_servers_key.join("."), &p.canopy_entry_key, &entry)
-            } else {
-                upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry)
-            }
-        } else {
-            let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
-            key_refs.push(&p.canopy_entry_key);
-            upsert_json_key(&path, &key_refs, &entry)
-        };
-
-        match result {
-            Ok(true) => configured += 1,
-            Ok(false) => skipped += 1,
-            Err(_) => failed += 1,
-        }
-    }
-
-    let mut mcp_parts = vec![format!("{configured} configured")];
-    if skipped > 0 {
-        mcp_parts.push(format!("{skipped} skipped"));
-    }
-    if failed > 0 {
-        mcp_parts.push(format!("{failed} failed"));
-    }
-    wiz.add(format!(
-        "\x1b[32m✓\x1b[0m MCP entries: {}",
-        mcp_parts.join(", ")
-    ));
-
-    // ── Step 3.5: Recommended MCP servers ───────────────────────
-    wiz.render()?;
-    let rec_summary = install_recommended_mcp_servers(&home, &selected)?;
-    if let Some(s) = rec_summary {
-        wiz.add(s);
     }
 
     // ── Step 4: Save CLI configuration ──────────────────────────
@@ -781,6 +724,9 @@ fn upsert_toml_array(
         base.push('\n');
     }
 
+    // Remove stray [[section]] headers not followed by a name = "..." line
+    base = remove_stray_toml_array_headers(&base, &array_header);
+
     // Build the TOML fragment
     let mut fragment = format!("\n{array_header}\nname = \"{entry_key}\"\n");
     if let Some(obj) = value.as_object() {
@@ -861,48 +807,30 @@ fn remove_toml_array_entry_str(content: &str, array_header: &str, name_line: &st
     out
 }
 
-fn sanitize_existing_json_servers(
-    path: &Path,
-    servers_key: &[String],
-    unsupported_keys: &[String],
-) -> Result<usize> {
-    if unsupported_keys.is_empty() || !path.exists() {
-        return Ok(0);
-    }
-
-    let content = std::fs::read_to_string(path)?;
-    let clean = strip_jsonc_comments(&content);
-    let mut root: serde_json::Value = serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
-
-    let mut current = &mut root;
-    for key in servers_key {
-        let Some(next) = current.get_mut(key) else {
-            return Ok(0);
-        };
-        current = next;
-    }
-
-    let Some(servers_obj) = current.as_object_mut() else {
-        return Ok(0);
-    };
-
-    let mut removed_count = 0usize;
-    for (_, server_cfg) in servers_obj.iter_mut() {
-        let Some(server_obj) = server_cfg.as_object_mut() else {
-            continue;
-        };
-        for key in unsupported_keys {
-            if server_obj.remove(key).is_some() {
-                removed_count += 1;
+/// Remove `[[section]]` header lines that are not followed by a `name = "..."` line.
+/// Fixes stray empty headers accumulated from previous corrupt writes.
+fn remove_stray_toml_array_headers(content: &str, array_header: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = String::with_capacity(content.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == array_header {
+            let next_non_empty = (i + 1..lines.len()).find(|&j| !lines[j].trim().is_empty());
+            let is_valid = next_non_empty
+                .map(|j| lines[j].trim().starts_with("name ="))
+                .unwrap_or(false);
+            if is_valid {
+                out.push_str(lines[i]);
+                out.push('\n');
             }
+            // else: stray header without content — drop it
+        } else {
+            out.push_str(lines[i]);
+            out.push('\n');
         }
+        i += 1;
     }
-
-    if removed_count > 0 {
-        std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
-    }
-
-    Ok(removed_count)
+    out
 }
 
 pub(crate) fn strip_jsonc_comments(input: &str) -> String {
@@ -1069,81 +997,22 @@ pub fn needs_setup() -> bool {
 pub fn run_setup_silent() -> Result<()> {
     let home = dirs::home_dir().context("No home directory")?;
 
-    // Ensure MCP runtime dependencies
     ensure_mcp_dependencies_silent();
 
     let mut registry = fetch_registry()?;
-
     for p in &mut registry.platforms {
         if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
             p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
         }
     }
 
-    // Auto-detect all installed platforms
     let detected: Vec<&Platform> = registry
         .platforms
         .iter()
         .filter(|p| is_platform_available(p))
         .collect();
 
-    // Configure MCP for all detected platforms
-    for p in &detected {
-        let path = resolve_config_path(&home, &p.config_path);
-        let is_toml = p.config_format.as_deref() == Some("toml");
-
-        // Auto-create config file if missing
-        if !path.exists() {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            let initial = if is_toml {
-                format!("[{}]\n", &p.mcp_servers_key[0])
-            } else {
-                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
-            };
-            let _ = std::fs::write(&path, &initial);
-        }
-
-        if !is_toml {
-            let servers_parent = &p.mcp_servers_key[0];
-            for old_key in &p.deprecated_keys {
-                let _ = remove_json_key(&path, servers_parent, old_key);
-            }
-            let _ = sanitize_existing_json_servers(&path, &p.mcp_servers_key, &p.unsupported_keys);
-        }
-
-        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
-        if is_toml {
-            if p.toml_array_format {
-                let _ = upsert_toml_array(&path, &p.mcp_servers_key.join("."), &p.canopy_entry_key, &entry);
-            } else {
-                let _ = upsert_toml_key(&path, &p.mcp_servers_key[0], &p.canopy_entry_key, &entry);
-            }
-        } else {
-            let mut key_refs: Vec<&str> = p.mcp_servers_key.iter().map(|s| s.as_str()).collect();
-            key_refs.push(&p.canopy_entry_key);
-            let _ = upsert_json_key(&path, &key_refs, &entry);
-        }
-
-        // Install recommended servers silently (use home as default fs dir)
-        let home_str = home.to_string_lossy().to_string();
-        let default_dir = load_mcp_fs_root(&home);
-        for (server_name, template) in &p.recommended_servers {
-            let mut config = template.clone();
-            substitute_placeholders(&mut config, &home_str, &default_dir);
-            let sanitized = sanitize_server_config_for_platform(
-                &p.name,
-                &p.unsupported_keys,
-                config,
-            );
-            let _ = apply_upsert_to_platform(p, &path, server_name, &sanitized);
-        }
-        // Ensure memory directory
-        if p.recommended_servers.contains_key("memory") {
-            let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
-        }
-    }
+    run_install_our_servers(&home, &detected)?;
 
     // Save CLI config
     let platforms_with_cli: Vec<PlatformWithCli> = detected
@@ -1158,68 +1027,10 @@ pub fn run_setup_silent() -> Result<()> {
     std::fs::create_dir_all(&canopy_dir)?;
     cli_registry.save(&canopy_dir.join("cli_config.json"))?;
 
-    // Mark configured
     let marker = home.join(".canopy/.configured");
     std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
 
-    // Restart daemon so it picks up new configs
-    let _ = stop_daemon();
-    let _ = start_daemon_if_needed();
-
     Ok(())
-}
-
-/// Sanitize a platform's `canopy_entry` by stripping keys that the CLI's
-/// MCP config schema does not support.  This protects against registry
-/// entries that include keys valid for one CLI but invalid for another
-/// (e.g. `"tools"` is supported by copilot but rejected by gemini).
-fn sanitize_canopy_entry(
-    platform_name: &str,
-    unsupported_keys: &[String],
-    mut entry: serde_json::Value,
-) -> serde_json::Value {
-    if let Some(obj) = entry.as_object_mut() {
-        for key in unsupported_keys {
-            obj.remove(key);
-        }
-
-        // Homologate transport type for HTTP servers.
-        // Modern MCP clients use "remote" for HTTP-based transports.
-        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral" | "gemini")
-            && obj.contains_key("url")
-        {
-            obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("remote".to_string()),
-            );
-        }
-    }
-    entry
-}
-
-/// Sanitize an arbitrary MCP server config for a target platform.
-/// Removes keys that the target platform does not support.
-fn sanitize_server_config_for_platform(
-    platform_name: &str,
-    unsupported_keys: &[String],
-    mut config: serde_json::Value,
-) -> serde_json::Value {
-    if let Some(obj) = config.as_object_mut() {
-        for key in unsupported_keys {
-            obj.remove(key);
-        }
-
-        // Homologate transport type for HTTP servers.
-        if matches!(platform_name, "copilot" | "qwen" | "claude" | "mistral" | "gemini")
-            && obj.contains_key("url")
-        {
-            obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("remote".to_string()),
-            );
-        }
-    }
-    config
 }
 
 /// Refresh the registry config in the background if it's older than 24h.
@@ -1421,90 +1232,6 @@ fn browse_directory(start_dir: &str) -> String {
     }
 }
 
-/// Install recommended MCP servers (mandatory) across all selected platforms.
-/// Uses `recommended_servers` from each platform's registry entry.
-fn install_recommended_mcp_servers(
-    home: &Path,
-    selected: &[&Platform],
-) -> Result<Option<String>> {
-    if selected.is_empty() {
-        return Ok(None);
-    }
-
-    // Collect all unique recommended server names across platforms
-    let mut all_server_names: Vec<String> = selected
-        .iter()
-        .flat_map(|p| p.recommended_servers.keys().cloned())
-        .collect();
-    all_server_names.sort();
-    all_server_names.dedup();
-
-    if all_server_names.is_empty() {
-        return Ok(None);
-    }
-
-    // Check if any platform needs a filesystem directory
-    let needs_fs = selected
-        .iter()
-        .any(|p| p.recommended_servers.contains_key("filesystem"));
-
-    let mut fs_dir = String::new();
-    if needs_fs {
-        let default_dir = load_mcp_fs_root(home);
-        println!();
-        println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
-        println!("  Agents will have read/write access to everything inside this directory.");
-        println!("  Choose a project folder or workspace root (e.g. ~/Documents/Projects).");
-        println!();
-        fs_dir = browse_directory(&default_dir);
-        save_mcp_fs_root(home, &fs_dir);
-    }
-
-    // Ensure memory directory exists
-    let needs_memory = selected
-        .iter()
-        .any(|p| p.recommended_servers.contains_key("memory"));
-    if needs_memory {
-        let memory_dir = home.join(".canopy/memory");
-        let _ = std::fs::create_dir_all(&memory_dir);
-    }
-
-    let home_str = home.to_string_lossy().to_string();
-    let mut installed = 0usize;
-
-    for p in selected {
-        let config_path = resolve_config_path(home, &p.config_path);
-        if !config_path.exists() {
-            continue;
-        }
-
-        for (server_name, template) in &p.recommended_servers {
-            let mut config = template.clone();
-            substitute_placeholders(&mut config, &home_str, &fs_dir);
-
-            let sanitized = sanitize_server_config_for_platform(
-                &p.name,
-                &p.unsupported_keys,
-                config,
-            );
-            if apply_upsert_to_platform(p, &config_path, server_name, &sanitized).is_ok() {
-                installed += 1;
-            }
-        }
-    }
-
-    let server_list = all_server_names.join(", ");
-    let label = if installed > 0 {
-        format!("{installed} installed")
-    } else {
-        "no changes".to_string()
-    };
-
-    Ok(Some(format!(
-        "\x1b[32m✓\x1b[0m Recommended servers ({server_list}): {label}"
-    )))
-}
-
 /// Extract all MCP server configs from the selected platforms.
 fn extract_all_mcp_configs(
     home: &Path,
@@ -1595,21 +1322,6 @@ fn clear_wizard_screen() -> Result<()> {
     Ok(())
 }
 
-fn wait_continue() -> Result<()> {
-    println!();
-    println!("  Press Enter to continue...");
-    let mut buf = String::new();
-    io::stdin().read_line(&mut buf)?;
-    println!();
-    Ok(())
-}
-
-#[derive(Default)]
-struct OperationSummary {
-    added: usize,
-    failed: usize,
-}
-
 fn apply_upsert_to_platform(
     platform: &Platform,
     config_path: &Path,
@@ -1644,41 +1356,75 @@ fn apply_upsert_to_platform(
     }
 }
 
-/// Install/update the 4 canopy servers on all selected platforms using the saved fs root.
+/// Install/update canopy + recommended MCP servers on all selected platforms.
+/// Applies registry entries directly — no sanitization, just placeholder substitution.
 fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
-    let fs_dir = load_mcp_fs_root(home);
+    let needs_fs = selected
+        .iter()
+        .any(|p| p.recommended_servers.contains_key("filesystem"));
+
+    let fs_dir = if needs_fs {
+        let mcp_config = home.join(".canopy/mcp_config.json");
+        if mcp_config.exists() {
+            // Already configured — use saved value
+            load_mcp_fs_root(home)
+        } else {
+            // First time — ask
+            let default_dir = home.to_string_lossy().to_string();
+            println!();
+            println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
+            println!("  Agents will have read/write access to everything inside this directory.");
+            println!("  Choose a project folder or workspace root (e.g. ~/Documents/Projects).");
+            println!();
+            let chosen = browse_directory(&default_dir);
+            save_mcp_fs_root(home, &chosen);
+            chosen
+        }
+    } else {
+        load_mcp_fs_root(home)
+    };
     let home_str = home.to_string_lossy().to_string();
-    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
-        std::collections::BTreeMap::new();
 
     for p in selected {
         let config_path = resolve_config_path(home, &p.config_path);
-        if !config_path.exists() {
-            continue;
-        }
-        let summary = summaries.entry(p.name.clone()).or_default();
+        let is_toml = p.config_format.as_deref() == Some("toml");
 
-        for (server_name, template) in &p.recommended_servers {
-            let mut config = template.clone();
-            substitute_placeholders(&mut config, &home_str, &fs_dir);
-            let sanitized = sanitize_server_config_for_platform(&p.name, &p.unsupported_keys, config);
-            match apply_upsert_to_platform(p, &config_path, server_name, &sanitized) {
-                Ok(_) => summary.added += 1,
-                Err(_) => summary.failed += 1,
+        // Create config file if missing
+        if !config_path.exists() {
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let initial = if is_toml {
+                String::new()
+            } else {
+                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
+            };
+            let _ = std::fs::write(&config_path, &initial);
+        }
+
+        // Remove deprecated JSON keys (cleanup only, don't touch other entries)
+        if !is_toml {
+            let servers_parent = &p.mcp_servers_key[0];
+            for old_key in &p.deprecated_keys {
+                let _ = remove_json_key(&config_path, servers_parent, old_key);
             }
         }
 
-        // Also write the canopy entry itself
-        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
-        let _ = apply_upsert_to_platform(p, &config_path, &p.canopy_entry_key.clone(), &entry);
+        // Write canopy entry directly from registry
+        let _ = apply_upsert_to_platform(p, &config_path, &p.canopy_entry_key.clone(), &p.canopy_entry.clone());
+
+        // Write recommended servers with placeholder substitution
+        for (server_name, template) in &p.recommended_servers {
+            let mut config = template.clone();
+            substitute_placeholders(&mut config, &home_str, &fs_dir);
+            let _ = apply_upsert_to_platform(p, &config_path, server_name, &config);
+        }
+
+        if p.recommended_servers.contains_key("memory") {
+            let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
+        }
     }
 
-    println!();
-    println!("  Update summary:");
-    for (platform, s) in summaries {
-        println!("    {} -> updated: {}, failed: {}", platform, s.added, s.failed);
-    }
-    println!();
     Ok(())
 }
 
@@ -1692,35 +1438,16 @@ fn run_sync_step(
         return Ok(None);
     }
 
-    loop {
-        wiz.render()?;
-        println!("  \x1b[1mMCP Manager\x1b[0m");
-        println!("  ─────────────────────────────────────────────");
-        println!();
+    wiz.render()?;
+    println!("  \x1b[1mMCP Manager\x1b[0m");
+    println!("  ─────────────────────────────────────────────");
+    println!();
 
-        let all_configs = extract_all_mcp_configs(home, selected);
-        if all_configs.is_empty() {
-            return Ok(None);
-        }
+    run_install_our_servers(home, selected)?;
+
+    let all_configs = extract_all_mcp_configs(home, selected);
+    if !all_configs.is_empty() {
         print_mcp_matrix(&all_configs);
-
-        let action = Select::new(
-            "MCP action:",
-            vec![
-                "Install / Update our servers on all platforms".to_string(),
-                "Continue".to_string(),
-            ],
-        )
-        .prompt()
-        .unwrap_or_else(|_| "Continue".to_string());
-
-        match action.as_str() {
-            "Install / Update our servers on all platforms" => {
-                run_install_our_servers(home, selected)?;
-                wait_continue()?;
-            }
-            _ => break,
-        }
     }
 
     Ok(Some(
