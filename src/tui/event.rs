@@ -294,10 +294,19 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Tab = cycle to next interactive agent (focus mode)
-    if code == KeyCode::Tab {
-        app.next_interactive();
-        return Ok(());
+    // Ctrl+Down = next interactive agent, Ctrl+Up = prev (focus mode)
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        match code {
+            KeyCode::Down => {
+                app.next_interactive();
+                return Ok(());
+            }
+            KeyCode::Up => {
+                app.prev_interactive();
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 
     let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {

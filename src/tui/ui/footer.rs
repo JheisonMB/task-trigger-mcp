@@ -38,7 +38,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                 vec![
                     ("EscEsc", "back"),
-                    ("Tab", "next"),
+                    ("Ctrl+↑↓", "cycle agents"),
                     ("Ctrl+T", "transfer ctx"),
                     ("Ctrl+N", "new"),
                     ("Shift+Click", "select"),

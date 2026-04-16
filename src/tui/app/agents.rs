@@ -93,6 +93,33 @@ impl App {
         self.focus = Focus::Agent;
     }
 
+    pub fn prev_interactive(&mut self) {
+        let interactive_indices: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+            .map(|(i, _)| i)
+            .collect();
+
+        if interactive_indices.is_empty() {
+            return;
+        }
+
+        let current_pos = interactive_indices
+            .iter()
+            .position(|&i| i == self.selected)
+            .unwrap_or(0);
+
+        let prev_pos = if current_pos == 0 {
+            interactive_indices.len() - 1
+        } else {
+            current_pos - 1
+        };
+        self.selected = interactive_indices[prev_pos];
+        self.focus = Focus::Agent;
+    }
+
     pub(super) fn resize_interactive_agents(&mut self) {
         let (cols, rows) = self.last_panel_inner;
         if cols == 0 || rows == 0 {
