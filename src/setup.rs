@@ -4,7 +4,10 @@ use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
 
-const REGISTRY_URL: &str =
+const REGISTRY_BASE_URL: &str =
+    "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/";
+
+const REGISTRY_LEGACY_URL: &str =
     "https://raw.githubusercontent.com/UniverLab/canopy-registry/main/platforms.json";
 
 /// How often to refresh the registry in the background (24 hours).
@@ -13,6 +16,20 @@ const REGISTRY_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from
 #[derive(Deserialize, Clone)]
 pub struct RegistryRaw {
     pub platforms: Vec<Platform>,
+}
+
+/// Lightweight index for the per-platform registry (v5+).
+#[derive(Deserialize)]
+struct RegistryIndex {
+    #[allow(dead_code)]
+    version: u32,
+    platforms: Vec<IndexEntry>,
+}
+
+#[derive(Deserialize)]
+struct IndexEntry {
+    name: String,
+    binary: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -32,6 +49,11 @@ pub struct Platform {
     /// Used to sanitize configs when syncing across platforms.
     #[serde(default)]
     pub unsupported_keys: Vec<String>,
+    /// MCP servers that canopy always installs alongside its own entry.
+    /// Keys are server names, values are their config templates.
+    /// Supports `{filesystem_dir}` and `{home}` placeholders.
+    #[serde(default)]
+    pub recommended_servers: std::collections::HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub cli: Option<serde_json::Value>,
 }
@@ -71,6 +93,11 @@ pub fn is_platform_available(p: &Platform) -> bool {
         .and_then(|v| v.get("binary").and_then(|b| b.as_str()))
         .map(|binary| which::which(binary).is_ok())
         .unwrap_or(false)
+}
+
+/// Check if a binary is in PATH.
+fn is_binary_available(binary: &str) -> bool {
+    which::which(binary).is_ok()
 }
 
 #[allow(dead_code)]
@@ -279,9 +306,51 @@ pub fn run_setup() -> Result<()> {
     Ok(())
 }
 
+/// Fetch the per-platform registry (v5) or fall back to legacy monolithic file.
 fn fetch_registry() -> Result<RegistryRaw> {
-    let response = reqwest::blocking::Client::new()
-        .get(REGISTRY_URL)
+    let client = reqwest::blocking::Client::new();
+
+    // Try the v5 index first
+    if let Ok(response) = client
+        .get(format!("{REGISTRY_BASE_URL}index.json"))
+        .header("User-Agent", "canopy")
+        .send()
+    {
+        if response.status().is_success() {
+            if let Ok(index) = response.json::<RegistryIndex>() {
+                // Detect which binaries are available, fetch only those platform files
+                let needed: Vec<&IndexEntry> = index
+                    .platforms
+                    .iter()
+                    .filter(|e| is_binary_available(&e.binary))
+                    .collect();
+
+                let mut platforms = Vec::new();
+                for entry in &needed {
+                    let url = format!("{REGISTRY_BASE_URL}platforms/{}.json", entry.name);
+                    match client
+                        .get(&url)
+                        .header("User-Agent", "canopy")
+                        .send()
+                        .and_then(|r| r.json::<Platform>())
+                    {
+                        Ok(p) => platforms.push(p),
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch platform '{}': {e}", entry.name);
+                        }
+                    }
+                }
+
+                if !platforms.is_empty() {
+                    return Ok(RegistryRaw { platforms });
+                }
+            }
+        }
+    }
+
+    // Fallback: legacy monolithic platforms.json
+    let response = client
+        .get(REGISTRY_LEGACY_URL)
         .header("User-Agent", "canopy")
         .send()
         .context("Failed to connect to platform registry")?;
@@ -752,6 +821,26 @@ pub fn run_setup_silent() -> Result<()> {
             key_refs.push(&p.canopy_entry_key);
             let _ = upsert_json_key(&path, &key_refs, &entry);
         }
+
+        // Install recommended servers silently (use home as default fs dir)
+        let home_str = home.to_string_lossy().to_string();
+        let default_dir = std::env::current_dir()
+            .map(|d| d.to_string_lossy().to_string())
+            .unwrap_or_else(|_| home_str.clone());
+        for (server_name, template) in &p.recommended_servers {
+            let mut config = template.clone();
+            substitute_placeholders(&mut config, &home_str, &default_dir);
+            let sanitized = sanitize_server_config_for_platform(
+                &p.name,
+                &p.unsupported_keys,
+                config,
+            );
+            let _ = apply_upsert_to_platform(p, &path, server_name, &sanitized);
+        }
+        // Ensure memory directory
+        if p.recommended_servers.contains_key("memory") {
+            let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
+        }
     }
 
     // Save CLI config
@@ -892,59 +981,30 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
 
 // ── Recommended MCP servers ───────────────────────────────────────────────
 
-/// Recommended MCP server definitions.
-#[allow(dead_code)]
-struct RecommendedServer {
-    name: &'static str,
-    label: &'static str,
-    /// Build the config JSON for this server. `fs_dir` is only used for filesystem.
-    build_config: fn(fs_dir: &str) -> serde_json::Value,
-    needs_dir: bool,
+/// Replace `{filesystem_dir}` and `{home}` placeholders in a JSON value tree.
+fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &str) {
+    match value {
+        serde_json::Value::String(s) => {
+            if s.contains("{filesystem_dir}") || s.contains("{home}") {
+                *s = s.replace("{filesystem_dir}", fs_dir).replace("{home}", home);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                substitute_placeholders(item, home, fs_dir);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for val in map.values_mut() {
+                substitute_placeholders(val, home, fs_dir);
+            }
+        }
+        _ => {}
+    }
 }
 
-const RECOMMENDED_SERVERS: &[RecommendedServer] = &[
-    RecommendedServer {
-        name: "filesystem",
-        label: "filesystem — local file access",
-        build_config: |dir| {
-            serde_json::json!({
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", dir]
-            })
-        },
-        needs_dir: true,
-    },
-    RecommendedServer {
-        name: "fetch",
-        label: "fetch — HTTP requests",
-        build_config: |_| {
-            serde_json::json!({
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-fetch"]
-            })
-        },
-        needs_dir: false,
-    },
-    RecommendedServer {
-        name: "memory",
-        label: "memory — knowledge graph",
-        build_config: |_| {
-            let memory_dir = dirs::home_dir()
-                .unwrap_or_default()
-                .join(".canopy/memory")
-                .to_string_lossy()
-                .to_string();
-            serde_json::json!({
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-memory"],
-                "env": { "MEMORY_FILE_PATH": format!("{memory_dir}/memory.json") }
-            })
-        },
-        needs_dir: false,
-    },
-];
-
-/// Interactively install recommended MCP servers across selected platforms.
+/// Install recommended MCP servers (mandatory) across all selected platforms.
+/// Uses `recommended_servers` from each platform's registry entry.
 fn install_recommended_mcp_servers(
     home: &Path,
     selected: &[&Platform],
@@ -953,27 +1013,25 @@ fn install_recommended_mcp_servers(
         return Ok(None);
     }
 
-    println!();
-    println!("  \x1b[1mRecommended MCP servers\x1b[0m");
-    println!("  These provide essential capabilities alongside canopy:");
-    println!();
+    // Collect all unique recommended server names across platforms
+    let mut all_server_names: Vec<String> = selected
+        .iter()
+        .flat_map(|p| p.recommended_servers.keys().cloned())
+        .collect();
+    all_server_names.sort();
+    all_server_names.dedup();
 
-    let choices: Vec<String> = RECOMMENDED_SERVERS.iter().map(|s| s.label.to_string()).collect();
-    let chosen = MultiSelect::new("Install recommended servers:", choices)
-        .with_all_selected_by_default()
-        .prompt()
-        .unwrap_or_default();
-
-    if chosen.is_empty() {
-        return Ok(Some(
-            "\x1b[33m⏭\x1b[0m Recommended servers: skipped".to_string(),
-        ));
+    if all_server_names.is_empty() {
+        return Ok(None);
     }
 
-    // For filesystem, ask the user to pick a directory
+    // Check if any platform needs a filesystem directory
+    let needs_fs = selected
+        .iter()
+        .any(|p| p.recommended_servers.contains_key("filesystem"));
+
     let mut fs_dir = String::new();
-    let needs_filesystem = chosen.iter().any(|c| c.starts_with("filesystem"));
-    if needs_filesystem {
+    if needs_fs {
         let default_dir = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| home.to_string_lossy().to_string());
@@ -985,33 +1043,34 @@ fn install_recommended_mcp_servers(
     }
 
     // Ensure memory directory exists
-    let needs_memory = chosen.iter().any(|c| c.starts_with("memory"));
+    let needs_memory = selected
+        .iter()
+        .any(|p| p.recommended_servers.contains_key("memory"));
     if needs_memory {
         let memory_dir = home.join(".canopy/memory");
         let _ = std::fs::create_dir_all(&memory_dir);
     }
 
+    let home_str = home.to_string_lossy().to_string();
     let mut installed = 0usize;
     let mut skipped = 0usize;
 
-    for server in RECOMMENDED_SERVERS {
-        if !chosen.iter().any(|c| c.starts_with(server.name)) {
+    for p in selected {
+        let config_path = home.join(&p.config_path);
+        if !config_path.exists() {
             continue;
         }
 
-        let config = (server.build_config)(&fs_dir);
+        for (server_name, template) in &p.recommended_servers {
+            let mut config = template.clone();
+            substitute_placeholders(&mut config, &home_str, &fs_dir);
 
-        for p in selected {
-            let path = home.join(&p.config_path);
-            if !path.exists() {
-                continue;
-            }
             let sanitized = sanitize_server_config_for_platform(
                 &p.name,
                 &p.unsupported_keys,
-                config.clone(),
+                config,
             );
-            match apply_upsert_to_platform(p, &path, server.name, &sanitized) {
+            match apply_upsert_to_platform(p, &config_path, server_name, &sanitized) {
                 Ok(true) => installed += 1,
                 Ok(false) => skipped += 1,
                 Err(_) => {}
@@ -1019,6 +1078,7 @@ fn install_recommended_mcp_servers(
         }
     }
 
+    let server_list = all_server_names.join(", ");
     let mut parts = Vec::new();
     if installed > 0 {
         parts.push(format!("{installed} installed"));
@@ -1033,7 +1093,7 @@ fn install_recommended_mcp_servers(
     };
 
     Ok(Some(format!(
-        "\x1b[32m✓\x1b[0m Recommended servers: {label}"
+        "\x1b[32m✓\x1b[0m Recommended servers ({server_list}): {label}"
     )))
 }
 

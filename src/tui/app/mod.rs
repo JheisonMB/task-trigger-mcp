@@ -430,8 +430,11 @@ impl App {
         };
 
         if sessions.is_empty() {
+            tracing::info!("No active sessions to resume");
             return;
         }
+
+        tracing::info!("Resuming {} active session(s)", sessions.len());
 
         // Mark all old active sessions as orphaned first
         let _ = self.db.mark_orphaned_sessions();

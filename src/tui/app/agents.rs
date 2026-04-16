@@ -272,8 +272,9 @@ impl App {
     }
 
     pub fn cleanup(&mut self) {
+        // Leave sessions marked 'active' so auto-resume picks them up on restart.
+        // Only kill the PTY processes — the CLI's own session resume will handle reconnection.
         for agent in &mut self.interactive_agents {
-            let _ = self.db.finish_interactive_session(&agent.id, 0);
             agent.kill();
         }
     }
