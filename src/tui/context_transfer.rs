@@ -54,16 +54,23 @@ pub fn build_context_payload(agent: &InteractiveAgent, n_prompts: usize) -> Stri
         n_prompts,
     );
 
-    let current_depth = agent.max_scroll();
-
     if !prompts.is_empty() {
-        for entry in &prompts {
+        for (idx, entry) in prompts.iter().enumerate() {
             out.push_str(&format!("> {}\n", entry.input));
-            let resp_end = if entry.output_range.1 > entry.output_range.0 {
+
+            // Determine the response end:
+            // - Closed prompts (not the last): output_range.1 was set when the next
+            //   prompt arrived, by which point the response had scrolled into history.
+            // - Last prompt (open): the response is on the visible screen.
+            //   Use total_depth() which includes scrollback + visible rows, so we
+            //   capture content that hasn't yet scrolled into history.
+            let is_last_prompt = idx == prompts.len() - 1;
+            let resp_end = if !is_last_prompt && entry.output_range.1 > entry.output_range.0 {
                 entry.output_range.1
             } else {
-                current_depth
+                agent.total_depth()
             };
+
             if resp_end > entry.output_range.0 {
                 let response = agent.lines_at_scrollback_range(entry.output_range.0, resp_end);
                 if !response.is_empty() {

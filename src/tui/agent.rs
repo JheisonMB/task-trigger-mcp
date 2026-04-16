@@ -426,17 +426,18 @@ impl InteractiveAgent {
     }
 
     /// Record a user prompt submission. Called when Enter is pressed.
-    /// Captures the input and the current scrollback length as the start
-    /// of the response range.
+    /// Captures the input and the current total depth (scrollback + visible screen)
+    /// as the start of the response range.
     pub fn record_prompt(&self, input: &str) {
-        // Use the actual scrollback history depth (not the current scroll offset).
-        // set_scrollback(usize::MAX) clamps to the real history size.
+        // Use total depth (scrollback + visible screen rows) so that the range
+        // correctly starts after all currently visible content.
         let history_depth = if let Ok(mut vt) = self.vt.lock() {
             let prev = vt.screen().scrollback();
             vt.screen_mut().set_scrollback(usize::MAX);
-            let depth = vt.screen().scrollback();
+            let max_sb = vt.screen().scrollback();
+            let (rows, _) = vt.screen().size();
             vt.screen_mut().set_scrollback(prev);
-            depth
+            max_sb + rows as usize
         } else {
             0
         };
@@ -697,6 +698,22 @@ impl InteractiveAgent {
             let max = vt.screen().scrollback();
             vt.screen_mut().set_scrollback(prev);
             max
+        } else {
+            0
+        }
+    }
+
+    /// Total lines available: scrollback history + visible screen rows.
+    /// Use this as the upper bound for context capture so that content
+    /// currently on screen (not yet scrolled into history) is included.
+    pub fn total_depth(&self) -> usize {
+        if let Ok(mut vt) = self.vt.lock() {
+            let prev = vt.screen().scrollback();
+            vt.screen_mut().set_scrollback(usize::MAX);
+            let max_sb = vt.screen().scrollback();
+            let (rows, _) = vt.screen().size();
+            vt.screen_mut().set_scrollback(prev);
+            max_sb + rows as usize
         } else {
             0
         }
