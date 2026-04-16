@@ -122,3 +122,111 @@ impl Default for CliRegistry {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn sample_cli_config() -> CliConfig {
+        CliConfig {
+            name: "opencode".to_string(),
+            binary: "opencode".to_string(),
+            headless_mode: "--headless".to_string(),
+            model_flag: Some("--model".to_string()),
+            supports_working_dir: true,
+            working_dir_flag: Some("--dir".to_string()),
+            env_vars: std::collections::HashMap::new(),
+            interactive_args: None,
+            fallback_interactive_args: None,
+            resume_args: None,
+            session_list_cmd: None,
+            session_resume_cmd: None,
+            accent_color: None,
+        }
+    }
+
+    #[test]
+    fn test_cli_registry_new_sets_version() {
+        let registry = CliRegistry::new();
+        assert_eq!(registry.version, 2);
+        assert!(registry.available_clis.is_empty());
+    }
+
+    #[test]
+    fn test_cli_registry_default() {
+        let registry = CliRegistry::default();
+        assert_eq!(registry.version, 2);
+        assert!(registry.available_clis.is_empty());
+    }
+
+    #[test]
+    fn test_cli_registry_get_found() {
+        let mut registry = CliRegistry::new();
+        registry.available_clis.push(sample_cli_config());
+        let config = registry.get("opencode");
+        assert!(config.is_some());
+        assert_eq!(config.unwrap().binary, "opencode");
+    }
+
+    #[test]
+    fn test_cli_registry_get_not_found() {
+        let registry = CliRegistry::new();
+        let config = registry.get("nonexistent");
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_cli_registry_names() {
+        let mut registry = CliRegistry::new();
+        let mut cli1 = sample_cli_config();
+        cli1.name = "opencode".to_string();
+        let mut cli2 = sample_cli_config();
+        cli2.name = "kiro".to_string();
+        registry.available_clis.push(cli1);
+        registry.available_clis.push(cli2);
+
+        let names = registry.names();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"opencode"));
+        assert!(names.contains(&"kiro"));
+    }
+
+    #[test]
+    fn test_cli_registry_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("cli_config.json");
+
+        let mut registry = CliRegistry::new();
+        registry.available_clis.push(sample_cli_config());
+
+        registry.save(&path).unwrap();
+
+        let loaded = CliRegistry::load(&path).unwrap();
+        assert_eq!(loaded.version, 2);
+        assert_eq!(loaded.available_clis.len(), 1);
+        assert_eq!(loaded.available_clis[0].name, "opencode");
+    }
+
+    #[test]
+    fn test_cli_registry_load_nonexistent() {
+        let path = std::path::Path::new("/nonexistent/path/config.json");
+        let loaded = CliRegistry::load(path);
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn test_cli_registry_save_creates_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("nested")
+            .join("dir")
+            .join("cli_config.json");
+
+        let registry = CliRegistry::new();
+        registry.save(&path).unwrap();
+
+        assert!(path.exists());
+    }
+}

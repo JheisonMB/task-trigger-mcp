@@ -170,28 +170,26 @@ fn draw_sidebar_card(
         }
     };
 
-    // Detect if waiting for input and apply pulsing animation
+    // Detect if waiting for input - use multiple signals for better detection:
+    // 1. is_waiting_for_input() - PTY heuristic (cursor on last row + idle)
+    // 2. Running interactive agents are usually waiting for user input
     let is_waiting = if let AgentEntry::Interactive(idx) = agent {
-        app.interactive_agents[*idx].is_waiting_for_input()
+        let a = &app.interactive_agents[*idx];
+        a.is_waiting_for_input() || matches!(a.status, AgentStatus::Running)
     } else {
         false
     };
 
-    // Pulse animation: cycle every 20 ticks (at ~50ms tick = 1 second)
-    let pulse_cycle = (app.animation_tick / 5) % 4;
-    if is_waiting && pulse_cycle < 2 {
-        // Brighten the color during animation
-        status_color = match status_color {
-            Color::Rgb(r, g, b) => Color::Rgb(
-                r.saturating_add(60),
-                g.saturating_add(60),
-                b.saturating_add(60),
-            ),
-            Color::Yellow => Color::Rgb(255, 255, 100),
-            Color::Cyan => Color::Rgb(100, 255, 255),
-            Color::White => Color::Rgb(255, 255, 255),
-            c => c,
-        };
+    // Blink animation for waiting state: cycle every 500ms (10 ticks at ~50ms)
+    let blink_cycle = (app.animation_tick / 10) % 2;
+
+    // When waiting: blink between bright yellow (visible) and dark gray (nearly invisible)
+    // This creates a clear "waiting for you" indicator
+    const WAIT_ON: Color = Color::Rgb(255, 255, 0); // Bright yellow
+    const WAIT_OFF: Color = Color::Rgb(30, 30, 30); // Nearly black
+
+    if is_waiting {
+        status_color = if blink_cycle == 0 { WAIT_ON } else { WAIT_OFF };
     }
 
     // Line 1: accent bar + id

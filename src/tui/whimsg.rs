@@ -18,7 +18,7 @@ const HOLD_MIN: u64 = 4;
 const HOLD_MAX: u64 = 8;
 const INTERVAL_MIN: u64 = 60;
 const INTERVAL_MAX: u64 = 180;
-const EVENT_DECAY_SECS: u64 = 30;
+const EVENT_DECAY_SECS: u64 = 15;
 
 // ── Kaomojis ──────────────────────────────────────────────────────
 

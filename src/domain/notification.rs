@@ -106,3 +106,56 @@ pub fn send_notification(title: &str, body: &str) {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_platform_returns_valid_enum() {
+        let platform = detect_platform();
+        assert!(
+            matches!(platform, Platform::Wsl | Platform::MacOs | Platform::Linux),
+            "Platform should be one of the three variants"
+        );
+    }
+
+    #[test]
+    fn test_ps_escape_single_quotes() {
+        assert_eq!(ps_escape("hello"), "hello");
+        assert_eq!(ps_escape("it's"), "it''s");
+        assert_eq!(ps_escape("don't"), "don''t");
+        assert_eq!(ps_escape("''"), "''''");
+    }
+
+    #[test]
+    fn test_ps_escape_empty() {
+        assert_eq!(ps_escape(""), "");
+    }
+
+    #[test]
+    fn test_applescript_escape_backslash() {
+        assert_eq!(applescript_escape("hello"), "hello");
+        assert_eq!(applescript_escape("hello\\world"), "hello\\\\world");
+        assert_eq!(applescript_escape("a\\b\\c"), "a\\\\b\\\\c");
+    }
+
+    #[test]
+    fn test_applescript_escape_quotes() {
+        assert_eq!(applescript_escape("say \"hello\""), "say \\\"hello\\\"");
+        assert_eq!(applescript_escape("it's"), "it's");
+    }
+
+    #[test]
+    fn test_applescript_escape_empty() {
+        assert_eq!(applescript_escape(""), "");
+    }
+
+    #[test]
+    fn test_applescript_escape_combined() {
+        assert_eq!(
+            applescript_escape("say \"hello\\world\""),
+            "say \\\"hello\\\\world\\\""
+        );
+    }
+}

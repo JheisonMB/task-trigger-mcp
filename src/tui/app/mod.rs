@@ -89,6 +89,9 @@ pub struct App {
     pub last_scroll_at: std::time::Instant,
     pub last_panel_inner: (u16, u16),
     pub whimsg: super::whimsg::Whimsg,
+    /// Hash of the last log chunk scanned for whimsg triggers — avoids re-firing
+    /// on the same content every tick.
+    whimsg_last_log_hash: u64,
     pub context_transfer_modal: Option<ContextTransferModal>,
     pub context_transfer_config: ContextTransferConfig,
     /// Whether to send OS-level desktop notifications (agent done/failed).
@@ -129,6 +132,7 @@ impl App {
             last_scroll_at: std::time::Instant::now() - std::time::Duration::from_secs(999),
             last_panel_inner: (0, 0),
             whimsg: super::whimsg::Whimsg::new(),
+            whimsg_last_log_hash: 0,
             context_transfer_modal: None,
             context_transfer_config: ContextTransferConfig::default(),
             notifications_enabled: true,
@@ -262,46 +266,80 @@ impl App {
             return;
         }
 
-        // Scan logs of selected agent for contextual triggers
+        // Scan logs of selected agent for contextual triggers.
+        // Only re-evaluate when the log content actually changes.
         if let Some(agent) = self.agents.get(self.selected) {
-            let log_to_scan = match agent {
+            let raw_log = match agent {
                 AgentEntry::Interactive(idx) => {
                     if let Some(ia) = self.interactive_agents.get(*idx) {
-                        ia.last_lines(50).to_uppercase()
+                        ia.last_lines(50)
                     } else {
                         String::new()
                     }
                 }
-                _ => self.log_content.to_uppercase(),
+                _ => self.log_content.clone(),
             };
 
-            if !log_to_scan.is_empty() {
-                // Priority: Errors > Success > Spawning
-                if log_to_scan.contains("ERROR")
-                    || log_to_scan.contains("EXCEPTION")
-                    || log_to_scan.contains("FAILED")
-                    || log_to_scan.contains("CRITICAL")
-                    || log_to_scan.contains("PANIC")
-                    || log_to_scan.contains("SEGFAULT")
-                    || log_to_scan.contains("TIMEOUT")
-                    || log_to_scan.contains("HALTED")
-                {
-                    self.whimsg.notify_event(WhimContext::AgentFailed);
-                } else if log_to_scan.contains("SUCCESS")
-                    || log_to_scan.contains("DONE")
-                    || log_to_scan.contains("FINISHED")
-                    || log_to_scan.contains("COMPLETED")
-                    || log_to_scan.contains("STABILIZED")
-                    || log_to_scan.contains("READY")
-                    || log_to_scan.contains("CONVERGED")
-                {
-                    self.whimsg.notify_event(WhimContext::AgentDone);
-                } else if log_to_scan.contains("SPAWN")
-                    || log_to_scan.contains("STARTING")
-                    || log_to_scan.contains("BOOTSTRAP")
-                    || log_to_scan.contains("INITIALIZING")
-                {
-                    self.whimsg.notify_event(WhimContext::AgentSpawned);
+            if !raw_log.is_empty() {
+                // Simple hash to detect changes — avoid re-firing on the same content
+                let log_hash: u64 = raw_log
+                    .bytes()
+                    .enumerate()
+                    .fold(0u64, |acc, (i, b)| acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1)));
+
+                if log_hash != self.whimsg_last_log_hash {
+                    self.whimsg_last_log_hash = log_hash;
+
+                    let log_up = raw_log.to_uppercase();
+
+                    // Error keywords — specific phrases to reduce false positives.
+                    // Avoid single "ERROR" or "FAILED" which appear in normal agent output
+                    // (e.g. "no errors found", "error handling", "failed test cases: 0").
+                    let is_error = log_up.contains("FATAL ERROR")
+                        || log_up.contains("UNHANDLED ERROR")
+                        || log_up.contains("UNCAUGHT EXCEPTION")
+                        || log_up.contains("EXCEPTION:")
+                        || log_up.contains("PANIC:")
+                        || log_up.contains("SEGFAULT")
+                        || log_up.contains("TIMED OUT")
+                        || log_up.contains("CONNECTION REFUSED")
+                        || log_up.contains("PERMISSION DENIED")
+                        || log_up.contains("HALTED")
+                        // Spanish
+                        || log_up.contains("ERROR FATAL")
+                        || log_up.contains("PROBLEMA")
+                        || log_up.contains("FALLO")
+                        || log_up.contains("FALLANDO");
+
+                    let is_success = log_up.contains("SUCCESS")
+                        || log_up.contains("ALL TESTS PASSED")
+                        || log_up.contains("BUILD SUCCEEDED")
+                        || log_up.contains("FINISHED")
+                        || log_up.contains("COMPLETED")
+                        || log_up.contains("DONE.")
+                        || log_up.contains("STABILIZED")
+                        || log_up.contains("READY")
+                        || log_up.contains("CONVERGED")
+                        || log_up.contains("DEPLOYED")
+                        // Spanish
+                        || log_up.contains("EXCELENTE")
+                        || log_up.contains("COMPLETADO")
+                        || log_up.contains("HECHO")
+                        || log_up.contains("LISTO")
+                        || log_up.contains("TERMINADO");
+
+                    let is_spawn = log_up.contains("SPAWNING")
+                        || log_up.contains("STARTING UP")
+                        || log_up.contains("BOOTSTRAPPING")
+                        || log_up.contains("INITIALIZING");
+
+                    if is_error {
+                        self.whimsg.notify_event(WhimContext::AgentFailed);
+                    } else if is_success {
+                        self.whimsg.notify_event(WhimContext::AgentDone);
+                    } else if is_spawn {
+                        self.whimsg.notify_event(WhimContext::AgentSpawned);
+                    }
                 }
             }
         }

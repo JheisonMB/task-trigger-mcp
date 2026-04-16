@@ -591,7 +591,8 @@ impl InteractiveAgent {
         }
 
         // Check idle time FIRST — before screen_snapshot() so we don't snapshot unnecessarily.
-        let idle_threshold = std::time::Duration::from_millis(300);
+        // More sensitive: 100ms threshold for faster blink response
+        let idle_threshold = std::time::Duration::from_millis(100);
         let is_idle = self
             .last_output_at
             .lock()
