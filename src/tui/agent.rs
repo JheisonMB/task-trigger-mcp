@@ -292,8 +292,8 @@ pub struct InteractiveAgent {
     pub prompt_history: Arc<Mutex<VecDeque<PromptEntry>>>,
     /// Current accumulated input (characters since last Enter).
     pub input_buffer: Arc<Mutex<String>>,
-    /// Tracks when the screen last changed (for detecting idle state).
-    last_screen_update: Arc<Mutex<DateTime<Utc>>>,
+    /// Tracks when the PTY last received output (for detecting idle/waiting state).
+    last_output_at: Arc<Mutex<DateTime<Utc>>>,
     /// Whether the exit notification has already been sent (avoids repeats).
     pub exit_notified: bool,
 }
@@ -368,6 +368,9 @@ impl InteractiveAgent {
         let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let vt_clone = Arc::clone(&vt);
 
+        let last_output_at = Arc::new(Mutex::new(Utc::now()));
+        let last_output_at_clone = Arc::clone(&last_output_at);
+
         // Background thread: read PTY output → feed into vt100 parser
         std::thread::spawn(move || {
             let mut tmp = [0u8; 4096];
@@ -377,6 +380,10 @@ impl InteractiveAgent {
                     Ok(n) => {
                         if let Ok(mut parser) = vt_clone.lock() {
                             parser.process(&tmp[..n]);
+                        }
+                        // Stamp last output time so is_waiting_for_input() can detect idle
+                        if let Ok(mut t) = last_output_at_clone.lock() {
+                            *t = Utc::now();
                         }
                     }
                 }
@@ -405,7 +412,7 @@ impl InteractiveAgent {
             last_pty_rows: rows,
             prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
             input_buffer: Arc::new(Mutex::new(String::new())),
-            last_screen_update: Arc::new(Mutex::new(Utc::now())),
+            last_output_at,
             exit_notified: false,
         })
     }
@@ -502,11 +509,6 @@ impl InteractiveAgent {
         let cursor = screen.cursor_position();
         let scrolled = self.scroll_offset > 0;
 
-        // Update last access time (used for idle detection)
-        if let Ok(mut last_update) = self.last_screen_update.lock() {
-            *last_update = Utc::now();
-        }
-
         Some(ScreenSnapshot {
             cells,
             cursor_row: if scrolled { rows } else { cursor.0 },
@@ -576,10 +578,26 @@ impl InteractiveAgent {
     ///
     /// Heuristics:
     /// - Cursor is on the last row (indicates prompt area)
-    /// - Screen hasn't been accessed for at least 100ms (idle)
+    /// - PTY output has been idle for at least 300ms (no new data from agent)
     /// - Process is still running
     pub fn is_waiting_for_input(&self) -> bool {
         if self.status != AgentStatus::Running {
+            return false;
+        }
+
+        // Check idle time FIRST — before screen_snapshot() so we don't snapshot unnecessarily.
+        let idle_threshold = std::time::Duration::from_millis(300);
+        let is_idle = self
+            .last_output_at
+            .lock()
+            .ok()
+            .map(|t| {
+                let elapsed = Utc::now().signed_duration_since(*t);
+                elapsed.num_milliseconds() >= idle_threshold.as_millis() as i64
+            })
+            .unwrap_or(false);
+
+        if !is_idle {
             return false;
         }
 
@@ -587,27 +605,10 @@ impl InteractiveAgent {
             return false;
         };
 
-        let (rows, _cols) = (
-            screen.cells.len() as u16,
-            screen.cells.first().map(|r| r.len() as u16).unwrap_or(0),
-        );
+        let rows = screen.cells.len() as u16;
 
-        // Not at the bottom of visible area
-        if screen.cursor_row < rows.saturating_sub(2) {
-            return false;
-        }
-
-        // Check if screen is idle (no access in the last 150ms)
-        let idle_threshold = std::time::Duration::from_millis(150);
-        let last_update = self.last_screen_update.lock().ok();
-        if let Some(last_update) = last_update {
-            let elapsed = Utc::now().signed_duration_since(*last_update);
-            if elapsed.num_milliseconds() < idle_threshold.as_millis() as i64 {
-                return false;
-            }
-        }
-
-        true
+        // Cursor must be at or near the last row
+        rows > 0 && screen.cursor_row >= rows.saturating_sub(2)
     }
 
     /// Check if the process has exited.

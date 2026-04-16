@@ -132,14 +132,6 @@ impl App {
             match status {
                 AgentStatus::Exited(0) => {
                     let _ = self.db.finish_interactive_session(&agent_id, 0);
-                    self.whimsg
-                        .notify_event(crate::tui::whimsg::WhimContext::AgentDone);
-                    if self.notifications_enabled {
-                        crate::domain::notification::send_notification(
-                            "Canopy — agent finished",
-                            &format!("{agent_id} completed successfully"),
-                        );
-                    }
                 }
                 AgentStatus::Exited(code) => {
                     let _ = self.db.finish_interactive_session(&agent_id, code);
@@ -277,6 +269,10 @@ impl App {
                 self.db.delete_watcher(&w.id)?;
             }
             AgentEntry::Interactive(idx) => {
+                // Mark session as completed in DB so it won't be offered for resume on restart.
+                // If already in a non-active state (error), finish_interactive_session is a no-op.
+                let agent_id = self.interactive_agents[*idx].id.clone();
+                let _ = self.db.finish_interactive_session(&agent_id, 0);
                 self.interactive_agents[*idx].kill();
                 self.interactive_agents.remove(*idx);
             }

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use inquire::{Confirm, MultiSelect, Select, Text};
+use inquire::{MultiSelect, Select};
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -124,7 +124,31 @@ fn resolve_config_path(home: &Path, config_path: &str) -> std::path::PathBuf {
     primary
 }
 
-/// Check if a binary is in PATH.
+/// Load the saved filesystem root path for the MCP filesystem server.
+/// Returns "/" as default if not yet configured.
+fn load_mcp_fs_root(home: &Path) -> String {
+    let path = home.join(".canopy/mcp_config.json");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(s) = v.get("filesystem_root").and_then(|v| v.as_str()) {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+    }
+    "/".to_string()
+}
+
+/// Persist the chosen filesystem root path for reuse across setups and updates.
+fn save_mcp_fs_root(home: &Path, root: &str) {
+    let path = home.join(".canopy/mcp_config.json");
+    let content = serde_json::json!({ "filesystem_root": root });
+    let _ = std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&content).unwrap_or_default() + "\n",
+    );
+}
 fn is_binary_available(binary: &str) -> bool {
     which::which(binary).is_ok()
 }
@@ -614,10 +638,6 @@ fn upsert_json_key(path: &Path, keys: &[&str], value: &serde_json::Value) -> Res
     }
 
     let leaf = keys[keys.len() - 1];
-    if current.get(leaf) == Some(value) {
-        return Ok(false);
-    }
-
     current[leaf] = value.clone();
 
     if let Some(parent) = path.parent() {
@@ -625,6 +645,27 @@ fn upsert_json_key(path: &Path, keys: &[&str], value: &serde_json::Value) -> Res
     }
     std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
     Ok(true)
+}
+
+/// Remove a `[section.entry_key]` TOML block from string content.
+fn remove_toml_key_section_str(content: &str, table_header: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut in_target = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if trimmed == table_header {
+                in_target = true;
+                continue;
+            }
+            in_target = false;
+        }
+        if !in_target {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Upsert a TOML config key for platforms like Codex that use config.toml.
@@ -645,10 +686,8 @@ fn upsert_toml_key(
         String::new()
     };
 
-    // Already configured — check if the section header exists
-    if content.contains(&table_header) {
-        return Ok(false);
-    }
+    // Remove existing section (if any) so we always write a fresh one
+    let base = remove_toml_key_section_str(&content, &table_header);
 
     // Build the TOML fragment from the JSON value
     let mut fragment = format!("\n{table_header}\n");
@@ -665,7 +704,6 @@ fn upsert_toml_key(
                     fragment.push_str(&format!("{k} = {n}\n"));
                 }
                 _ => {
-                    // For arrays/objects, serialize as inline TOML via serde
                     let toml_val: toml::Value = serde_json::from_value(v.clone())?;
                     fragment.push_str(&format!("{k} = {toml_val}\n"));
                 }
@@ -677,7 +715,7 @@ fn upsert_toml_key(
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut out = content;
+    let mut out = base;
     out.push_str(&fragment);
     std::fs::write(path, out)?;
     Ok(true)
@@ -702,69 +740,6 @@ fn remove_json_key(path: &Path, parent_key: &str, key: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn remove_json_nested_key(path: &Path, keys: &[&str]) -> Result<bool> {
-    if keys.is_empty() || !path.exists() {
-        return Ok(false);
-    }
-
-    let content = std::fs::read_to_string(path)?;
-    let clean = strip_jsonc_comments(&content);
-    let mut root: serde_json::Value = serde_json::from_str(&clean).unwrap_or(serde_json::json!({}));
-
-    let mut current = &mut root;
-    for key in &keys[..keys.len() - 1] {
-        let Some(next) = current.get_mut(*key) else {
-            return Ok(false);
-        };
-        current = next;
-    }
-
-    let Some(obj) = current.as_object_mut() else {
-        return Ok(false);
-    };
-
-    let removed = obj.remove(keys[keys.len() - 1]).is_some();
-    if removed {
-        std::fs::write(path, serde_json::to_string_pretty(&root)? + "\n")?;
-    }
-    Ok(removed)
-}
-
-fn remove_toml_key(path: &Path, section: &str, entry_key: &str) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let content = std::fs::read_to_string(path)?;
-    let header = format!("[{section}.{entry_key}]");
-    let mut out = String::with_capacity(content.len());
-    let mut in_target_section = false;
-    let mut removed = false;
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            if trimmed == header {
-                in_target_section = true;
-                removed = true;
-                continue;
-            }
-            in_target_section = false;
-        }
-
-        if !in_target_section {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-
-    if removed {
-        std::fs::write(path, out)?;
-    }
-    Ok(removed)
-}
-
 /// Upsert a TOML entry using `[[section]]` array-of-tables format (e.g. mistral).
 ///
 /// Each entry is identified by `name = "entry_key"` within the array.
@@ -776,6 +751,7 @@ fn upsert_toml_array(
     value: &serde_json::Value,
 ) -> Result<bool> {
     let array_header = format!("[[{section}]]");
+    let name_line = format!("name = \"{entry_key}\"");
 
     let content = if path.exists() {
         std::fs::read_to_string(path)?
@@ -783,10 +759,26 @@ fn upsert_toml_array(
         String::new()
     };
 
-    // Check if an entry with this name already exists
-    let name_line = format!("name = \"{entry_key}\"");
-    if content.contains(&name_line) {
-        return Ok(false);
+    // Remove existing entry (if any) so we always write a fresh one
+    let mut base = if content.contains(&name_line) {
+        remove_toml_array_entry_str(&content, &array_header, &name_line)
+    } else {
+        content
+    };
+
+    // Remove any `{section} = []` scalar that conflicts with [[section]] array-of-tables
+    let scalar_prefix = format!("{section} =");
+    let scalar_prefix2 = format!("{section}=");
+    base = base
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.starts_with(&scalar_prefix) && !t.starts_with(&scalar_prefix2)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !base.is_empty() && !base.ends_with('\n') {
+        base.push('\n');
     }
 
     // Build the TOML fragment
@@ -815,62 +807,44 @@ fn upsert_toml_array(
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut out = content;
+    let mut out = base;
     out.push_str(&fragment);
     std::fs::write(path, out)?;
     Ok(true)
 }
 
-/// Remove a `[[section]]` array entry identified by `name = "entry_key"`.
-fn remove_toml_array(path: &Path, section: &str, entry_key: &str) -> Result<bool> {
-    if !path.exists() {
-        return Ok(false);
-    }
-
-    let content = std::fs::read_to_string(path)?;
-    let array_header = format!("[[{section}]]");
-    let name_line = format!("name = \"{entry_key}\"");
-
-    if !content.contains(&name_line) {
-        return Ok(false);
-    }
-
+/// Remove a `[[section]]` array entry from string content.
+/// The entry is identified by the line `name = "entry_key"` immediately following the header.
+fn remove_toml_array_entry_str(content: &str, array_header: &str, name_line: &str) -> String {
     let mut out = String::with_capacity(content.len());
     let mut in_target = false;
-    let mut removed = false;
     let mut pending_header: Option<String> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
 
         if trimmed == array_header {
-            // Start of an array entry — buffer the header and check the next lines
             pending_header = Some(line.to_string());
             continue;
         }
 
         if let Some(ref header) = pending_header {
             if trimmed == name_line {
-                // This is the entry to remove
                 in_target = true;
-                removed = true;
                 pending_header = None;
                 continue;
             }
-            // Not the target entry — flush the buffered header
             out.push_str(header);
             out.push('\n');
             pending_header = None;
         }
 
         if in_target {
-            // End of the target entry when we hit the next section header
             if trimmed.starts_with('[') && trimmed.ends_with(']') {
                 in_target = false;
                 out.push_str(line);
                 out.push('\n');
             }
-            // Skip lines within the target entry
             continue;
         }
 
@@ -878,10 +852,13 @@ fn remove_toml_array(path: &Path, section: &str, entry_key: &str) -> Result<bool
         out.push('\n');
     }
 
-    if removed {
-        std::fs::write(path, out)?;
+    // Flush any buffered header not yet written
+    if let Some(header) = pending_header {
+        out.push_str(&header);
+        out.push('\n');
     }
-    Ok(removed)
+
+    out
 }
 
 fn sanitize_existing_json_servers(
@@ -1151,9 +1128,7 @@ pub fn run_setup_silent() -> Result<()> {
 
         // Install recommended servers silently (use home as default fs dir)
         let home_str = home.to_string_lossy().to_string();
-        let default_dir = std::env::current_dir()
-            .map(|d| d.to_string_lossy().to_string())
-            .unwrap_or_else(|_| home_str.clone());
+        let default_dir = load_mcp_fs_root(&home);
         for (server_name, template) in &p.recommended_servers {
             let mut config = template.clone();
             substitute_placeholders(&mut config, &home_str, &default_dir);
@@ -1475,15 +1450,14 @@ fn install_recommended_mcp_servers(
 
     let mut fs_dir = String::new();
     if needs_fs {
-        let default_dir = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| home.to_string_lossy().to_string());
+        let default_dir = load_mcp_fs_root(home);
         println!();
         println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
         println!("  Agents will have read/write access to everything inside this directory.");
         println!("  Choose a project folder or workspace root (e.g. ~/Documents/Projects).");
         println!();
         fs_dir = browse_directory(&default_dir);
+        save_mcp_fs_root(home, &fs_dir);
     }
 
     // Ensure memory directory exists
@@ -1497,7 +1471,6 @@ fn install_recommended_mcp_servers(
 
     let home_str = home.to_string_lossy().to_string();
     let mut installed = 0usize;
-    let mut skipped = 0usize;
 
     for p in selected {
         let config_path = resolve_config_path(home, &p.config_path);
@@ -1514,40 +1487,22 @@ fn install_recommended_mcp_servers(
                 &p.unsupported_keys,
                 config,
             );
-            match apply_upsert_to_platform(p, &config_path, server_name, &sanitized) {
-                Ok(true) => installed += 1,
-                Ok(false) => skipped += 1,
-                Err(_) => {}
+            if apply_upsert_to_platform(p, &config_path, server_name, &sanitized).is_ok() {
+                installed += 1;
             }
         }
     }
 
     let server_list = all_server_names.join(", ");
-    let mut parts = Vec::new();
-    if installed > 0 {
-        parts.push(format!("{installed} installed"));
-    }
-    if skipped > 0 {
-        parts.push(format!("{skipped} already present"));
-    }
-    let label = if parts.is_empty() {
-        "no changes".to_string()
+    let label = if installed > 0 {
+        format!("{installed} installed")
     } else {
-        parts.join(", ")
+        "no changes".to_string()
     };
 
     Ok(Some(format!(
         "\x1b[32m✓\x1b[0m Recommended servers ({server_list}): {label}"
     )))
-}
-
-// ── MCP Sync ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct SyncConfigEntry {
-    server_name: String,
-    config: serde_json::Value,
-    source_platforms: Vec<String>,
 }
 
 /// Extract all MCP server configs from the selected platforms.
@@ -1582,31 +1537,6 @@ fn extract_all_mcp_configs(
     configs
 }
 
-/// Collect unique server names across all platforms.
-fn collect_unique_servers(
-    all_configs: &[crate::config::PlatformMcpConfig],
-) -> Vec<SyncConfigEntry> {
-    let mut server_map: std::collections::BTreeMap<String, SyncConfigEntry> =
-        std::collections::BTreeMap::new();
-
-    for platform_cfg in all_configs {
-        for server in &platform_cfg.servers {
-            let entry = server_map
-                .entry(server.name.clone())
-                .or_insert_with(|| SyncConfigEntry {
-                    server_name: server.name.clone(),
-                    config: server.config.clone(),
-                    source_platforms: Vec::new(),
-                });
-            if !entry.source_platforms.contains(&platform_cfg.platform) {
-                entry.source_platforms.push(platform_cfg.platform.clone());
-            }
-        }
-    }
-
-    server_map.into_values().collect()
-}
-
 fn print_mcp_matrix(all_configs: &[crate::config::PlatformMcpConfig]) {
     use std::collections::BTreeSet;
 
@@ -1614,10 +1544,14 @@ fn print_mcp_matrix(all_configs: &[crate::config::PlatformMcpConfig]) {
         return;
     }
 
-    let all_servers: BTreeSet<String> = all_configs
+    let mut all_servers: BTreeSet<String> = all_configs
         .iter()
         .flat_map(|c| c.servers.iter().map(|s| s.name.clone()))
         .collect();
+    // Always show our 4 core servers in the matrix
+    for s in &["canopy", "fetch", "filesystem", "memory"] {
+        all_servers.insert(s.to_string());
+    }
 
     let server_col = 20usize;
     let cell_col = 3usize;
@@ -1673,8 +1607,6 @@ fn wait_continue() -> Result<()> {
 #[derive(Default)]
 struct OperationSummary {
     added: usize,
-    removed: usize,
-    skipped: usize,
     failed: usize,
 }
 
@@ -1712,283 +1644,39 @@ fn apply_upsert_to_platform(
     }
 }
 
-fn apply_remove_to_platform(
-    platform: &Platform,
-    config_path: &Path,
-    server_name: &str,
-) -> Result<bool> {
-    let is_toml = platform.config_format.as_deref() == Some("toml");
-    if is_toml {
-        if platform.toml_array_format {
-            remove_toml_array(config_path, &platform.mcp_servers_key.join("."), server_name)
-        } else {
-            remove_toml_key(config_path, &platform.mcp_servers_key[0], server_name)
-        }
-    } else {
-        let mut key_refs: Vec<&str> = platform
-            .mcp_servers_key
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        key_refs.push(server_name);
-        remove_json_nested_key(config_path, &key_refs)
-    }
-}
-
-fn select_target_platforms(selected: &[&Platform]) -> Result<Vec<String>> {
-    let platform_names: Vec<String> = selected.iter().map(|p| p.name.clone()).collect();
-    let chosen = MultiSelect::new("Select target platforms:", platform_names)
-        .with_all_selected_by_default()
-        .prompt()
-        .unwrap_or_default();
-    Ok(chosen)
-}
-
-fn run_sync_action(
-    home: &Path,
-    selected: &[&Platform],
-    unique_servers: &[SyncConfigEntry],
-) -> Result<()> {
-    let server_choices: Vec<String> = unique_servers
-        .iter()
-        .map(|s| s.server_name.clone())
-        .collect();
-    if server_choices.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No servers available to sync.");
-        return Ok(());
-    }
-
-    let selected_servers = MultiSelect::new("Select MCP servers to sync:", server_choices)
-        .with_all_selected_by_default()
-        .prompt()
-        .unwrap_or_default();
-
-    if selected_servers.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping.");
-        return Ok(());
-    }
-
-    let target_platforms = select_target_platforms(selected)?;
-    if target_platforms.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
-        return Ok(());
-    }
-
+/// Install/update the 4 canopy servers on all selected platforms using the saved fs root.
+fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
+    let fs_dir = load_mcp_fs_root(home);
+    let home_str = home.to_string_lossy().to_string();
     let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
         std::collections::BTreeMap::new();
-    let source_by_name: std::collections::HashMap<&str, &SyncConfigEntry> = unique_servers
-        .iter()
-        .map(|s| (s.server_name.as_str(), s))
-        .collect();
 
-    for platform_name in &target_platforms {
-        let platform = selected
-            .iter()
-            .find(|p| p.name == *platform_name)
-            .expect("platform should exist");
-        let config_path = resolve_config_path(home, &platform.config_path);
-        let summary = summaries.entry(platform_name.clone()).or_default();
+    for p in selected {
+        let config_path = resolve_config_path(home, &p.config_path);
+        if !config_path.exists() {
+            continue;
+        }
+        let summary = summaries.entry(p.name.clone()).or_default();
 
-        for server_name in &selected_servers {
-            let Some(server) = source_by_name.get(server_name.as_str()) else {
-                summary.failed += 1;
-                continue;
-            };
-
-            let sanitized = sanitize_server_config_for_platform(
-                &platform.name,
-                &platform.unsupported_keys,
-                server.config.clone(),
-            );
-            match apply_upsert_to_platform(platform, &config_path, server_name, &sanitized) {
-                Ok(true) => summary.added += 1,
-                Ok(false) => summary.skipped += 1,
+        for (server_name, template) in &p.recommended_servers {
+            let mut config = template.clone();
+            substitute_placeholders(&mut config, &home_str, &fs_dir);
+            let sanitized = sanitize_server_config_for_platform(&p.name, &p.unsupported_keys, config);
+            match apply_upsert_to_platform(p, &config_path, server_name, &sanitized) {
+                Ok(_) => summary.added += 1,
                 Err(_) => summary.failed += 1,
             }
         }
+
+        // Also write the canopy entry itself
+        let entry = sanitize_canopy_entry(&p.name, &p.unsupported_keys, p.canopy_entry.clone());
+        let _ = apply_upsert_to_platform(p, &config_path, &p.canopy_entry_key.clone(), &entry);
     }
 
     println!();
-    println!("  Sync summary:");
+    println!("  Update summary:");
     for (platform, s) in summaries {
-        println!(
-            "    {} -> added: {}, skipped: {}, failed: {}",
-            platform, s.added, s.skipped, s.failed
-        );
-    }
-    println!();
-    Ok(())
-}
-
-fn run_add_action(
-    home: &Path,
-    selected: &[&Platform],
-    unique_servers: &[SyncConfigEntry],
-) -> Result<()> {
-    let server_name = Text::new("New MCP server name:")
-        .with_validator(|input: &str| {
-            if input.trim().is_empty() {
-                Ok(inquire::validator::Validation::Invalid(
-                    "Name cannot be empty".into(),
-                ))
-            } else {
-                Ok(inquire::validator::Validation::Valid)
-            }
-        })
-        .prompt()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-
-    if server_name.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  Invalid name, skipping.");
-        return Ok(());
-    }
-
-    let source_mode = Select::new(
-        "Config source:",
-        vec![
-            "Copy from existing server".to_string(),
-            "Paste JSON config".to_string(),
-        ],
-    )
-    .prompt()
-    .unwrap_or_else(|_| "Copy from existing server".to_string());
-
-    let base_config = if source_mode == "Paste JSON config" {
-        let raw = Text::new("Paste server config as JSON object:")
-            .with_initial_value("{}")
-            .prompt()
-            .unwrap_or_else(|_| "{}".to_string());
-        let parsed: serde_json::Value = serde_json::from_str(raw.trim())
-            .map_err(|e| anyhow::anyhow!("Invalid JSON config: {}", e))?;
-        if !parsed.is_object() {
-            return Err(anyhow::anyhow!("Config must be a JSON object"));
-        }
-        parsed
-    } else {
-        let source_choices: Vec<String> = unique_servers
-            .iter()
-            .map(|s| s.server_name.clone())
-            .collect();
-        if source_choices.is_empty() {
-            return Err(anyhow::anyhow!(
-                "No existing servers available to copy from"
-            ));
-        }
-        let template_name = Select::new("Template server:", source_choices)
-            .prompt()
-            .map_err(|e| anyhow::anyhow!("Selection cancelled: {}", e))?;
-        unique_servers
-            .iter()
-            .find(|s| s.server_name == template_name)
-            .map(|s| s.config.clone())
-            .ok_or_else(|| anyhow::anyhow!("Template server not found"))?
-    };
-
-    let target_platforms = select_target_platforms(selected)?;
-    if target_platforms.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
-        return Ok(());
-    }
-
-    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
-        std::collections::BTreeMap::new();
-    for platform_name in &target_platforms {
-        let platform = selected
-            .iter()
-            .find(|p| p.name == *platform_name)
-            .expect("platform should exist");
-        let config_path = resolve_config_path(home, &platform.config_path);
-        let summary = summaries.entry(platform_name.clone()).or_default();
-
-        let sanitized = sanitize_server_config_for_platform(
-            &platform.name,
-            &platform.unsupported_keys,
-            base_config.clone(),
-        );
-        match apply_upsert_to_platform(platform, &config_path, &server_name, &sanitized) {
-            Ok(true) => summary.added += 1,
-            Ok(false) => summary.skipped += 1,
-            Err(_) => summary.failed += 1,
-        }
-    }
-
-    println!();
-    println!("  Add summary (server: {}):", server_name);
-    for (platform, s) in summaries {
-        println!(
-            "    {} -> added: {}, skipped: {}, failed: {}",
-            platform, s.added, s.skipped, s.failed
-        );
-    }
-    println!();
-    Ok(())
-}
-
-fn run_remove_action(
-    home: &Path,
-    selected: &[&Platform],
-    unique_servers: &[SyncConfigEntry],
-) -> Result<()> {
-    let server_choices: Vec<String> = unique_servers
-        .iter()
-        .map(|s| s.server_name.clone())
-        .collect();
-    if server_choices.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No servers available to remove.");
-        return Ok(());
-    }
-
-    let selected_servers = MultiSelect::new("Select MCP servers to remove:", server_choices)
-        .prompt()
-        .unwrap_or_default();
-    if selected_servers.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No servers selected, skipping.");
-        return Ok(());
-    }
-
-    let confirmed = Confirm::new("Apply deletion on selected platforms?")
-        .with_default(false)
-        .prompt()
-        .unwrap_or(false);
-    if !confirmed {
-        println!("  \x1b[33m⏭\x1b[0m  Deletion cancelled.");
-        return Ok(());
-    }
-
-    let target_platforms = select_target_platforms(selected)?;
-    if target_platforms.is_empty() {
-        println!("  \x1b[33m⏭\x1b[0m  No target platforms selected, skipping.");
-        return Ok(());
-    }
-
-    let mut summaries: std::collections::BTreeMap<String, OperationSummary> =
-        std::collections::BTreeMap::new();
-    for platform_name in &target_platforms {
-        let platform = selected
-            .iter()
-            .find(|p| p.name == *platform_name)
-            .expect("platform should exist");
-        let config_path = resolve_config_path(home, &platform.config_path);
-        let summary = summaries.entry(platform_name.clone()).or_default();
-
-        for server_name in &selected_servers {
-            match apply_remove_to_platform(platform, &config_path, server_name) {
-                Ok(true) => summary.removed += 1,
-                Ok(false) => summary.skipped += 1,
-                Err(_) => summary.failed += 1,
-            }
-        }
-    }
-
-    println!();
-    println!("  Remove summary:");
-    for (platform, s) in summaries {
-        println!(
-            "    {} -> removed: {}, skipped: {}, failed: {}",
-            platform, s.removed, s.skipped, s.failed
-        );
+        println!("    {} -> updated: {}, failed: {}", platform, s.added, s.failed);
     }
     println!();
     Ok(())
@@ -2014,32 +1702,21 @@ fn run_sync_step(
         if all_configs.is_empty() {
             return Ok(None);
         }
-        let unique_servers = collect_unique_servers(&all_configs);
         print_mcp_matrix(&all_configs);
 
         let action = Select::new(
             "MCP action:",
             vec![
-                "Sync servers across platforms".to_string(),
-                "Add server to platforms".to_string(),
-                "Remove server from platforms".to_string(),
-                "Continue setup".to_string(),
+                "Install / Update our servers on all platforms".to_string(),
+                "Continue".to_string(),
             ],
         )
         .prompt()
-        .unwrap_or_else(|_| "Continue setup".to_string());
+        .unwrap_or_else(|_| "Continue".to_string());
 
         match action.as_str() {
-            "Sync servers across platforms" => {
-                run_sync_action(home, selected, &unique_servers)?;
-                wait_continue()?;
-            }
-            "Add server to platforms" => {
-                run_add_action(home, selected, &unique_servers)?;
-                wait_continue()?;
-            }
-            "Remove server from platforms" => {
-                run_remove_action(home, selected, &unique_servers)?;
+            "Install / Update our servers on all platforms" => {
+                run_install_our_servers(home, selected)?;
                 wait_continue()?;
             }
             _ => break,
@@ -2047,6 +1724,6 @@ fn run_sync_step(
     }
 
     Ok(Some(
-        "\x1b[32m✓\x1b[0m MCP servers synced".to_string(),
+        "\x1b[32m✓\x1b[0m MCP servers updated".to_string(),
     ))
 }
