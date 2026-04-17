@@ -807,6 +807,8 @@ pub struct SimplePromptDialog {
     pub picker_mode: SectionPickerMode,
     /// Counter for generating unique IDs per section type
     pub section_counters: HashMap<String, usize>,
+    /// Scroll offset for instruction field (line number to start displaying from)
+    pub instruction_scroll: usize,
 }
 
 impl SimplePromptDialog {
@@ -818,6 +820,7 @@ impl SimplePromptDialog {
             prev_focus: None,
             picker_mode: SectionPickerMode::None,
             section_counters: HashMap::new(),
+            instruction_scroll: 0,
         };
         dialog
             .sections
@@ -841,7 +844,15 @@ impl SimplePromptDialog {
     pub fn add_section(&mut self, section_name: &str) {
         let unique_id = self.generate_section_id(section_name);
         self.enabled_sections.push(unique_id.clone());
-        self.sections.insert(unique_id, String::new());
+        
+        // Pre-fill execution section with default text
+        let default_content = if section_name == "execution" {
+            "Execute the task by synthesizing all sections above. Prioritize <instruction_set> rules while using <example_gallery> as a quality benchmark.".to_string()
+        } else {
+            String::new()
+        };
+        
+        self.sections.insert(unique_id, default_content);
     }
 
     /// Remove a specific section instance
@@ -862,7 +873,7 @@ impl SimplePromptDialog {
             ("context", "Context"),
             ("resources", "Resources"),
             ("examples", "Examples"),
-            ("instructions", "Instructions"),
+            ("execution", "Execution"),
         ]
     }
 
@@ -911,27 +922,19 @@ impl SimplePromptDialog {
     pub fn build_prompt(&self) -> Result<String> {
         let mut result = String::new();
         
-        // Always start with structured format
-        result.push_str("# [CONTEXT]: Project Background\n");
-        result.push_str("<problem_context>\n");
-        
-        // Collect all context sections (context, context_0, context_1, etc.)
-        let mut context_parts = Vec::new();
+        // Add all context sections (each in its own <problem_context> block)
         for section_id in &self.enabled_sections {
             if section_id.starts_with("context") {
                 if let Some(content) = self.sections.get(section_id) {
                     if !content.is_empty() {
-                        context_parts.push(content.clone());
+                        result.push_str("# [CONTEXT]: Project Background\n");
+                        result.push_str("<problem_context>\n");
+                        result.push_str(content);
+                        result.push_str("\n</problem_context>\n\n");
                     }
                 }
             }
         }
-        
-        if !context_parts.is_empty() {
-            result.push_str(&context_parts.join("\n\n"));
-            result.push('\n');
-        }
-        result.push_str("</problem_context>\n\n");
         
         // Add main instruction
         result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
@@ -942,8 +945,8 @@ impl SimplePromptDialog {
                 let lines: Vec<&str> = instruction.lines().filter(|s| !s.trim().is_empty()).collect();
                 for (i, line) in lines.into_iter().enumerate() {
                     result.push_str(&format!("  <instruction_{}>\n", i + 1));
-                    result.push_str(&format!("  {}\n", line.trim()));
-                    result.push_str("  </instruction_>\n\n");
+                    result.push_str(&format!("    {}\n", line.trim()));
+                    result.push_str(&format!("  </instruction_{}>\n\n", i + 1));
                 }
             }
         }
@@ -985,7 +988,7 @@ impl SimplePromptDialog {
                         for (i, line) in lines.into_iter().enumerate() {
                             result.push_str(&format!("  <example_{}>\n", examples_count * 100 + i + 1));
                             result.push_str(&format!("    {}\n", line.trim()));
-                            result.push_str("  </example_>\n\n");
+                            result.push_str(&format!("  </example_{}>\n\n", examples_count * 100 + i + 1));
                         }
                         examples_count += 1;
                     }
@@ -996,13 +999,54 @@ impl SimplePromptDialog {
             result.push_str("</example_gallery>\n\n");
         }
         
-        // Add execution trigger
-        result.push_str("# [EXECUTION]: Trigger\n");
-        result.push_str("<run_task>\n");
-        result.push_str("Execute the task by synthesizing all sections above. ");
-        result.push_str("Prioritize <instruction_set> rules while using <example_gallery> as a quality benchmark.\n");
-        result.push_str("</run_task>\n");
+        // Add execution sections (can have multiple)
+        for section_id in &self.enabled_sections {
+            if section_id.starts_with("execution") {
+                if let Some(content) = self.sections.get(section_id) {
+                    if !content.is_empty() {
+                        result.push_str("# [EXECUTION]: Trigger\n");
+                        result.push_str("<run_task>\n");
+                        result.push_str(content);
+                        if !content.ends_with('\n') {
+                            result.push('\n');
+                        }
+                        result.push_str("</run_task>\n\n");
+                    }
+                }
+            }
+        }
         
         Ok(result)
+    }
+    
+    /// Calculate the cursor position (line number) in the instruction text
+    pub fn get_instruction_cursor_line(&self) -> usize {
+        let instruction = self.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+        instruction.chars().take(instruction.len()).filter(|&c| c == '\n').count()
+    }
+    
+    /// Calculate maximum scroll offset to keep cursor visible
+    pub fn update_instruction_scroll(&mut self, max_visible_lines: usize) {
+        let cursor_line = self.get_instruction_cursor_line();
+        
+        // If cursor is above visible area, scroll up
+        if cursor_line < self.instruction_scroll {
+            self.instruction_scroll = cursor_line;
+        }
+        // If cursor is below visible area, scroll down
+        else if cursor_line >= self.instruction_scroll + max_visible_lines {
+            self.instruction_scroll = cursor_line.saturating_sub(max_visible_lines - 1);
+        }
+    }
+    
+    /// Get visible lines of instruction for rendering
+    pub fn get_visible_instruction_lines(&self, max_visible_lines: usize) -> Vec<&str> {
+        let instruction = self.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+        let lines: Vec<&str> = instruction.lines().collect();
+        
+        let start = self.instruction_scroll.min(lines.len());
+        let end = (start + max_visible_lines).min(lines.len());
+        
+        lines[start..end].to_vec()
     }
 }

@@ -182,15 +182,24 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
             app.close_simple_prompt_dialog();
         }
         KeyCode::Enter => {
-            if let Ok(prompt) = dialog.build_prompt() {
-                if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                    let idx = *idx;
-                    if idx < app.interactive_agents.len() {
-                        let _ = app.interactive_agents[idx].write_to_pty(prompt.as_bytes());
-                        let _ = app.interactive_agents[idx].write_to_pty(b"\n");
+            // If we're in instruction field, add newline; otherwise send prompt
+            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
+            if section_name == "instruction" {
+                let mut content = dialog.get_section_content(&section_name);
+                content.push('\n');
+                dialog.set_section_content(&section_name, content);
+            } else {
+                // Send prompt from other fields
+                if let Ok(prompt) = dialog.build_prompt() {
+                    if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                        let idx = *idx;
+                        if idx < app.interactive_agents.len() {
+                            let _ = app.interactive_agents[idx].write_to_pty(prompt.as_bytes());
+                            let _ = app.interactive_agents[idx].write_to_pty(b"\n");
+                        }
                     }
+                    app.close_simple_prompt_dialog();
                 }
-                app.close_simple_prompt_dialog();
             }
         }
         KeyCode::Tab => {
@@ -220,12 +229,20 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
             let mut content = dialog.get_section_content(&section_name);
             content.push(c);
             dialog.set_section_content(&section_name, content);
+            // Update scroll to keep cursor visible for instruction field
+            if section_name == "instruction" {
+                dialog.update_instruction_scroll(5);
+            }
         }
         KeyCode::Backspace => {
             let section_name = dialog.enabled_sections[dialog.focused_section].clone();
             let mut content = dialog.get_section_content(&section_name);
             content.pop();
             dialog.set_section_content(&section_name, content);
+            // Update scroll to keep cursor visible for instruction field
+            if section_name == "instruction" {
+                dialog.update_instruction_scroll(5);
+            }
         }
         KeyCode::Up => {
             if dialog.focused_section > 0 {

@@ -1007,7 +1007,6 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
     // Draw Instruction field first with special styling
     let is_instruction_focused = dialog.focused_section == 0;
-    let instruction_content = dialog.get_section_content("instruction");
     
     // Instruction label (first line, accent + bold, in brackets)
     let label_style = if is_instruction_focused {
@@ -1036,12 +1035,14 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         Color::Rgb(30, 30, 30)
     };
     
-    // Calculate height: estimate ~35 chars per line, with max 5 lines
-    let chars_per_line = (inner.width - 4).max(1) as usize;
-    let estimated_lines = ((instruction_content.len() / chars_per_line) + 1) as u16;
-    let instruction_height = estimated_lines.clamp(1, 5);
+    // Max 5 lines visible for instruction
+    let max_instruction_lines = 5u16;
     
-    let mut instruction_display = instruction_content;
+    // Get visible lines using scroll offset
+    let visible_lines = dialog.get_visible_instruction_lines(max_instruction_lines as usize);
+    let visible_text = visible_lines.join("\n");
+    
+    let mut instruction_display = visible_text;
     if is_instruction_focused {
         instruction_display.push('│');
     }
@@ -1058,10 +1059,10 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         x: inner.x + 1,
         y: y_pos,
         width: inner.width - 2,
-        height: instruction_height,
+        height: max_instruction_lines,
     };
     frame.render_widget(instruction_paragraph, content_area);
-    y_pos += instruction_height;
+    y_pos += max_instruction_lines;
 
     // Bottom border for instruction box
     let bottom_border = generate_bottom_border(inner.width, label_style);
@@ -1082,12 +1083,22 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
         let is_focused = dialog.focused_section == i;
 
+        // Extract section type from ID (e.g., "context_1" -> "context")
+        let section_type = section_name.split('_').next().unwrap_or(section_name.as_str());
+        
         // Get display label
         let label = crate::tui::app::dialog::SimplePromptDialog::get_available_sections()
             .into_iter()
-            .find(|(name, _)| name == section_name)
+            .find(|(name, _)| *name == section_type)
             .map(|(_, label)| label)
-            .unwrap_or(section_name.as_str());
+            .unwrap_or(section_type);
+        
+        // Build display with instance number if needed
+        let display_label = if section_name.contains('_') {
+            format!("{} {}", label, section_name.rsplit('_').next().unwrap_or(""))
+        } else {
+            label.to_string()
+        };
 
         // Section label (box style like instruction)
         let label_style = if is_focused {
@@ -1099,7 +1110,7 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
                 .fg(accent)
         };
 
-        let label_line = Line::from(vec![Span::styled(format!("┌─ {} ─────────────────────────────────┐", label), label_style)]);
+        let label_line = generate_top_border(&display_label, inner.width, label_style);
         let label_area = ratatui::layout::Rect {
             x: inner.x,
             y: y_pos,
@@ -1145,8 +1156,8 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         frame.render_widget(content_paragraph, content_area);
         y_pos += content_height;
 
-        // Bottom border
-        let bottom_border = Line::from(vec![Span::styled("└─────────────────────────────────────────┘".to_string(), label_style)]);
+        // Bottom border (responsive)
+        let bottom_border = generate_bottom_border(inner.width, label_style);
         let border_area = ratatui::layout::Rect {
             x: inner.x,
             y: y_pos,
