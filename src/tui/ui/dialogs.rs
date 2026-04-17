@@ -956,19 +956,42 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         })
         .unwrap_or(ACCENT);
 
-    // Calculate dialog height: 
-    // title + instructions_line(1) + instruction_field(label+content+borders) + sections + padding
-    let section_count = dialog.enabled_sections.len();
-    let instruction_content = dialog.get_section_content("instruction");
-    // Use terminal width minus margins for responsive design
-    let available_width = frame.area().width.saturating_sub(20); // Leave some margin
-    let chars_per_line = available_width as usize;
-    let estimated_instruction_lines = ((instruction_content.len() / chars_per_line) + 1) as u16;
-    let instruction_lines = estimated_instruction_lines.clamp(1, 5) + 2; // +2 for top/bottom borders
-    let height = 3 + instruction_lines + ((section_count - 1) as u16 * 4) + 2; // -1 because instruction is separate
-    let width = available_width.min(100); // Max width 100, but responsive
+    // Use 65% of terminal width (responsive, not edge-to-edge)
+    let percent_x = 65u16;
+    let dialog_width = (frame.area().width * percent_x / 100).max(40);
+    let inner_width = dialog_width.saturating_sub(2);
+    let field_width = inner_width.saturating_sub(2).max(10) as usize;
 
-    let area = centered_rect(width, height, frame.area());
+    let is_instruction_focused = dialog.focused_section == 0;
+
+    // Instruction height: expanded (1-5) when focused, collapsed (1) otherwise
+    let instruction_content = dialog.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+    let instruction_display_height = if is_instruction_focused {
+        let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(instruction_content, field_width);
+        (vis as u16).clamp(1, 5)
+    } else {
+        1u16
+    };
+
+    // Optional sections: expanded when focused, collapsed (1) otherwise
+    let mut optional_section_height: u16 = 0;
+    for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
+        if section_name == "instruction" { continue; }
+        let h = if dialog.focused_section == i {
+            let content = dialog.sections.get(section_name).map(|s| s.as_str()).unwrap_or("");
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(content, field_width);
+            let max_h = crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            (vis as u16).clamp(1, max_h as u16)
+        } else {
+            1u16
+        };
+        optional_section_height += 1 + h + 1 + 1;
+    }
+
+    let total_height = 2 + 1 + 1 + 1 + instruction_display_height + 1 + 1 + optional_section_height + 1;
+    let height = total_height.min(frame.area().height.saturating_sub(2));
+
+    let area = centered_rect(percent_x, height, frame.area());
     frame.render_widget(Clear, area);
 
     let title = " Prompt Builder ";
@@ -981,15 +1004,17 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Draw instructions
+    // Draw hint line
     let instructions = Line::from(vec![
         Span::styled("↑↓ ", Style::default().fg(DIM)),
-        Span::styled("navigate  ", Style::default().fg(Color::White)),
+        Span::styled("fields  ", Style::default().fg(Color::White)),
+        Span::styled("⇧↑↓←→ ", Style::default().fg(DIM)),
+        Span::styled("cursor  ", Style::default().fg(Color::White)),
         Span::styled("+ ", Style::default().fg(DIM)),
-        Span::styled("add section  ", Style::default().fg(Color::White)),
+        Span::styled("add  ", Style::default().fg(Color::White)),
         Span::styled("- ", Style::default().fg(DIM)),
         Span::styled("remove  ", Style::default().fg(Color::White)),
-        Span::styled("Enter  ", Style::default().fg(DIM)),
+        Span::styled("^↵ ", Style::default().fg(DIM)),
         Span::styled("send  ", Style::default().fg(Color::White)),
         Span::styled("Esc  ", Style::default().fg(DIM)),
         Span::styled("cancel", Style::default().fg(Color::White)),
@@ -1005,17 +1030,11 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
     let mut y_pos = inner.y + 2;
 
-    // Draw Instruction field first with special styling
-    let is_instruction_focused = dialog.focused_section == 0;
-    
-    // Instruction label (first line, accent + bold, in brackets)
+    // Draw Instruction field (is_instruction_focused computed above for height calc)
     let label_style = if is_instruction_focused {
-        Style::default()
-            .fg(accent)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(accent).add_modifier(Modifier::BOLD)
     } else {
-        Style::default()
-            .fg(accent)
+        Style::default().fg(accent)
     };
 
     let label_line = generate_top_border("Instruction", inner.width, label_style);
@@ -1028,43 +1047,44 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(label_line), label_area);
     y_pos += 1;
 
-    // Instruction content (multi-line, white text, with neutral gray background)
     let instruction_bg = if is_instruction_focused {
         Color::Rgb(40, 40, 40)
     } else {
         Color::Rgb(30, 30, 30)
     };
-    
-    // Max 5 lines visible for instruction
-    let max_instruction_lines = 5u16;
-    
-    // Get visible lines using scroll offset
-    let visible_lines = dialog.get_visible_instruction_lines(max_instruction_lines as usize);
-    let visible_text = visible_lines.join("\n");
-    
-    let mut instruction_display = visible_text;
-    if is_instruction_focused {
-        instruction_display.push('│');
-    }
-    
-    let content_style = Style::default()
-        .fg(Color::White)
-        .bg(instruction_bg);
 
-    let instruction_paragraph = Paragraph::new(instruction_display)
+    let instruction_content = dialog.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+
+    let (instruction_render_text, instr_scroll) = if is_instruction_focused {
+        let cursor_idx = dialog.cursor("instruction").min(instruction_content.chars().count());
+        let before: String = instruction_content.chars().take(cursor_idx).collect();
+        let after: String = instruction_content.chars().skip(cursor_idx).collect();
+        (format!("{}│{}", before, after), dialog.scroll("instruction") as u16)
+    } else {
+        let first_line = instruction_content.lines().next().unwrap_or(instruction_content);
+        let text = if first_line.chars().count() > field_width {
+            format!("{}…", first_line.chars().take(field_width.saturating_sub(1)).collect::<String>())
+        } else {
+            first_line.to_string()
+        };
+        (text, 0u16)
+    };
+
+    let content_style = Style::default().fg(Color::White).bg(instruction_bg);
+    let instruction_paragraph = Paragraph::new(instruction_render_text)
         .style(content_style)
-        .wrap(ratatui::widgets::Wrap { trim: true });
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((instr_scroll, 0));
 
     let content_area = ratatui::layout::Rect {
         x: inner.x + 1,
         y: y_pos,
-        width: inner.width - 2,
-        height: max_instruction_lines,
+        width: inner.width.saturating_sub(2),
+        height: instruction_display_height,
     };
     frame.render_widget(instruction_paragraph, content_area);
-    y_pos += max_instruction_lines;
+    y_pos += instruction_display_height;
 
-    // Bottom border for instruction box
     let bottom_border = generate_bottom_border(inner.width, label_style);
     let border_area = ratatui::layout::Rect {
         x: inner.x,
@@ -1075,39 +1095,38 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(bottom_border), border_area);
     y_pos += 2;
 
-    // Draw optional sections (skip instruction, already drawn) with same box style
+    // Draw optional sections (skip instruction, already drawn)
     for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
         if section_name == "instruction" {
-            continue; // Already drawn above
+            continue;
         }
 
         let is_focused = dialog.focused_section == i;
 
-        // Extract section type from ID (e.g., "context_1" -> "context")
-        let section_type = section_name.split('_').next().unwrap_or(section_name.as_str());
-        
-        // Get display label
+        // Extract section type from ID (e.g., "context_1" -> "context", "output_format_1" -> "output_format")
+        let section_type = {
+            let known = ["output_format", "instruction", "context", "resources", "examples", "constraints"];
+            known.iter().find(|k| section_name.starts_with(*k)).copied().unwrap_or(section_name.as_str())
+        };
+
         let label = crate::tui::app::dialog::SimplePromptDialog::get_available_sections()
             .into_iter()
             .find(|(name, _)| *name == section_type)
             .map(|(_, label)| label)
             .unwrap_or(section_type);
-        
-        // Build display with instance number if needed
-        let display_label = if section_name.contains('_') {
-            format!("{} {}", label, section_name.rsplit('_').next().unwrap_or(""))
-        } else {
+
+        // Show instance number only if there are multiple (ID has suffix like _1, _2)
+        let suffix = section_name.strip_prefix(section_type).unwrap_or("");
+        let display_label = if suffix.is_empty() {
             label.to_string()
+        } else {
+            format!("{} {}", label, suffix.trim_start_matches('_'))
         };
 
-        // Section label (box style like instruction)
         let label_style = if is_focused {
-            Style::default()
-                .fg(accent)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(accent)
+            Style::default().fg(accent)
         };
 
         let label_line = generate_top_border(&display_label, inner.width, label_style);
@@ -1120,43 +1139,49 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         frame.render_widget(Paragraph::new(label_line), label_area);
         y_pos += 1;
 
-        // Section content with gray background (same as instruction)
         let section_bg = if is_focused {
             Color::Rgb(40, 40, 40)
         } else {
             Color::Rgb(30, 30, 30)
         };
 
-        // Section content with cursor
-        let mut content = dialog.get_section_content(section_name);
-        let content_for_calculation = content.clone(); // Clone for line calculation
-        if is_focused {
-            content.push('│');
-        }
+        let content_raw = dialog.sections.get(section_name).map(|s| s.as_str()).unwrap_or("");
 
-        let content_style = Style::default()
-            .fg(Color::White)
-            .bg(section_bg);
+        let (render_text, content_height, scroll_offset) = if is_focused {
+            // Expanded: full content with cursor at position + scroll
+            let cursor_idx = dialog.cursor(section_name).min(content_raw.chars().count());
+            let before: String = content_raw.chars().take(cursor_idx).collect();
+            let after: String = content_raw.chars().skip(cursor_idx).collect();
+            let text = format!("{}│{}", before, after);
+            let max_h = crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(content_raw, field_width);
+            (text, (vis as u16).clamp(1, max_h as u16), dialog.scroll(section_name) as u16)
+        } else {
+            // Collapsed: first line truncated
+            let first_line = content_raw.lines().next().unwrap_or(content_raw);
+            let text = if first_line.chars().count() > field_width {
+                format!("{}…", first_line.chars().take(field_width.saturating_sub(1)).collect::<String>())
+            } else {
+                first_line.to_string()
+            };
+            (text, 1u16, 0u16)
+        };
 
-        let content_paragraph = Paragraph::new(content)
+        let content_style = Style::default().fg(Color::White).bg(section_bg);
+        let content_paragraph = Paragraph::new(render_text)
             .style(content_style)
-            .wrap(ratatui::widgets::Wrap { trim: true });
-
-        // Calculate content height (1-3 lines)
-        let chars_per_line = (inner.width - 4).max(1) as usize;
-        let content_lines = ((content_for_calculation.len() / chars_per_line) + 1) as u16;
-        let content_height = content_lines.clamp(1, 3);
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((scroll_offset, 0));
 
         let content_area = ratatui::layout::Rect {
             x: inner.x + 1,
             y: y_pos,
-            width: inner.width - 2,
+            width: inner.width.saturating_sub(2),
             height: content_height,
         };
         frame.render_widget(content_paragraph, content_area);
         y_pos += content_height;
 
-        // Bottom border (responsive)
         let bottom_border = generate_bottom_border(inner.width, label_style);
         let border_area = ratatui::layout::Rect {
             x: inner.x,

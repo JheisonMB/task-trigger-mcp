@@ -66,7 +66,10 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
 // ── Prompt Template Dialog ──────────────────────────────────────
 
-fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Approximate instruction field width from terminal width
+    // dialog is ~65% of terminal, minus borders/padding (~6 chars)
+    let field_width = (app.term_width as usize * 65 / 100).saturating_sub(6).max(20);
     let Some(dialog) = &mut app.simple_prompt_dialog else {
         app.focus = Focus::Agent;
         return Ok(());
@@ -176,26 +179,28 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
         SectionPickerMode::None => {}
     }
 
-    // Normal dialog mode
+    // Normal dialog mode — all sections support cursor editing
+    let is_shift = modifiers.contains(KeyModifiers::SHIFT);
+    let section_name = dialog.enabled_sections[dialog.focused_section].clone();
+
     match code {
         KeyCode::Esc => {
             app.close_simple_prompt_dialog();
         }
         KeyCode::Enter => {
-            // If we're in instruction field, add newline; otherwise send prompt
-            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
-            if section_name == "instruction" {
-                let mut content = dialog.get_section_content(&section_name);
-                content.push('\n');
-                dialog.set_section_content(&section_name, content);
+            if !modifiers.contains(KeyModifiers::CONTROL) {
+                // Insert newline at cursor position in any section
+                let dialog = app.simple_prompt_dialog.as_mut().unwrap();
+                dialog.insert_newline_at_cursor(&section_name, field_width);
             } else {
-                // Send prompt from other fields
+                // Ctrl+Enter → send prompt
                 if let Ok(prompt) = dialog.build_prompt() {
                     if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                         let idx = *idx;
                         if idx < app.interactive_agents.len() {
-                            let _ = app.interactive_agents[idx].write_to_pty(prompt.as_bytes());
-                            let _ = app.interactive_agents[idx].write_to_pty(b"\n");
+                            let pasted = format!("\x1b[200~{}\x1b[201~", prompt);
+                            let _ = app.interactive_agents[idx].write_to_pty(pasted.as_bytes());
+                            let _ = app.interactive_agents[idx].write_to_pty(b"\r");
                         }
                     }
                     app.close_simple_prompt_dialog();
@@ -212,6 +217,30 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
                 dialog.focused_section -= 1;
             }
         }
+        // Shift+Arrow → move cursor within the focused section
+        KeyCode::Left if is_shift => {
+            dialog.move_cursor_left(&section_name, field_width);
+        }
+        KeyCode::Right if is_shift => {
+            dialog.move_cursor_right(&section_name, field_width);
+        }
+        KeyCode::Up if is_shift => {
+            dialog.move_cursor_up(&section_name, field_width);
+        }
+        KeyCode::Down if is_shift => {
+            dialog.move_cursor_down(&section_name, field_width);
+        }
+        // Plain arrows → navigate between sections
+        KeyCode::Up => {
+            if dialog.focused_section > 0 {
+                dialog.focused_section -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
+                dialog.focused_section += 1;
+            }
+        }
         KeyCode::Char('+') => {
             let addable = dialog.get_addable_sections();
             if !addable.is_empty() {
@@ -225,34 +254,10 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
             }
         }
         KeyCode::Char(c) => {
-            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
-            let mut content = dialog.get_section_content(&section_name);
-            content.push(c);
-            dialog.set_section_content(&section_name, content);
-            // Update scroll to keep cursor visible for instruction field
-            if section_name == "instruction" {
-                dialog.update_instruction_scroll(5);
-            }
+            dialog.insert_char_at_cursor(&section_name, c, field_width);
         }
         KeyCode::Backspace => {
-            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
-            let mut content = dialog.get_section_content(&section_name);
-            content.pop();
-            dialog.set_section_content(&section_name, content);
-            // Update scroll to keep cursor visible for instruction field
-            if section_name == "instruction" {
-                dialog.update_instruction_scroll(5);
-            }
-        }
-        KeyCode::Up => {
-            if dialog.focused_section > 0 {
-                dialog.focused_section -= 1;
-            }
-        }
-        KeyCode::Down => {
-            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
-                dialog.focused_section += 1;
-            }
+            dialog.backspace_at_cursor(&section_name, field_width);
         }
         _ => {}
     }
@@ -288,7 +293,7 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
         Focus::ContextTransfer => handle_context_transfer_key(app, code),
-        Focus::PromptTemplateDialog => handle_prompt_template_key(app, code),
+        Focus::PromptTemplateDialog => handle_prompt_template_key(app, code, modifiers),
     }
 }
 

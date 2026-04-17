@@ -56,12 +56,6 @@ pub fn build_context_payload(agent: &InteractiveAgent, n_prompts: usize) -> Stri
         for (idx, entry) in prompts.iter().enumerate() {
             out.push_str(&format!("> {}\n", entry.input));
 
-            // Determine the response end:
-            // - Closed prompts (not the last): output_range.1 was set when the next
-            //   prompt arrived, by which point the response had scrolled into history.
-            // - Last prompt (open): the response is on the visible screen.
-            //   Use total_depth() which includes scrollback + visible rows, so we
-            //   capture content that hasn't yet scrolled into history.
             let is_last_prompt = idx == prompts.len() - 1;
             let resp_end = if !is_last_prompt && entry.output_range.1 > entry.output_range.0 {
                 entry.output_range.1
@@ -80,7 +74,70 @@ pub fn build_context_payload(agent: &InteractiveAgent, n_prompts: usize) -> Stri
     }
 
     out.push_str("--- end context ---\n");
+    clean_context_output(&out)
+}
+
+/// Post-process context payload: collapse blank runs, strip status-bar noise.
+fn clean_context_output(raw: &str) -> String {
+    let mut result = Vec::new();
+    let mut blank_run = 0u8;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            blank_run += 1;
+            if blank_run <= 1 {
+                result.push(String::new());
+            }
+            continue;
+        }
+        blank_run = 0;
+
+        // Skip common TUI status-bar / sidebar artifacts
+        if is_status_noise(trimmed) {
+            continue;
+        }
+        result.push(line.to_string());
+    }
+
+    // Trim trailing blank lines before the footer
+    while result.last().is_some_and(|l| l.trim().is_empty()) {
+        result.pop();
+    }
+
+    let mut out = result.join("\n");
+    out.push('\n');
     out
+}
+
+/// Lines that are TUI chrome / sidebar noise in CLI agents.
+fn is_status_noise(line: &str) -> bool {
+    // Token/cost counters
+    if line.ends_with("tokens") || line.ends_with("used") || line.ends_with("spent") {
+        return line.chars().any(|c| c.is_ascii_digit());
+    }
+    // OpenCode/Claude/Copilot status bar fragments
+    let noise = [
+        "ctrl+p commands", "ctrl+p ", "for shortcuts",
+        "Shift+Tab", "MCP issues", "MCP servers",
+        "workspace (", "Environment", "remaining",
+        "LSPs will activate",
+    ];
+    if noise.iter().any(|n| line.contains(n)) {
+        return true;
+    }
+    // Lines that are just "Context" or "LSP" headers from sidebars
+    if matches!(line, "Context" | "LSP" | "MCP" | "Build" | "Sessions") {
+        return true;
+    }
+    // File stat lines like "prompt.txt  -46" or "src/foo.rs  +150 -58"
+    if line.contains('+') && line.contains('-') && line.chars().filter(|c| *c == ' ').count() >= 2 {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 && parts.last().is_some_and(|p| p.starts_with('-') || p.starts_with('+')) {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<PromptEntry> {

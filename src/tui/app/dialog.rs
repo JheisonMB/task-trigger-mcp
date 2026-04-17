@@ -480,13 +480,16 @@ impl App {
         let prev_focus = self.focus;
         let mut dialog = SimplePromptDialog::new();
         if let Some(content) = initial_content {
-            dialog.sections = content.clone();
-            // Enable sections that have content
-            for section_name in content.keys() {
-                if section_name != "instruction" {
-                    dialog.add_section(section_name);
+            for (section_name, section_content) in content {
+                if section_name == "instruction" {
+                    let char_len = section_content.chars().count();
+                    dialog.sections.insert("instruction".to_string(), section_content);
+                    dialog.section_cursors.insert("instruction".to_string(), char_len);
+                } else {
+                    dialog.add_section_with_content(&section_name.clone(), section_content);
                 }
             }
+            dialog.focused_section = 0;
         }
         dialog.prev_focus = Some(prev_focus);
         self.simple_prompt_dialog = Some(dialog);
@@ -795,7 +798,6 @@ pub enum SectionPickerMode {
 /// Now supports multiple instances of the same section type
 pub struct SimplePromptDialog {
     /// Map of unique section IDs to their content
-    /// Format: "instruction" | "context_0", "context_1" | "resources_0", etc.
     pub sections: HashMap<String, String>,
     /// Ordered list of section IDs currently enabled
     pub enabled_sections: Vec<String>,
@@ -807,25 +809,44 @@ pub struct SimplePromptDialog {
     pub picker_mode: SectionPickerMode,
     /// Counter for generating unique IDs per section type
     pub section_counters: HashMap<String, usize>,
-    /// Scroll offset for instruction field (line number to start displaying from)
-    pub instruction_scroll: usize,
+    /// Per-section cursor positions (char index)
+    pub section_cursors: HashMap<String, usize>,
+    /// Per-section scroll offsets (visual line)
+    pub section_scrolls: HashMap<String, usize>,
 }
 
 impl SimplePromptDialog {
     pub fn new() -> Self {
+        let mut counters = HashMap::new();
+        counters.insert("instruction".to_string(), 1usize);
+        let mut cursors = HashMap::new();
+        cursors.insert("instruction".to_string(), 0usize);
+        let mut scrolls = HashMap::new();
+        scrolls.insert("instruction".to_string(), 0usize);
         let mut dialog = Self {
             sections: HashMap::new(),
             enabled_sections: vec!["instruction".to_string()],
             focused_section: 0,
             prev_focus: None,
             picker_mode: SectionPickerMode::None,
-            section_counters: HashMap::new(),
-            instruction_scroll: 0,
+            section_counters: counters,
+            section_cursors: cursors,
+            section_scrolls: scrolls,
         };
         dialog
             .sections
             .insert("instruction".to_string(), String::new());
         dialog
+    }
+
+    /// Get cursor position for a section
+    pub fn cursor(&self, section: &str) -> usize {
+        self.section_cursors.get(section).copied().unwrap_or(0)
+    }
+
+    /// Get scroll offset for a section
+    pub fn scroll(&self, section: &str) -> usize {
+        self.section_scrolls.get(section).copied().unwrap_or(0)
     }
 
     /// Generate unique ID for a section instance
@@ -844,15 +865,21 @@ impl SimplePromptDialog {
     pub fn add_section(&mut self, section_name: &str) {
         let unique_id = self.generate_section_id(section_name);
         self.enabled_sections.push(unique_id.clone());
-        
-        // Pre-fill execution section with default text
-        let default_content = if section_name == "execution" {
-            "Execute the task by synthesizing all sections above. Prioritize <instruction_set> rules while using <example_gallery> as a quality benchmark.".to_string()
-        } else {
-            String::new()
-        };
-        
-        self.sections.insert(unique_id, default_content);
+        self.sections.insert(unique_id.clone(), String::new());
+        self.section_cursors.insert(unique_id.clone(), 0);
+        self.section_scrolls.insert(unique_id, 0);
+        self.focused_section = self.enabled_sections.len() - 1;
+    }
+
+    /// Add a section with pre-existing content (used for context transfer and initial content)
+    pub fn add_section_with_content(&mut self, section_name: &str, content: String) {
+        let unique_id = self.generate_section_id(section_name);
+        let cursor_pos = content.chars().count();
+        self.enabled_sections.push(unique_id.clone());
+        self.sections.insert(unique_id.clone(), content);
+        self.section_cursors.insert(unique_id.clone(), cursor_pos);
+        self.section_scrolls.insert(unique_id, 0);
+        self.focused_section = self.enabled_sections.len() - 1;
     }
 
     /// Remove a specific section instance
@@ -860,7 +887,8 @@ impl SimplePromptDialog {
         if section_id != "instruction" {
             self.enabled_sections.retain(|s| s != section_id);
             self.sections.remove(section_id);
-            // Adjust focused section if needed
+            self.section_cursors.remove(section_id);
+            self.section_scrolls.remove(section_id);
             if self.focused_section > 0 {
                 self.focused_section = self.focused_section.saturating_sub(1);
             }
@@ -870,10 +898,12 @@ impl SimplePromptDialog {
     /// Get available section types (these can always be added again)
     pub fn get_available_sections() -> Vec<(&'static str, &'static str)> {
         vec![
+            ("instruction", "Instruction"),
             ("context", "Context"),
             ("resources", "Resources"),
             ("examples", "Examples"),
-            ("execution", "Execution"),
+            ("constraints", "Constraints"),
+            ("output_format", "Output Format"),
         ]
     }
 
@@ -936,17 +966,20 @@ impl SimplePromptDialog {
             }
         }
         
-        // Add main instruction
+        // Add all instruction sections (base "instruction" + any "instruction_N")
         result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
         result.push_str("<instruction_set>\n");
-        
-        if let Some(instruction) = self.sections.get("instruction") {
-            if !instruction.is_empty() {
-                let lines: Vec<&str> = instruction.lines().filter(|s| !s.trim().is_empty()).collect();
-                for (i, line) in lines.into_iter().enumerate() {
-                    result.push_str(&format!("  <instruction_{}>\n", i + 1));
-                    result.push_str(&format!("    {}\n", line.trim()));
-                    result.push_str(&format!("  </instruction_{}>\n\n", i + 1));
+        let mut instr_count = 0;
+        for section_id in &self.enabled_sections {
+            if section_id == "instruction" || section_id.starts_with("instruction_") {
+                if let Some(content) = self.sections.get(section_id) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        instr_count += 1;
+                        result.push_str(&format!("  <instruction_{}>\n", instr_count));
+                        result.push_str(&format!("    {}\n", trimmed));
+                        result.push_str(&format!("  </instruction_{}>\n\n", instr_count));
+                    }
                 }
             }
         }
@@ -999,54 +1032,174 @@ impl SimplePromptDialog {
             result.push_str("</example_gallery>\n\n");
         }
         
-        // Add execution sections (can have multiple)
+        // Add constraints sections
+        let mut constraints_count = 0;
         for section_id in &self.enabled_sections {
-            if section_id.starts_with("execution") {
+            if section_id == "constraints" || section_id.starts_with("constraints_") {
                 if let Some(content) = self.sections.get(section_id) {
-                    if !content.is_empty() {
-                        result.push_str("# [EXECUTION]: Trigger\n");
-                        result.push_str("<run_task>\n");
-                        result.push_str(content);
-                        if !content.ends_with('\n') {
-                            result.push('\n');
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        if constraints_count == 0 {
+                            result.push_str("# [CONSTRAINTS]: Behavioral Boundaries\n");
+                            result.push_str("<constraints>\n");
                         }
-                        result.push_str("</run_task>\n\n");
+                        constraints_count += 1;
+                        result.push_str(&format!("  <constraint_{}>\n", constraints_count));
+                        result.push_str(&format!("    {}\n", trimmed));
+                        result.push_str(&format!("  </constraint_{}>\n\n", constraints_count));
                     }
                 }
             }
         }
-        
+        if constraints_count > 0 {
+            result.push_str("</constraints>\n\n");
+        }
+
+        // Add output format sections
+        let mut output_count = 0;
+        for section_id in &self.enabled_sections {
+            if section_id == "output_format" || section_id.starts_with("output_format_") {
+                if let Some(content) = self.sections.get(section_id) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        if output_count == 0 {
+                            result.push_str("# [OUTPUT FORMAT]: Response Contract\n");
+                            result.push_str("<output_spec>\n");
+                        }
+                        output_count += 1;
+                        result.push_str(&format!("  <spec_{}>\n", output_count));
+                        result.push_str(&format!("    {}\n", trimmed));
+                        result.push_str(&format!("  </spec_{}>\n\n", output_count));
+                    }
+                }
+            }
+        }
+        if output_count > 0 {
+            result.push_str("</output_spec>\n\n");
+        }
+
         Ok(result)
     }
     
-    /// Calculate the cursor position (line number) in the instruction text
-    pub fn get_instruction_cursor_line(&self) -> usize {
-        let instruction = self.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
-        instruction.chars().take(instruction.len()).filter(|&c| c == '\n').count()
-    }
-    
-    /// Calculate maximum scroll offset to keep cursor visible
-    pub fn update_instruction_scroll(&mut self, max_visible_lines: usize) {
-        let cursor_line = self.get_instruction_cursor_line();
-        
-        // If cursor is above visible area, scroll up
-        if cursor_line < self.instruction_scroll {
-            self.instruction_scroll = cursor_line;
+    /// Count visual (wrapped) lines for a text given a field width
+    pub fn visual_line_count(text: &str, field_width: usize) -> usize {
+        if field_width == 0 {
+            return 1;
         }
-        // If cursor is below visible area, scroll down
-        else if cursor_line >= self.instruction_scroll + max_visible_lines {
-            self.instruction_scroll = cursor_line.saturating_sub(max_visible_lines - 1);
+        let mut count = 0;
+        for line in text.lines() {
+            if line.is_empty() {
+                count += 1;
+            } else {
+                count += line.chars().count().div_ceil(field_width);
+            }
+        }
+        count.max(1)
+    }
+
+    /// Visual lines occupied by the first `char_idx` chars of text.
+    fn visual_lines_to_cursor(text: &str, char_idx: usize, field_width: usize) -> usize {
+        let prefix: String = text.chars().take(char_idx).collect();
+        Self::visual_line_count(&prefix, field_width).max(1)
+    }
+
+    /// Max visible lines for a section type (instruction=5, others=3)
+    pub fn max_visible_lines(section_id: &str) -> usize {
+        if section_id == "instruction" || section_id.starts_with("instruction_") {
+            5
+        } else {
+            3
         }
     }
-    
-    /// Get visible lines of instruction for rendering
-    pub fn get_visible_instruction_lines(&self, max_visible_lines: usize) -> Vec<&str> {
-        let instruction = self.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
-        let lines: Vec<&str> = instruction.lines().collect();
-        
-        let start = self.instruction_scroll.min(lines.len());
-        let end = (start + max_visible_lines).min(lines.len());
-        
-        lines[start..end].to_vec()
+
+    /// Update scroll for a section so the cursor stays visible.
+    pub fn update_section_scroll(&mut self, section_id: &str, field_width: usize) {
+        let max_vis = Self::max_visible_lines(section_id);
+        let text = self.sections.get(section_id).map(|s| s.as_str()).unwrap_or("");
+        let cur = self.cursor(section_id);
+        let cursor_visual_line =
+            Self::visual_lines_to_cursor(text, cur, field_width).saturating_sub(1);
+
+        let scroll = self.section_scrolls.entry(section_id.to_string()).or_insert(0);
+        if cursor_visual_line < *scroll {
+            *scroll = cursor_visual_line;
+        } else if cursor_visual_line >= *scroll + max_vis {
+            *scroll = cursor_visual_line + 1 - max_vis;
+        }
+    }
+
+    /// Move cursor left one char in the given section.
+    pub fn move_cursor_left(&mut self, section_id: &str, field_width: usize) {
+        let cur = self.cursor(section_id);
+        if cur > 0 {
+            self.section_cursors.insert(section_id.to_string(), cur - 1);
+            self.update_section_scroll(section_id, field_width);
+        }
+    }
+
+    /// Move cursor right one char in the given section.
+    pub fn move_cursor_right(&mut self, section_id: &str, field_width: usize) {
+        let len = self.sections.get(section_id).map(|s| s.chars().count()).unwrap_or(0);
+        let cur = self.cursor(section_id);
+        if cur < len {
+            self.section_cursors.insert(section_id.to_string(), cur + 1);
+            self.update_section_scroll(section_id, field_width);
+        }
+    }
+
+    /// Move cursor up one visual line in the given section.
+    pub fn move_cursor_up(&mut self, section_id: &str, field_width: usize) {
+        let cur = self.cursor(section_id);
+        self.section_cursors.insert(section_id.to_string(), cur.saturating_sub(field_width));
+        self.update_section_scroll(section_id, field_width);
+    }
+
+    /// Move cursor down one visual line in the given section.
+    pub fn move_cursor_down(&mut self, section_id: &str, field_width: usize) {
+        let len = self.sections.get(section_id).map(|s| s.chars().count()).unwrap_or(0);
+        let cur = self.cursor(section_id);
+        self.section_cursors.insert(section_id.to_string(), (cur + field_width).min(len));
+        self.update_section_scroll(section_id, field_width);
+    }
+
+    /// Insert a character at cursor position in any section.
+    pub fn insert_char_at_cursor(&mut self, section_id: &str, ch: char, field_width: usize) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let cur = self.cursor(section_id).min(chars.len());
+        let mut new_chars = chars;
+        new_chars.insert(cur, ch);
+        let new_content: String = new_chars.into_iter().collect();
+        self.set_section_content(section_id, new_content);
+        self.section_cursors.insert(section_id.to_string(), cur + 1);
+        self.update_section_scroll(section_id, field_width);
+    }
+
+    /// Delete the character before cursor in any section.
+    pub fn backspace_at_cursor(&mut self, section_id: &str, field_width: usize) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let cur = self.cursor(section_id);
+        if cur > 0 && cur <= chars.len() {
+            let mut new_chars = chars;
+            new_chars.remove(cur - 1);
+            let new_content: String = new_chars.into_iter().collect();
+            self.set_section_content(section_id, new_content);
+            self.section_cursors.insert(section_id.to_string(), cur - 1);
+            self.update_section_scroll(section_id, field_width);
+        }
+    }
+
+    /// Insert a newline at cursor position in any section.
+    pub fn insert_newline_at_cursor(&mut self, section_id: &str, field_width: usize) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let cur = self.cursor(section_id).min(chars.len());
+        let before: String = chars[..cur].iter().collect();
+        let after: String = chars[cur..].iter().collect();
+        let new_content = format!("{}\n{}", before, after);
+        self.set_section_content(section_id, new_content);
+        self.section_cursors.insert(section_id.to_string(), cur + 1);
+        self.update_section_scroll(section_id, field_width);
     }
 }
