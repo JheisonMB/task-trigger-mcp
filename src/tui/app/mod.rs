@@ -35,7 +35,7 @@ impl AgentEntry {
         match self {
             Self::BackgroundAgent(t) => &t.id,
             Self::Watcher(w) => &w.id,
-            Self::Interactive(idx) => &app.interactive_agents[*idx].id,
+            Self::Interactive(idx) => &app.interactive_agents[*idx].name,
         }
     }
 }
@@ -510,7 +510,7 @@ impl App {
             let existing_ids: Vec<&str> = self
                 .interactive_agents
                 .iter()
-                .map(|a| a.id.as_str())
+                .map(|a| a.name.as_str())
                 .collect();
 
             match super::agent::InteractiveAgent::spawn(
@@ -529,7 +529,7 @@ impl App {
                 Ok(agent) => {
                     let _ = self.db.insert_interactive_session(
                         &agent.id,
-                        &agent.id,
+                        &agent.name,
                         cli.as_str(),
                         &session.working_dir,
                         args,

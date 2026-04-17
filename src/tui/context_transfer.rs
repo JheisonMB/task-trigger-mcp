@@ -38,7 +38,7 @@ pub fn build_context_payload(agent: &InteractiveAgent, n_prompts: usize) -> Stri
 
     out.push_str(&format!(
         "--- context from: {} | workdir: {} ---\n",
-        agent.id, agent.working_dir
+        agent.name, agent.working_dir
     ));
 
     let prompts = collect_last_prompts(
@@ -118,9 +118,15 @@ fn is_status_noise(line: &str) -> bool {
     }
     // OpenCode/Claude/Copilot status bar fragments
     let noise = [
-        "ctrl+p commands", "ctrl+p ", "for shortcuts",
-        "Shift+Tab", "MCP issues", "MCP servers",
-        "workspace (", "Environment", "remaining",
+        "ctrl+p commands",
+        "ctrl+p ",
+        "for shortcuts",
+        "Shift+Tab",
+        "MCP issues",
+        "MCP servers",
+        "workspace (",
+        "Environment",
+        "remaining",
         "LSPs will activate",
     ];
     if noise.iter().any(|n| line.contains(n)) {
@@ -133,7 +139,11 @@ fn is_status_noise(line: &str) -> bool {
     // File stat lines like "prompt.txt  -46" or "src/foo.rs  +150 -58"
     if line.contains('+') && line.contains('-') && line.chars().filter(|c| *c == ' ').count() >= 2 {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 && parts.last().is_some_and(|p| p.starts_with('-') || p.starts_with('+')) {
+        if parts.len() >= 2
+            && parts
+                .last()
+                .is_some_and(|p| p.starts_with('-') || p.starts_with('+'))
+        {
             return true;
         }
     }

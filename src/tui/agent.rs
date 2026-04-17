@@ -241,39 +241,37 @@ fn ignore_signals() {
 
 /// Creative session names assigned when the user doesn't provide one.
 const RANDOM_NAMES: &[&str] = &[
-    "quercus",
-    "acer",
-    "pinus",
-    "betula",
-    "fagus",
+    "liquidambar",
+    "wollemia",
+    "metasequoia",
+    "paulownia",
+    "liriodendron",
+    "cryptomeria",
+    "cunninghamia",
+    "nothofagus",
+    "podocarpus",
+    "fitzroya",
+    "cephalotaxus",
+    "taiwania",
+    "sciadopitys",
+    "toona",
     "cedrus",
     "sequoia",
-    "populus",
-    "fraxinus",
-    "ulmus",
-    "salix",
-    "abies",
-    "picea",
-    "taxus",
     "juniperus",
-    "alnus",
-    "tsuga",
+    "stereum",
     "larix",
     "carpinus",
-    "corylus",
     "castanea",
     "aesculus",
-    "tilia",
     "juglans",
-    "carya",
     "platanus",
-    "magnolia",
-    "ginkgo",
-    "thuja",
+    "agaricus",
     "araucaria",
     "zelkova",
+    "magnolia",
+    "ginkgo",
+    "quercus",
     "amanita",
-    "agaricus",
     "boletus",
     "morchella",
     "cantharellus",
@@ -286,8 +284,7 @@ const RANDOM_NAMES: &[&str] = &[
     "trametes",
     "russula",
     "lactarius",
-    "tuber",
-    "fomes",
+    "populus",
     "laricifomes",
     "cordyceps",
     "hericium",
@@ -306,11 +303,14 @@ const RANDOM_NAMES: &[&str] = &[
     "stereum",
     "daedalea",
     "clitocybe",
-    "lepiota",
     "inocybe",
     "pholiota",
     "stropharia",
     "suillus",
+    "omphalotus",
+    "sparassis",
+    "calvatia",
+    "phallus",
 ];
 
 /// Pick a random name from `RANDOM_NAMES` that isn't already in use.
@@ -331,7 +331,10 @@ fn pick_random_name(existing_ids: &[&str]) -> String {
 
 /// An interactive agent with a virtual terminal screen.
 pub struct InteractiveAgent {
+    /// UUID-based permanent identifier
     pub id: String,
+    /// Display name for personality (from RANDOM_NAMES)
+    pub name: String,
     pub cli: Cli,
     #[allow(dead_code)]
     pub working_dir: String,
@@ -457,7 +460,8 @@ impl InteractiveAgent {
             }
         });
 
-        let id = if let Some(n) = name {
+        let id = uuid::Uuid::new_v4().to_string();
+        let name = if let Some(n) = name {
             n.to_string()
         } else {
             pick_random_name(existing_ids)
@@ -465,6 +469,7 @@ impl InteractiveAgent {
 
         Ok(Self {
             id,
+            name,
             cli,
             working_dir: working_dir.to_string(),
             started_at: Utc::now(),

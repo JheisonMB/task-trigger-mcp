@@ -262,16 +262,6 @@ impl Database {
         )?;
         Ok(())
     }
-
-    /// Get all historical session names/IDs to avoid naming collisions.
-    pub fn get_all_session_names(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut stmt = conn.prepare("SELECT DISTINCT name FROM interactive_sessions")?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
 }
 
 // ── BackgroundAgent operations ──────────────────────────────────────────────

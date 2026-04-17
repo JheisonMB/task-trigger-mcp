@@ -61,6 +61,8 @@ pub struct NewAgentDialog {
     pub session_picker_idx: usize,
     /// The session the user confirmed, if any.
     pub selected_session: Option<(String, String)>,
+    /// Whether to launch the agent in yolo (autonomous) mode.
+    pub yolo_mode: bool,
 }
 
 impl NewAgentDialog {
@@ -106,6 +108,7 @@ impl NewAgentDialog {
             session_entries: Vec::new(),
             session_picker_idx: 0,
             selected_session: None,
+            yolo_mode: false,
         };
         dialog.refresh_dir_entries();
         dialog.refresh_model_suggestions();
@@ -143,22 +146,34 @@ impl NewAgentDialog {
             .cli_configs
             .get(self.cli_index)
             .and_then(|c| c.as_ref())?;
+
+        let inter = config
+            .interactive_args
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string());
+
         match self.task_mode {
             NewTaskMode::Resume => {
                 // If the user picked a specific session via the canopy session picker,
-                // use session_resume_cmd + id (e.g. `--session ses_abc123`).
+                // use interactive_args + session_resume_cmd + id.
                 if let Some((ref id, _)) = self.selected_session {
                     if let Some(ref cmd) = config.session_resume_cmd {
-                        return Some(format!("{cmd} {id}"));
+                        return Some(match inter {
+                            Some(ref i) => format!("{i} {cmd} {id}"),
+                            None => format!("{cmd} {id}"),
+                        });
                     }
                 }
-                // Otherwise fall back to resume_args (e.g. --continue) or interactive_args.
-                config
-                    .resume_args
-                    .clone()
-                    .or_else(|| config.interactive_args.clone())
+                // Build: interactive_args + resume_args (each optional).
+                match (inter, config.resume_args.clone()) {
+                    (Some(i), Some(r)) => Some(format!("{i} {r}")),
+                    (Some(i), None) => Some(i),
+                    (None, Some(r)) => Some(r),
+                    (None, None) => None,
+                }
             }
-            NewTaskMode::Interactive => config.interactive_args.clone(),
+            NewTaskMode::Interactive => inter,
         }
     }
 
@@ -238,6 +253,14 @@ impl NewAgentDialog {
             .get(self.cli_index)
             .and_then(|c| c.as_ref())
             .and_then(|c| c.fallback_interactive_args.clone())
+    }
+
+    /// Returns the yolo flag for the currently selected CLI, if any.
+    pub fn selected_yolo_flag(&self) -> Option<String> {
+        self.cli_configs
+            .get(self.cli_index)
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.yolo_flag.clone())
     }
 
     pub fn selected_accent_color(&self) -> Color {
@@ -483,8 +506,12 @@ impl App {
             for (section_name, section_content) in content {
                 if section_name == "instruction" {
                     let char_len = section_content.chars().count();
-                    dialog.sections.insert("instruction".to_string(), section_content);
-                    dialog.section_cursors.insert("instruction".to_string(), char_len);
+                    dialog
+                        .sections
+                        .insert("instruction".to_string(), section_content);
+                    dialog
+                        .section_cursors
+                        .insert("instruction".to_string(), char_len);
                 } else {
                     dialog.add_section_with_content(&section_name.clone(), section_content);
                 }
@@ -627,7 +654,20 @@ impl App {
         use super::super::agent::InteractiveAgent;
         let cli = dialog.selected_cli();
         let dir = dialog.working_dir.clone();
-        let args = dialog.selected_args();
+        // Append yolo flag to args when yolo mode is enabled
+        let base_args = dialog.selected_args();
+        let args = if dialog.yolo_mode {
+            if let Some(ref flag) = dialog.selected_yolo_flag() {
+                Some(match base_args {
+                    Some(ref a) => format!("{a} {flag}"),
+                    None => flag.clone(),
+                })
+            } else {
+                base_args
+            }
+        } else {
+            base_args
+        };
         let fallback = dialog.selected_fallback_args();
         let accent = dialog.selected_accent_color();
         let name = if dialog.agent_name.trim().is_empty() {
@@ -651,16 +691,13 @@ impl App {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
             (tw.saturating_sub(28), th.saturating_sub(4))
         };
-        let mut existing_ids: Vec<String> = self
+        // Only consider active agent names for collision avoidance
+        // This allows names to be reused when agents are closed
+        let existing_refs: Vec<&str> = self
             .interactive_agents
             .iter()
-            .map(|a| a.id.clone())
+            .map(|a| a.name.as_str())
             .collect();
-        // Include historical DB session names to avoid collisions
-        if let Ok(history) = self.db.get_all_session_names() {
-            existing_ids.extend(history);
-        }
-        let existing_refs: Vec<&str> = existing_ids.iter().map(|s| s.as_str()).collect();
         let agent = InteractiveAgent::spawn(
             cli,
             &dir,
@@ -677,7 +714,7 @@ impl App {
         // Persist session in registry
         let _ = self.db.insert_interactive_session(
             &agent.id,
-            &agent.id,
+            &agent.name,
             agent.cli.as_str(),
             &dir,
             args.as_deref(),
@@ -789,9 +826,15 @@ fn parse_session_list(output: &str) -> Vec<(String, String)> {
 pub enum SectionPickerMode {
     #[default]
     None,
-    AddSection { selected: usize },
-    RemoveSection { selected: usize },
-    AddCustom { input: String },
+    AddSection {
+        selected: usize,
+    },
+    RemoveSection {
+        selected: usize,
+    },
+    AddCustom {
+        input: String,
+    },
 }
 
 /// New simplified prompt template dialog with dynamic sections
@@ -851,7 +894,10 @@ impl SimplePromptDialog {
 
     /// Generate unique ID for a section instance
     fn generate_section_id(&mut self, section_name: &str) -> String {
-        let counter = self.section_counters.entry(section_name.to_string()).or_insert(0);
+        let counter = self
+            .section_counters
+            .entry(section_name.to_string())
+            .or_insert(0);
         let id = if *counter == 0 {
             section_name.to_string()
         } else {
@@ -925,7 +971,7 @@ impl SimplePromptDialog {
                     .find(|(name, _)| *name == section_name)
                     .map(|(_, label)| label)
                     .unwrap_or(section_name);
-                
+
                 // Build display label with instance number
                 let display = if section_id.contains('_') {
                     format!("{} {}", label, section_id.rsplit('_').next().unwrap_or(""))
@@ -951,7 +997,7 @@ impl SimplePromptDialog {
     /// Supports multiple instances of each section type
     pub fn build_prompt(&self) -> Result<String> {
         let mut result = String::new();
-        
+
         // Add all context sections (each in its own <problem_context> block)
         for section_id in &self.enabled_sections {
             if section_id.starts_with("context") {
@@ -965,7 +1011,7 @@ impl SimplePromptDialog {
                 }
             }
         }
-        
+
         // Add all instruction sections (base "instruction" + any "instruction_N")
         result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
         result.push_str("<instruction_set>\n");
@@ -984,7 +1030,7 @@ impl SimplePromptDialog {
             }
         }
         result.push_str("</instruction_set>\n\n");
-        
+
         // Add all resources sections (can have multiple)
         let mut resources_count = 0;
         for section_id in &self.enabled_sections {
@@ -1006,7 +1052,7 @@ impl SimplePromptDialog {
         if resources_count > 0 {
             result.push_str("</reference_materials>\n\n");
         }
-        
+
         // Add all examples sections (can have multiple)
         let mut examples_count = 0;
         for section_id in &self.enabled_sections {
@@ -1017,11 +1063,18 @@ impl SimplePromptDialog {
                             result.push_str("# [EXAMPLES]: Multi-Shot Learning\n");
                             result.push_str("<example_gallery>\n");
                         }
-                        let lines: Vec<&str> = content.lines().filter(|s| !s.trim().is_empty()).collect();
+                        let lines: Vec<&str> =
+                            content.lines().filter(|s| !s.trim().is_empty()).collect();
                         for (i, line) in lines.into_iter().enumerate() {
-                            result.push_str(&format!("  <example_{}>\n", examples_count * 100 + i + 1));
+                            result.push_str(&format!(
+                                "  <example_{}>\n",
+                                examples_count * 100 + i + 1
+                            ));
                             result.push_str(&format!("    {}\n", line.trim()));
-                            result.push_str(&format!("  </example_{}>\n\n", examples_count * 100 + i + 1));
+                            result.push_str(&format!(
+                                "  </example_{}>\n\n",
+                                examples_count * 100 + i + 1
+                            ));
                         }
                         examples_count += 1;
                     }
@@ -1031,7 +1084,7 @@ impl SimplePromptDialog {
         if examples_count > 0 {
             result.push_str("</example_gallery>\n\n");
         }
-        
+
         // Add constraints sections
         let mut constraints_count = 0;
         for section_id in &self.enabled_sections {
@@ -1080,7 +1133,7 @@ impl SimplePromptDialog {
 
         Ok(result)
     }
-    
+
     /// Count visual (wrapped) lines for a text given a field width
     pub fn visual_line_count(text: &str, field_width: usize) -> usize {
         if field_width == 0 {
@@ -1115,12 +1168,19 @@ impl SimplePromptDialog {
     /// Update scroll for a section so the cursor stays visible.
     pub fn update_section_scroll(&mut self, section_id: &str, field_width: usize) {
         let max_vis = Self::max_visible_lines(section_id);
-        let text = self.sections.get(section_id).map(|s| s.as_str()).unwrap_or("");
+        let text = self
+            .sections
+            .get(section_id)
+            .map(|s| s.as_str())
+            .unwrap_or("");
         let cur = self.cursor(section_id);
         let cursor_visual_line =
             Self::visual_lines_to_cursor(text, cur, field_width).saturating_sub(1);
 
-        let scroll = self.section_scrolls.entry(section_id.to_string()).or_insert(0);
+        let scroll = self
+            .section_scrolls
+            .entry(section_id.to_string())
+            .or_insert(0);
         if cursor_visual_line < *scroll {
             *scroll = cursor_visual_line;
         } else if cursor_visual_line >= *scroll + max_vis {
@@ -1139,7 +1199,11 @@ impl SimplePromptDialog {
 
     /// Move cursor right one char in the given section.
     pub fn move_cursor_right(&mut self, section_id: &str, field_width: usize) {
-        let len = self.sections.get(section_id).map(|s| s.chars().count()).unwrap_or(0);
+        let len = self
+            .sections
+            .get(section_id)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         let cur = self.cursor(section_id);
         if cur < len {
             self.section_cursors.insert(section_id.to_string(), cur + 1);
@@ -1150,15 +1214,21 @@ impl SimplePromptDialog {
     /// Move cursor up one visual line in the given section.
     pub fn move_cursor_up(&mut self, section_id: &str, field_width: usize) {
         let cur = self.cursor(section_id);
-        self.section_cursors.insert(section_id.to_string(), cur.saturating_sub(field_width));
+        self.section_cursors
+            .insert(section_id.to_string(), cur.saturating_sub(field_width));
         self.update_section_scroll(section_id, field_width);
     }
 
     /// Move cursor down one visual line in the given section.
     pub fn move_cursor_down(&mut self, section_id: &str, field_width: usize) {
-        let len = self.sections.get(section_id).map(|s| s.chars().count()).unwrap_or(0);
+        let len = self
+            .sections
+            .get(section_id)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         let cur = self.cursor(section_id);
-        self.section_cursors.insert(section_id.to_string(), (cur + field_width).min(len));
+        self.section_cursors
+            .insert(section_id.to_string(), (cur + field_width).min(len));
         self.update_section_scroll(section_id, field_width);
     }
 

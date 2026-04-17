@@ -46,7 +46,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Interactive:    11 content rows → base 13
     // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
     let base_height: u16 = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => 15 + dir_rows,
+        crate::tui::app::NewTaskType::Interactive => 17 + dir_rows,
         crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher => {
             15 + dir_rows
         }
@@ -367,6 +367,42 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
+    // Yolo mode toggle — only for interactive agents, shown before the dir browser
+    if is_interactive {
+        let has_yolo = dialog.selected_yolo_flag().is_some();
+        let checkbox = if dialog.yolo_mode { "◉" } else { "○" };
+        let yolo_field = 6usize;
+        let checkbox_style = if dialog.field == yolo_field {
+            Style::default()
+                .fg(Color::Black)
+                .bg(accent)
+                .add_modifier(Modifier::BOLD)
+        } else if dialog.yolo_mode {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let mut yolo_spans = vec![
+            Span::styled("  Yolo:  ", Style::default().fg(DIM)),
+            Span::styled(format!("{checkbox} Autonomous mode"), checkbox_style),
+        ];
+        if !has_yolo {
+            yolo_spans.push(Span::styled(
+                "  (not supported by this CLI)",
+                Style::default().fg(DIM),
+            ));
+        } else if dialog.yolo_mode {
+            yolo_spans.push(Span::styled(
+                "  ⚠ agent acts without approval",
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+        lines.push(Line::from(yolo_spans));
+        lines.push(Line::from(""));
+    }
+
     // Only show working directory when not creating a Watcher. Watchers use
     // the 'Path' field to select files or directories to watch, which is
     // displayed above as 'Path'. Hiding Dir avoids confusion.
@@ -573,7 +609,7 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
     let (src_id, accent) = app
         .interactive_agents
         .get(modal.source_agent_idx)
-        .map(|a| (a.id.as_str(), a.accent_color))
+        .map(|a| (a.name.as_str(), a.accent_color))
         .unwrap_or(("?", ACCENT));
 
     let block = Block::default()
@@ -697,7 +733,7 @@ fn draw_ctx_picker(frame: &mut Frame, app: &App) {
                     Style::default().fg(bar_color).bg(bg),
                 ),
                 Span::styled(
-                    format!("{}{}", agent.id, src_tag),
+                    format!("{}{}", agent.name, src_tag),
                     Style::default()
                         .fg(id_color)
                         .bg(bg)
@@ -744,7 +780,12 @@ use super::{BG_SELECTED, ERROR_COLOR, INTERACTIVE_COLOR};
 
 // Old function removed - using simple prompt dialog instead
 
-fn draw_section_picker_modal(frame: &mut Frame, app: &App, accent: Color, mode: &crate::tui::app::dialog::SectionPickerMode) {
+fn draw_section_picker_modal(
+    frame: &mut Frame,
+    app: &App,
+    accent: Color,
+    mode: &crate::tui::app::dialog::SectionPickerMode,
+) {
     use crate::tui::app::dialog::SectionPickerMode;
 
     let Some(dialog) = &app.simple_prompt_dialog else {
@@ -878,7 +919,7 @@ fn draw_section_picker_modal(frame: &mut Frame, app: &App, accent: Color, mode: 
             let mut y_pos = inner.y;
             for (i, (_, display_label)) in removable.iter().enumerate() {
                 let is_selected = i == *selected;
-                
+
                 let style = if is_selected {
                     Style::default()
                         .fg(Color::Black)
@@ -924,7 +965,7 @@ fn generate_top_border(title: &str, width: u16, style: Style) -> Line<'static> {
     let available_width = width.saturating_sub(title_with_spaces.len() as u16 + 2);
     let left_dashes = available_width / 2;
     let right_dashes = available_width - left_dashes;
-    
+
     let border = format!(
         "┌{}{}{}┐",
         "─".repeat(left_dashes as usize),
@@ -965,9 +1006,16 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let is_instruction_focused = dialog.focused_section == 0;
 
     // Instruction height: expanded (1-5) when focused, collapsed (1) otherwise
-    let instruction_content = dialog.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+    let instruction_content = dialog
+        .sections
+        .get("instruction")
+        .map(|s| s.as_str())
+        .unwrap_or("");
     let instruction_display_height = if is_instruction_focused {
-        let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(instruction_content, field_width);
+        let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+            instruction_content,
+            field_width,
+        );
         (vis as u16).clamp(1, 5)
     } else {
         1u16
@@ -976,11 +1024,21 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     // Optional sections: expanded when focused, collapsed (1) otherwise
     let mut optional_section_height: u16 = 0;
     for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
-        if section_name == "instruction" { continue; }
+        if section_name == "instruction" {
+            continue;
+        }
         let h = if dialog.focused_section == i {
-            let content = dialog.sections.get(section_name).map(|s| s.as_str()).unwrap_or("");
-            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(content, field_width);
-            let max_h = crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            let content = dialog
+                .sections
+                .get(section_name)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+                content,
+                field_width,
+            );
+            let max_h =
+                crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
             (vis as u16).clamp(1, max_h as u16)
         } else {
             1u16
@@ -988,7 +1046,8 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         optional_section_height += 1 + h + 1 + 1;
     }
 
-    let total_height = 2 + 1 + 1 + 1 + instruction_display_height + 1 + 1 + optional_section_height + 1;
+    let total_height =
+        2 + 1 + 1 + 1 + instruction_display_height + 1 + 1 + optional_section_height + 1;
     let height = total_height.min(frame.area().height.saturating_sub(2));
 
     let area = centered_rect(percent_x, height, frame.area());
@@ -1010,11 +1069,11 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         Span::styled("fields  ", Style::default().fg(Color::White)),
         Span::styled("⇧↑↓←→ ", Style::default().fg(DIM)),
         Span::styled("cursor  ", Style::default().fg(Color::White)),
-        Span::styled("+ ", Style::default().fg(DIM)),
+        Span::styled("Ctrl+A ", Style::default().fg(DIM)),
         Span::styled("add  ", Style::default().fg(Color::White)),
-        Span::styled("- ", Style::default().fg(DIM)),
+        Span::styled("Ctrl+X ", Style::default().fg(DIM)),
         Span::styled("remove  ", Style::default().fg(Color::White)),
-        Span::styled("^↵ ", Style::default().fg(DIM)),
+        Span::styled("Ctrl+S ", Style::default().fg(DIM)),
         Span::styled("send  ", Style::default().fg(Color::White)),
         Span::styled("Esc  ", Style::default().fg(DIM)),
         Span::styled("cancel", Style::default().fg(Color::White)),
@@ -1053,17 +1112,35 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         Color::Rgb(30, 30, 30)
     };
 
-    let instruction_content = dialog.sections.get("instruction").map(|s| s.as_str()).unwrap_or("");
+    let instruction_content = dialog
+        .sections
+        .get("instruction")
+        .map(|s| s.as_str())
+        .unwrap_or("");
 
     let (instruction_render_text, instr_scroll) = if is_instruction_focused {
-        let cursor_idx = dialog.cursor("instruction").min(instruction_content.chars().count());
+        let cursor_idx = dialog
+            .cursor("instruction")
+            .min(instruction_content.chars().count());
         let before: String = instruction_content.chars().take(cursor_idx).collect();
         let after: String = instruction_content.chars().skip(cursor_idx).collect();
-        (format!("{}│{}", before, after), dialog.scroll("instruction") as u16)
+        (
+            format!("{}│{}", before, after),
+            dialog.scroll("instruction") as u16,
+        )
     } else {
-        let first_line = instruction_content.lines().next().unwrap_or(instruction_content);
+        let first_line = instruction_content
+            .lines()
+            .next()
+            .unwrap_or(instruction_content);
         let text = if first_line.chars().count() > field_width {
-            format!("{}…", first_line.chars().take(field_width.saturating_sub(1)).collect::<String>())
+            format!(
+                "{}…",
+                first_line
+                    .chars()
+                    .take(field_width.saturating_sub(1))
+                    .collect::<String>()
+            )
         } else {
             first_line.to_string()
         };
@@ -1105,8 +1182,19 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
         // Extract section type from ID (e.g., "context_1" -> "context", "output_format_1" -> "output_format")
         let section_type = {
-            let known = ["output_format", "instruction", "context", "resources", "examples", "constraints"];
-            known.iter().find(|k| section_name.starts_with(*k)).copied().unwrap_or(section_name.as_str())
+            let known = [
+                "output_format",
+                "instruction",
+                "context",
+                "resources",
+                "examples",
+                "constraints",
+            ];
+            known
+                .iter()
+                .find(|k| section_name.starts_with(*k))
+                .copied()
+                .unwrap_or(section_name.as_str())
         };
 
         let label = crate::tui::app::dialog::SimplePromptDialog::get_available_sections()
@@ -1145,7 +1233,11 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             Color::Rgb(30, 30, 30)
         };
 
-        let content_raw = dialog.sections.get(section_name).map(|s| s.as_str()).unwrap_or("");
+        let content_raw = dialog
+            .sections
+            .get(section_name)
+            .map(|s| s.as_str())
+            .unwrap_or("");
 
         let (render_text, content_height, scroll_offset) = if is_focused {
             // Expanded: full content with cursor at position + scroll
@@ -1153,14 +1245,28 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             let before: String = content_raw.chars().take(cursor_idx).collect();
             let after: String = content_raw.chars().skip(cursor_idx).collect();
             let text = format!("{}│{}", before, after);
-            let max_h = crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
-            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(content_raw, field_width);
-            (text, (vis as u16).clamp(1, max_h as u16), dialog.scroll(section_name) as u16)
+            let max_h =
+                crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+                content_raw,
+                field_width,
+            );
+            (
+                text,
+                (vis as u16).clamp(1, max_h as u16),
+                dialog.scroll(section_name) as u16,
+            )
         } else {
             // Collapsed: first line truncated
             let first_line = content_raw.lines().next().unwrap_or(content_raw);
             let text = if first_line.chars().count() > field_width {
-                format!("{}…", first_line.chars().take(field_width.saturating_sub(1)).collect::<String>())
+                format!(
+                    "{}…",
+                    first_line
+                        .chars()
+                        .take(field_width.saturating_sub(1))
+                        .collect::<String>()
+                )
             } else {
                 first_line.to_string()
             };
