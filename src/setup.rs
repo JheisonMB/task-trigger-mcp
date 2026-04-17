@@ -1095,23 +1095,30 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
 // ── Recommended MCP servers ───────────────────────────────────────────────
 
 /// Replace `{filesystem_dir}` and `{home}` placeholders in a JSON value tree.
-fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &str) {
+fn substitute_placeholders(
+    value: &mut serde_json::Value,
+    home: &str,
+    fs_dir: &str,
+    memory_path: &str,
+) {
     match value {
         serde_json::Value::String(s) => {
-            if s.contains("{filesystem_dir}") || s.contains("{home}") {
+            if s.contains("{filesystem_dir}") || s.contains("{home}") || s.contains("{memory_path}")
+            {
                 *s = s
                     .replace("{filesystem_dir}", fs_dir)
-                    .replace("{home}", home);
+                    .replace("{home}", home)
+                    .replace("{memory_path}", memory_path);
             }
         }
         serde_json::Value::Array(arr) => {
             for item in arr {
-                substitute_placeholders(item, home, fs_dir);
+                substitute_placeholders(item, home, fs_dir, memory_path);
             }
         }
         serde_json::Value::Object(map) => {
             for val in map.values_mut() {
-                substitute_placeholders(val, home, fs_dir);
+                substitute_placeholders(val, home, fs_dir, memory_path);
             }
         }
         _ => {}
@@ -1367,33 +1374,98 @@ fn apply_upsert_to_platform(
     }
 }
 
+fn find_existing_memory_path(all_configs: &[crate::config::PlatformMcpConfig]) -> Option<String> {
+    for config in all_configs {
+        for server in &config.servers {
+            if server.name == "memory" {
+                // Check in env.MEMORY_FILE_PATH
+                if let Some(env) = server.config.get("env") {
+                    if let Some(path) = env.get("MEMORY_FILE_PATH").and_then(|v| v.as_str()) {
+                        return Some(path.to_string());
+                    }
+                }
+                // Check in args
+                if let Some(args) = server.config.get("args").and_then(|a| a.as_array()) {
+                    for arg in args {
+                        if let Some(s) = arg.as_str() {
+                            if s.ends_with(".jsonl") {
+                                return Some(s.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Install/update canopy + recommended MCP servers on all selected platforms.
 /// Applies registry entries directly — no sanitization, just placeholder substitution.
 fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
+    let all_configs = extract_all_mcp_configs(home, selected);
+
     let needs_fs = selected
         .iter()
         .any(|p| p.recommended_servers.contains_key("filesystem"));
 
     let fs_dir = if needs_fs {
-        let mcp_config = home.join(".canopy/mcp_config.json");
-        if mcp_config.exists() {
-            // Already configured — use saved value
-            load_mcp_fs_root(home)
-        } else {
-            // First time — ask
-            let default_dir = home.to_string_lossy().to_string();
-            println!();
-            println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
-            println!("  Agents will have read/write access to everything inside this directory.");
-            println!("  Choose a project folder or workspace root (e.g. ~/Documents/Projects).");
-            println!();
-            let chosen = browse_directory(&default_dir);
-            save_mcp_fs_root(home, &chosen);
-            chosen
-        }
+        let current_fs = load_mcp_fs_root(home);
+        println!();
+        println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
+        println!("  Agents will have read/write access to everything inside this directory.");
+        println!("  Choose a project folder or workspace root.");
+        println!("  Current: \x1b[33m{}\x1b[0m", current_fs);
+        println!();
+        let chosen = browse_directory(&current_fs);
+        save_mcp_fs_root(home, &chosen);
+        chosen
     } else {
         load_mcp_fs_root(home)
     };
+
+    let recommended_memory = home
+        .join(".canopy/memory/memory.jsonl")
+        .to_string_lossy()
+        .to_string();
+    let mut memory_path = recommended_memory.clone();
+
+    if let Some(existing) = find_existing_memory_path(&all_configs) {
+        if existing != recommended_memory && Path::new(&existing).exists() {
+            println!();
+            println!("  \x1b[36mMemory MCP detected\x1b[0m");
+            println!("  Canopy provides shared access to your memory graph across all agents.");
+            println!(
+                "  Existing memory file found at: \x1b[33m{}\x1b[0m",
+                existing
+            );
+            println!(
+                "  Recommended Canopy path:       \x1b[32m{}\x1b[0m",
+                recommended_memory
+            );
+            println!();
+            print!("  Would you like to move it to the recommended path? [Y/n] ");
+            let _ = io::stdout().flush();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).ok();
+
+            if input.trim().to_lowercase() != "n" {
+                let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
+                if std::fs::rename(&existing, &recommended_memory).is_ok() {
+                    println!("  \x1b[32m✓\x1b[0m Memory file moved successfully.");
+                    memory_path = recommended_memory;
+                } else {
+                    println!("  \x1b[31m✗\x1b[0m Could not move file. Using existing path.");
+                    memory_path = existing;
+                }
+            } else {
+                memory_path = existing;
+            }
+        } else {
+            memory_path = existing;
+        }
+    }
+
     let home_str = home.to_string_lossy().to_string();
 
     for p in selected {
@@ -1432,7 +1504,7 @@ fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
         // Write recommended servers with placeholder substitution
         for (server_name, template) in &p.recommended_servers {
             let mut config = template.clone();
-            substitute_placeholders(&mut config, &home_str, &fs_dir);
+            substitute_placeholders(&mut config, &home_str, &fs_dir, &memory_path);
             let _ = apply_upsert_to_platform(p, &config_path, server_name, &config);
         }
 

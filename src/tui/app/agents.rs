@@ -91,6 +91,10 @@ impl App {
         let next_pos = (current_pos + 1) % interactive_indices.len();
         self.selected = interactive_indices[next_pos];
         self.focus = Focus::Agent;
+
+        if let AgentEntry::Interactive(idx) = &self.agents[self.selected] {
+            self.interactive_agents[*idx].mark_viewed();
+        }
     }
 
     pub fn prev_interactive(&mut self) {
@@ -118,6 +122,10 @@ impl App {
         };
         self.selected = interactive_indices[prev_pos];
         self.focus = Focus::Agent;
+
+        if let AgentEntry::Interactive(idx) = &self.agents[self.selected] {
+            self.interactive_agents[*idx].mark_viewed();
+        }
     }
 
     pub(super) fn resize_interactive_agents(&mut self) {
@@ -134,6 +142,12 @@ impl App {
     }
 
     pub(super) fn poll_interactive_agents(&mut self) {
+        if let Some(AgentEntry::Interactive(idx)) = self.agents.get(self.selected) {
+            if matches!(self.focus, Focus::Agent | Focus::Preview) {
+                self.interactive_agents[*idx].mark_viewed();
+            }
+        }
+
         for agent in &mut self.interactive_agents {
             agent.poll();
         }

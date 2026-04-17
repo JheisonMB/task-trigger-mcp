@@ -9,7 +9,7 @@ use ratatui::Frame;
 use super::{last_two_segments, truncate_str, ACCENT, BG_SELECTED, DIM, INTERACTIVE_COLOR};
 use super::{STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 use crate::tui::agent::AgentStatus;
-use crate::tui::app::{AgentEntry, App};
+use crate::tui::app::{AgentEntry, App, Focus};
 use ratatui::style::Color;
 
 pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -171,22 +171,29 @@ fn draw_sidebar_card(
     };
 
     // Detect if waiting for input - primary detection via PTY heuristics
-    let is_waiting = if let AgentEntry::Interactive(idx) = agent {
+    let mut is_waiting = if let AgentEntry::Interactive(idx) = agent {
         app.interactive_agents[*idx].is_waiting_for_input()
     } else {
         false
     };
 
-    // Blink animation for waiting state: cycle every 500ms (10 ticks at ~50ms)
+    // If the user has selected this agent and focused the agent/preview panel,
+    // treat it as "attended" and suppress the waiting indicator so the user
+    // isn't distracted while interacting.
+    if selected && matches!(app.focus, Focus::Agent | Focus::Preview) {
+        is_waiting = false;
+    }
+
+    // Blink animation: 10 ticks per phase (~500 ms on / 500 ms off) — quicker but
+    // still readable.
     let blink_cycle = (app.animation_tick / 10) % 2;
 
-    // When waiting: blink between bright yellow (visible) and dark gray (nearly invisible)
-    // This creates a clear "waiting for you" indicator
-    const WAIT_ON: Color = Color::Rgb(255, 255, 0); // Bright yellow
-    const WAIT_OFF: Color = Color::Rgb(30, 30, 30); // Nearly black
-
     if is_waiting {
-        status_color = if blink_cycle == 0 { WAIT_ON } else { WAIT_OFF };
+        status_color = if blink_cycle == 0 {
+            super::STATUS_WAIT_ON
+        } else {
+            super::STATUS_WAIT_OFF
+        };
     }
 
     // Line 1: accent bar + id
@@ -236,11 +243,7 @@ fn draw_sidebar_card(
             .unwrap_or_else(|| "/".to_string());
 
         // Add waiting indicator if applicable
-        let display_text = if is_waiting {
-            format!("{} ⏳", dir_text)
-        } else {
-            dir_text
-        };
+        let display_text = dir_text;
 
         let dir_span = Span::styled(display_text, Style::default().fg(DIM));
         let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);

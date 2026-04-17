@@ -23,6 +23,8 @@ pub(crate) const STATUS_DISABLED: Color = Color::Rgb(120, 120, 120);
 pub(crate) const STATUS_RUNNING: Color = Color::Rgb(76, 175, 80);
 pub(crate) const STATUS_OK: Color = Color::Rgb(66, 165, 245);
 pub(crate) const STATUS_FAIL: Color = Color::Rgb(229, 57, 53);
+pub(crate) const STATUS_WAIT_ON: Color = Color::Rgb(255, 255, 0);
+pub(crate) const STATUS_WAIT_OFF: Color = Color::Rgb(30, 30, 30);
 
 // ── Main draw entry point ───────────────────────────────────────
 
@@ -55,11 +57,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     if app.show_legend {
-        dialogs::draw_legend(frame);
+        dialogs::draw_legend(frame, app);
     }
 
     if app.context_transfer_modal.is_some() {
         dialogs::draw_context_transfer_modal(frame, app);
+    }
+
+    if app.simple_prompt_dialog.is_some() {
+        dialogs::draw_simple_prompt_dialog(frame, app);
     }
 
     // Top-level overlays rendered last so they appear above all content

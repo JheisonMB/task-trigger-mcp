@@ -14,14 +14,12 @@ use super::agent::{InteractiveAgent, PromptEntry};
 /// Runtime defaults for context transfer (no external config file required).
 pub struct ContextTransferConfig {
     pub default_prompt_history: usize,
-    pub auto_switch_tab: bool,
 }
 
 impl Default for ContextTransferConfig {
     fn default() -> Self {
         Self {
             default_prompt_history: 3,
-            auto_switch_tab: true,
         }
     }
 }
@@ -137,10 +135,6 @@ impl ContextTransferModal {
     /// Rebuild the payload preview from the source agent's current state.
     pub fn refresh_preview(&mut self, agent: &InteractiveAgent) {
         self.payload_preview = build_context_payload(agent, self.n_prompts);
-    }
-
-    pub fn increment_field(&mut self) {
-        self.n_prompts = (self.n_prompts + 1).min(20);
     }
 
     pub fn decrement_field(&mut self) {

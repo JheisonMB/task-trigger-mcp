@@ -27,9 +27,10 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
         // Tick speed adapts to what needs frequent repaints
         let tick = match app.focus {
-            Focus::Agent | Focus::NewAgentDialog | Focus::ContextTransfer => {
-                Duration::from_millis(50)
-            }
+            Focus::Agent
+            | Focus::NewAgentDialog
+            | Focus::ContextTransfer
+            | Focus::PromptTemplateDialog => Duration::from_millis(50),
             Focus::Preview if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) => {
                 Duration::from_millis(100)
             }
@@ -63,6 +64,185 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
     Ok(())
 }
 
+// ── Prompt Template Dialog ──────────────────────────────────────
+
+fn handle_prompt_template_key(app: &mut App, code: KeyCode) -> Result<()> {
+    let Some(dialog) = &mut app.simple_prompt_dialog else {
+        app.focus = Focus::Agent;
+        return Ok(());
+    };
+
+    use crate::tui::app::dialog::SectionPickerMode;
+
+    // If picker is open, handle picker navigation
+    match &dialog.picker_mode {
+        SectionPickerMode::AddSection { selected } => {
+            match code {
+                KeyCode::Esc => {
+                    dialog.picker_mode = SectionPickerMode::None;
+                }
+                KeyCode::Up => {
+                    if *selected > 0 {
+                        dialog.picker_mode = SectionPickerMode::AddSection {
+                            selected: selected - 1,
+                        };
+                    }
+                }
+                KeyCode::Down => {
+                    let addable = dialog.get_addable_sections();
+                    if *selected + 1 < addable.len() {
+                        dialog.picker_mode = SectionPickerMode::AddSection {
+                            selected: selected + 1,
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    let addable = dialog.get_addable_sections();
+                    if *selected < addable.len() {
+                        if let Some((name, _)) = addable.get(*selected) {
+                            dialog.add_section(name);
+                            dialog.picker_mode = SectionPickerMode::None;
+                        }
+                    }
+                }
+                KeyCode::Char('c') => {
+                    dialog.picker_mode = SectionPickerMode::AddCustom {
+                        input: String::new(),
+                    };
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        SectionPickerMode::AddCustom { input } => {
+            let input_copy = input.clone();
+            match code {
+                KeyCode::Esc => {
+                    dialog.picker_mode = SectionPickerMode::None;
+                }
+                KeyCode::Enter => {
+                    if !input_copy.is_empty() && !dialog.enabled_sections.contains(&input_copy) {
+                        dialog.add_section(&input_copy);
+                        dialog.picker_mode = SectionPickerMode::None;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    dialog.picker_mode = SectionPickerMode::AddCustom {
+                        input: format!("{}{}", input_copy, c),
+                    };
+                }
+                KeyCode::Backspace => {
+                    dialog.picker_mode = SectionPickerMode::AddCustom {
+                        input: input_copy.chars().take(input_copy.len().saturating_sub(1)).collect(),
+                    };
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        SectionPickerMode::RemoveSection { selected } => {
+            match code {
+                KeyCode::Esc => {
+                    dialog.picker_mode = SectionPickerMode::None;
+                }
+                KeyCode::Up => {
+                    if *selected > 0 {
+                        dialog.picker_mode = SectionPickerMode::RemoveSection {
+                            selected: selected - 1,
+                        };
+                    }
+                }
+                KeyCode::Down => {
+                    let removable = dialog.get_removable_sections();
+                    if *selected + 1 < removable.len() {
+                        dialog.picker_mode = SectionPickerMode::RemoveSection {
+                            selected: selected + 1,
+                        };
+                    }
+                }
+                KeyCode::Enter => {
+                    let removable = dialog.get_removable_sections();
+                    if *selected < removable.len() {
+                        if let Some((section_id, _)) = removable.get(*selected) {
+                            dialog.remove_section(section_id);
+                            dialog.picker_mode = SectionPickerMode::None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        SectionPickerMode::None => {}
+    }
+
+    // Normal dialog mode
+    match code {
+        KeyCode::Esc => {
+            app.close_simple_prompt_dialog();
+        }
+        KeyCode::Enter => {
+            if let Ok(prompt) = dialog.build_prompt() {
+                if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                    let idx = *idx;
+                    if idx < app.interactive_agents.len() {
+                        let _ = app.interactive_agents[idx].write_to_pty(prompt.as_bytes());
+                        let _ = app.interactive_agents[idx].write_to_pty(b"\n");
+                    }
+                }
+                app.close_simple_prompt_dialog();
+            }
+        }
+        KeyCode::Tab => {
+            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
+                dialog.focused_section += 1;
+            }
+        }
+        KeyCode::BackTab => {
+            if dialog.focused_section > 0 {
+                dialog.focused_section -= 1;
+            }
+        }
+        KeyCode::Char('+') => {
+            let addable = dialog.get_addable_sections();
+            if !addable.is_empty() {
+                dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
+            }
+        }
+        KeyCode::Char('-') => {
+            let removable = dialog.get_removable_sections();
+            if !removable.is_empty() {
+                dialog.picker_mode = SectionPickerMode::RemoveSection { selected: 0 };
+            }
+        }
+        KeyCode::Char(c) => {
+            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
+            let mut content = dialog.get_section_content(&section_name);
+            content.push(c);
+            dialog.set_section_content(&section_name, content);
+        }
+        KeyCode::Backspace => {
+            let section_name = dialog.enabled_sections[dialog.focused_section].clone();
+            let mut content = dialog.get_section_content(&section_name);
+            content.pop();
+            dialog.set_section_content(&section_name, content);
+        }
+        KeyCode::Up => {
+            if dialog.focused_section > 0 {
+                dialog.focused_section -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
+                dialog.focused_section += 1;
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
 fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     // Legend overlay intercepts ALL keys — closes on any key
     if app.show_legend {
@@ -76,12 +256,22 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         return Ok(());
     }
 
+    // Ctrl+P: open prompt template dialog from focus mode
+    if code == KeyCode::Char('p')
+        && modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(app.focus, Focus::Agent)
+    {
+        app.open_simple_prompt_dialog(None);
+        return Ok(());
+    }
+
     match app.focus {
         Focus::Home => handle_home_key(app, code, modifiers),
         Focus::Preview => handle_preview_key(app, code, modifiers),
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
         Focus::ContextTransfer => handle_context_transfer_key(app, code),
+        Focus::PromptTemplateDialog => handle_prompt_template_key(app, code),
     }
 }
 
@@ -164,6 +354,7 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
             }
         }
         Focus::ContextTransfer => {}
+        Focus::PromptTemplateDialog => {}
     }
     Ok(())
 }
@@ -642,9 +833,11 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Down => dialog.field = 4, // extra_field
                     _ => {}
                 },
-                // Cron expr or watch path (field 4, non-interactive only)
-                4 if !is_interactive => match dialog.task_type {
-                    super::app::NewTaskType::Scheduled => match code {
+                // Cron expr (field 4, Scheduled only — Watcher uses field 4 as the browser)
+                4 if !is_interactive
+                    && matches!(dialog.task_type, super::app::NewTaskType::Scheduled) =>
+                {
+                    match code {
                         KeyCode::Char(c) => dialog.cron_expr.push(c),
                         KeyCode::Backspace => {
                             dialog.cron_expr.pop();
@@ -652,27 +845,21 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         KeyCode::Up => dialog.field = 3, // prompt
                         KeyCode::Down => dialog.field = dir_field,
                         _ => {}
-                    },
-                    super::app::NewTaskType::Watcher => match code {
-                        KeyCode::Char(c) => dialog.watch_path.push(c),
-                        KeyCode::Backspace => {
-                            dialog.watch_path.pop();
-                        }
-                        KeyCode::Up => dialog.field = 3, // prompt
-                        KeyCode::Down => dialog.field = dir_field,
-                        _ => {}
-                    },
-                    _ => {}
-                },
+                    }
+                }
                 // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
+                // For Watcher, dir_field == 4 (same as extra_field), so this arm also handles
+                // the watch-path browser. The Scheduled arm above is guarded to avoid shadowing.
                 n if n == dir_field => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
                         } else if is_interactive {
                             dialog.field = model_field;
+                        } else if dialog.task_type == super::app::NewTaskType::Watcher {
+                            dialog.field = 3; // prompt (watcher has no separate cron field)
                         } else {
-                            dialog.field = 4; // extra_field
+                            dialog.field = 4; // extra_field (cron) for scheduled
                         }
                     }
                     KeyCode::Down => {
@@ -697,9 +884,32 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 // ── Context Transfer modal ───────────────────────────────────────
 //
-// Step 1 (Preview):  ↑↓ switch between n_prompts/scrollback fields,
-//                    ←→ adjust values, Enter → Step 2, Esc → cancel.
+// Step 1 (Preview):  ↑↓ / ←→ adjust n_prompts, Enter → Step 2, Esc → cancel.
 // Step 2 (Picker):   ↑↓ navigate agents, Enter → execute, Esc → back.
+
+/// Rebuild the payload_preview string from the current source agent state.
+fn ctx_rebuild_preview(app: &mut App) {
+    let src_idx = app
+        .context_transfer_modal
+        .as_ref()
+        .map(|m| m.source_agent_idx);
+    if let Some(idx) = src_idx {
+        if idx < app.interactive_agents.len() {
+            let n_prompts = app
+                .context_transfer_modal
+                .as_ref()
+                .map(|m| m.n_prompts)
+                .unwrap_or(1);
+            let preview = super::context_transfer::build_context_payload(
+                &app.interactive_agents[idx],
+                n_prompts,
+            );
+            if let Some(modal) = app.context_transfer_modal.as_mut() {
+                modal.payload_preview = preview;
+            }
+        }
+    }
+}
 
 fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
     use super::context_transfer::ContextTransferStep;
@@ -717,55 +927,25 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
             KeyCode::Enter => {
                 app.context_transfer_to_picker();
             }
-            KeyCode::Right | KeyCode::Char('+') => {
-                if let Some(modal) = app.context_transfer_modal.as_mut() {
-                    modal.increment_field();
-                }
-                let src_idx = app
+            KeyCode::Right | KeyCode::Up | KeyCode::Char('+') => {
+                // Determine the max allowed by actual history length before incrementing.
+                let history_len = app
                     .context_transfer_modal
                     .as_ref()
-                    .map(|m| m.source_agent_idx);
-                if let Some(idx) = src_idx {
-                    if idx < app.interactive_agents.len() {
-                        let n_prompts = app
-                            .context_transfer_modal
-                            .as_ref()
-                            .map(|m| m.n_prompts)
-                            .unwrap_or(3);
-                        let preview = super::context_transfer::build_context_payload(
-                            &app.interactive_agents[idx],
-                            n_prompts,
-                        );
-                        if let Some(modal) = app.context_transfer_modal.as_mut() {
-                            modal.payload_preview = preview;
-                        }
-                    }
+                    .and_then(|m| app.interactive_agents.get(m.source_agent_idx))
+                    .and_then(|a| a.prompt_history.lock().ok().map(|h| h.len()))
+                    .unwrap_or(0)
+                    .max(1);
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.n_prompts = (modal.n_prompts + 1).min(history_len);
                 }
+                ctx_rebuild_preview(app);
             }
-            KeyCode::Left | KeyCode::Char('-') => {
+            KeyCode::Left | KeyCode::Down | KeyCode::Char('-') => {
                 if let Some(modal) = app.context_transfer_modal.as_mut() {
                     modal.decrement_field();
                 }
-                let src_idx = app
-                    .context_transfer_modal
-                    .as_ref()
-                    .map(|m| m.source_agent_idx);
-                if let Some(idx) = src_idx {
-                    if idx < app.interactive_agents.len() {
-                        let n_prompts = app
-                            .context_transfer_modal
-                            .as_ref()
-                            .map(|m| m.n_prompts)
-                            .unwrap_or(3);
-                        let preview = super::context_transfer::build_context_payload(
-                            &app.interactive_agents[idx],
-                            n_prompts,
-                        );
-                        if let Some(modal) = app.context_transfer_modal.as_mut() {
-                            modal.payload_preview = preview;
-                        }
-                    }
-                }
+                ctx_rebuild_preview(app);
             }
             _ => {}
         },

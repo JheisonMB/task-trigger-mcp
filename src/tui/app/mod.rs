@@ -1,6 +1,6 @@
 mod agents;
 mod data;
-mod dialog;
+pub mod dialog;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -14,6 +14,8 @@ use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
 
 use super::agent::InteractiveAgent;
 use super::context_transfer::{ContextTransferConfig, ContextTransferModal, ContextTransferStep};
+use crate::tui::prompt_templates::PromptTemplates;
+use dialog::SimplePromptDialog;
 
 pub(crate) use data::send_mcp_task_run;
 pub use dialog::NewAgentDialog;
@@ -46,6 +48,7 @@ pub enum Focus {
     NewAgentDialog,
     Agent,
     ContextTransfer,
+    PromptTemplateDialog,
 }
 
 // ── App struct ──────────────────────────────────────────────────
@@ -94,6 +97,11 @@ pub struct App {
     whimsg_last_log_hash: u64,
     pub context_transfer_modal: Option<ContextTransferModal>,
     pub context_transfer_config: ContextTransferConfig,
+    /// Prompt templates loaded from registry
+    #[allow(dead_code)]
+    pub prompt_templates: PromptTemplates,
+    /// Current simple prompt dialog state
+    pub simple_prompt_dialog: Option<SimplePromptDialog>,
     /// Whether to send OS-level desktop notifications (agent done/failed).
     pub notifications_enabled: bool,
     /// IDs of runs that were active on the previous refresh tick.
@@ -135,6 +143,9 @@ impl App {
             whimsg_last_log_hash: 0,
             context_transfer_modal: None,
             context_transfer_config: ContextTransferConfig::default(),
+            prompt_templates: PromptTemplates::load_from_registry()
+                .unwrap_or_else(|_| PromptTemplates::internal_templates()),
+            simple_prompt_dialog: None,
             notifications_enabled: true,
             prev_active_run_ids: std::collections::HashSet::new(),
             animation_tick: 0,
@@ -282,10 +293,9 @@ impl App {
 
             if !raw_log.is_empty() {
                 // Simple hash to detect changes — avoid re-firing on the same content
-                let log_hash: u64 = raw_log
-                    .bytes()
-                    .enumerate()
-                    .fold(0u64, |acc, (i, b)| acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1)));
+                let log_hash: u64 = raw_log.bytes().enumerate().fold(0u64, |acc, (i, b)| {
+                    acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
+                });
 
                 if log_hash != self.whimsg_last_log_hash {
                     self.whimsg_last_log_hash = log_hash;
@@ -396,9 +406,8 @@ impl App {
     /// Execute the context transfer to the selected destination agent.
     ///
     /// 1. Builds the payload.
-    /// 2. Persists it (non-fatal on failure).
-    /// 3. Injects into destination PTY.
-    /// 4. Optionally switches tab to destination.
+    /// 2. Switches focus to destination.
+    /// 3. Opens Prompt Template dialog with payload pre-filled in the "context" section.
     pub fn execute_context_transfer(&mut self, dest_entry_idx: usize) {
         let Some(modal) = self.context_transfer_modal.take() else {
             return;
@@ -409,7 +418,6 @@ impl App {
             return;
         }
 
-        // Destination: resolve the picker index to an interactive agent index
         let dest_agent_idx = {
             let picker_entries = self.picker_interactive_entries();
             picker_entries.get(dest_entry_idx).copied()
@@ -427,23 +435,23 @@ impl App {
             modal.n_prompts,
         );
 
-        let _ = self.interactive_agents[src_idx].working_dir.clone(); // source workdir (available if needed)
-
-        let _ = self.interactive_agents[dest_ia_idx].inject_context(&payload);
-
-        if self.context_transfer_config.auto_switch_tab {
-            // Find the sidebar entry index that points to dest_ia_idx
-            if let Some(entry_pos) = self
-                .agents
-                .iter()
-                .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
-            {
-                self.selected = entry_pos;
-            }
-            self.focus = Focus::Agent;
-        } else {
-            self.focus = Focus::Agent;
+        // Always switch tab to destination so the user sees where the context is going
+        if let Some(entry_pos) = self
+            .agents
+            .iter()
+            .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
+        {
+            self.selected = entry_pos;
         }
+        self.focus = Focus::Agent;
+
+        // Prepare initial content for the simple prompt dialog
+        let mut initial_content = HashMap::new();
+        // Always put context transfer content in the "context" section
+        initial_content.insert("context".to_string(), payload);
+
+        // Open the prompt template dialog with the pre-filled context
+        self.open_simple_prompt_dialog(Some(initial_content));
     }
 
     /// Collect interactive agent indices for use in the picker list.

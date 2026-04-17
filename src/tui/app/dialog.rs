@@ -6,6 +6,7 @@ use crate::domain::models::Cli;
 use crate::domain::models_db::{self, ModelCatalog, ModelEntry};
 
 use super::Focus;
+use std::collections::HashMap;
 
 /// Type of background_agent to create.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -474,6 +475,38 @@ impl App {
         self.new_agent_dialog = None;
     }
 
+    /// Open prompt template dialog with the specified template and optional initial content
+    pub fn open_simple_prompt_dialog(&mut self, initial_content: Option<HashMap<String, String>>) {
+        let prev_focus = self.focus;
+        let mut dialog = SimplePromptDialog::new();
+        if let Some(content) = initial_content {
+            dialog.sections = content.clone();
+            // Enable sections that have content
+            for section_name in content.keys() {
+                if section_name != "instruction" {
+                    dialog.add_section(section_name);
+                }
+            }
+        }
+        dialog.prev_focus = Some(prev_focus);
+        self.simple_prompt_dialog = Some(dialog);
+        self.focus = Focus::PromptTemplateDialog;
+    }
+
+    /// Close simple prompt dialog
+    pub fn close_simple_prompt_dialog(&mut self) {
+        if let Some(dialog) = &self.simple_prompt_dialog {
+            if let Some(prev) = dialog.prev_focus {
+                self.focus = prev;
+            } else {
+                self.focus = Focus::Agent;
+            }
+        } else {
+            self.focus = Focus::Agent;
+        }
+        self.simple_prompt_dialog = None;
+    }
+
     pub fn launch_new_agent(&mut self) -> Result<()> {
         // Take dialog out of self to avoid borrow conflicts
         let Some(dialog) = self.new_agent_dialog.take() else {
@@ -746,4 +779,230 @@ fn parse_session_list(output: &str) -> Vec<(String, String)> {
             Some((id, label))
         })
         .collect()
+}
+
+/// Picker state for adding/removing sections
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SectionPickerMode {
+    #[default]
+    None,
+    AddSection { selected: usize },
+    RemoveSection { selected: usize },
+    AddCustom { input: String },
+}
+
+/// New simplified prompt template dialog with dynamic sections
+/// Now supports multiple instances of the same section type
+pub struct SimplePromptDialog {
+    /// Map of unique section IDs to their content
+    /// Format: "instruction" | "context_0", "context_1" | "resources_0", etc.
+    pub sections: HashMap<String, String>,
+    /// Ordered list of section IDs currently enabled
+    pub enabled_sections: Vec<String>,
+    /// Which section field is currently focused
+    pub focused_section: usize,
+    /// Previous focus before opening the dialog
+    pub prev_focus: Option<Focus>,
+    /// State for the section picker modal
+    pub picker_mode: SectionPickerMode,
+    /// Counter for generating unique IDs per section type
+    pub section_counters: HashMap<String, usize>,
+}
+
+impl SimplePromptDialog {
+    pub fn new() -> Self {
+        let mut dialog = Self {
+            sections: HashMap::new(),
+            enabled_sections: vec!["instruction".to_string()],
+            focused_section: 0,
+            prev_focus: None,
+            picker_mode: SectionPickerMode::None,
+            section_counters: HashMap::new(),
+        };
+        dialog
+            .sections
+            .insert("instruction".to_string(), String::new());
+        dialog
+    }
+
+    /// Generate unique ID for a section instance
+    fn generate_section_id(&mut self, section_name: &str) -> String {
+        let counter = self.section_counters.entry(section_name.to_string()).or_insert(0);
+        let id = if *counter == 0 {
+            section_name.to_string()
+        } else {
+            format!("{}_{}", section_name, counter)
+        };
+        *counter += 1;
+        id
+    }
+
+    /// Add a section instance (can be same type multiple times)
+    pub fn add_section(&mut self, section_name: &str) {
+        let unique_id = self.generate_section_id(section_name);
+        self.enabled_sections.push(unique_id.clone());
+        self.sections.insert(unique_id, String::new());
+    }
+
+    /// Remove a specific section instance
+    pub fn remove_section(&mut self, section_id: &str) {
+        if section_id != "instruction" {
+            self.enabled_sections.retain(|s| s != section_id);
+            self.sections.remove(section_id);
+            // Adjust focused section if needed
+            if self.focused_section > 0 {
+                self.focused_section = self.focused_section.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Get available section types (these can always be added again)
+    pub fn get_available_sections() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("context", "Context"),
+            ("resources", "Resources"),
+            ("examples", "Examples"),
+            ("instructions", "Instructions"),
+        ]
+    }
+
+    /// Get section types available to add (can always add more instances)
+    pub fn get_addable_sections(&self) -> Vec<(&'static str, &'static str)> {
+        Self::get_available_sections()
+    }
+
+    /// Get section instances available to remove (not instruction)
+    pub fn get_removable_sections(&self) -> Vec<(String, String)> {
+        self.enabled_sections
+            .iter()
+            .filter(|s| *s != "instruction")
+            .map(|section_id| {
+                // Extract section name from ID (e.g., "context_1" -> "context")
+                let section_name = section_id.split('_').next().unwrap_or(section_id.as_str());
+                let label = Self::get_available_sections()
+                    .into_iter()
+                    .find(|(name, _)| *name == section_name)
+                    .map(|(_, label)| label)
+                    .unwrap_or(section_name);
+                
+                // Build display label with instance number
+                let display = if section_id.contains('_') {
+                    format!("{} {}", label, section_id.rsplit('_').next().unwrap_or(""))
+                } else {
+                    label.to_string()
+                };
+                (section_id.clone(), display)
+            })
+            .collect()
+    }
+
+    /// Get the content for a section
+    pub fn get_section_content(&self, section_name: &str) -> String {
+        self.sections.get(section_name).cloned().unwrap_or_default()
+    }
+
+    /// Set the content for a section
+    pub fn set_section_content(&mut self, section_name: &str, content: String) {
+        self.sections.insert(section_name.to_string(), content);
+    }
+
+    /// Build the final prompt from the filled sections with structured format
+    /// Supports multiple instances of each section type
+    pub fn build_prompt(&self) -> Result<String> {
+        let mut result = String::new();
+        
+        // Always start with structured format
+        result.push_str("# [CONTEXT]: Project Background\n");
+        result.push_str("<problem_context>\n");
+        
+        // Collect all context sections (context, context_0, context_1, etc.)
+        let mut context_parts = Vec::new();
+        for section_id in &self.enabled_sections {
+            if section_id.starts_with("context") {
+                if let Some(content) = self.sections.get(section_id) {
+                    if !content.is_empty() {
+                        context_parts.push(content.clone());
+                    }
+                }
+            }
+        }
+        
+        if !context_parts.is_empty() {
+            result.push_str(&context_parts.join("\n\n"));
+            result.push('\n');
+        }
+        result.push_str("</problem_context>\n\n");
+        
+        // Add main instruction
+        result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
+        result.push_str("<instruction_set>\n");
+        
+        if let Some(instruction) = self.sections.get("instruction") {
+            if !instruction.is_empty() {
+                let lines: Vec<&str> = instruction.lines().filter(|s| !s.trim().is_empty()).collect();
+                for (i, line) in lines.into_iter().enumerate() {
+                    result.push_str(&format!("  <instruction_{}>\n", i + 1));
+                    result.push_str(&format!("  {}\n", line.trim()));
+                    result.push_str("  </instruction_>\n\n");
+                }
+            }
+        }
+        result.push_str("</instruction_set>\n\n");
+        
+        // Add all resources sections (can have multiple)
+        let mut resources_count = 0;
+        for section_id in &self.enabled_sections {
+            if section_id.starts_with("resources") {
+                if let Some(content) = self.sections.get(section_id) {
+                    if !content.is_empty() {
+                        if resources_count == 0 {
+                            result.push_str("# [RESOURCES]: Knowledge Base & Data\n");
+                            result.push_str("<reference_materials>\n");
+                        }
+                        result.push_str("--- START DATA ---\n");
+                        result.push_str(content);
+                        result.push_str("\n--- END DATA ---\n");
+                        resources_count += 1;
+                    }
+                }
+            }
+        }
+        if resources_count > 0 {
+            result.push_str("</reference_materials>\n\n");
+        }
+        
+        // Add all examples sections (can have multiple)
+        let mut examples_count = 0;
+        for section_id in &self.enabled_sections {
+            if section_id.starts_with("examples") {
+                if let Some(content) = self.sections.get(section_id) {
+                    if !content.is_empty() {
+                        if examples_count == 0 {
+                            result.push_str("# [EXAMPLES]: Multi-Shot Learning\n");
+                            result.push_str("<example_gallery>\n");
+                        }
+                        let lines: Vec<&str> = content.lines().filter(|s| !s.trim().is_empty()).collect();
+                        for (i, line) in lines.into_iter().enumerate() {
+                            result.push_str(&format!("  <example_{}>\n", examples_count * 100 + i + 1));
+                            result.push_str(&format!("    {}\n", line.trim()));
+                            result.push_str("  </example_>\n\n");
+                        }
+                        examples_count += 1;
+                    }
+                }
+            }
+        }
+        if examples_count > 0 {
+            result.push_str("</example_gallery>\n\n");
+        }
+        
+        // Add execution trigger
+        result.push_str("# [EXECUTION]: Trigger\n");
+        result.push_str("<run_task>\n");
+        result.push_str("Execute the task by synthesizing all sections above. ");
+        result.push_str("Prioritize <instruction_set> rules while using <example_gallery> as a quality benchmark.\n");
+        result.push_str("</run_task>\n");
+        
+        Ok(result)
+    }
 }

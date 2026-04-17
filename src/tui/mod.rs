@@ -9,6 +9,7 @@ mod app;
 mod brians_brain;
 pub(crate) mod context_transfer;
 mod event;
+pub(crate) mod prompt_templates;
 mod ui;
 mod whimsg;
 

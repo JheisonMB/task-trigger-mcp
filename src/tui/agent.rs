@@ -189,7 +189,7 @@ fn read_abs_range(
     }
     .min(max_sb);
 
-    let mut collected: Vec<String> = Vec::with_capacity(to_abs - from_abs);
+    let mut collected: Vec<String> = Vec::with_capacity(to_abs.saturating_sub(from_abs));
     let mut next_expected = from_abs;
     let mut s = s_start;
 
@@ -241,10 +241,76 @@ fn ignore_signals() {
 
 /// Creative session names assigned when the user doesn't provide one.
 const RANDOM_NAMES: &[&str] = &[
-    "mushroom", "shiitake", "truffle", "spore", "mycelium", "reishi", "amanita", "oak", "maple",
-    "willow", "pine", "birch", "fern", "moss", "lichen", "root", "seed", "axolotl", "quokka",
-    "pangolin", "capybara", "lemur", "okapi", "tapir", "meerkat", "fennec", "sloth", "iguana",
-    "rhea", "jerboa", "gibbon", "dew", "pollen", "sap", "humus", "bark", "petal",
+    "quercus",
+    "acer",
+    "pinus",
+    "betula",
+    "fagus",
+    "cedrus",
+    "sequoia",
+    "populus",
+    "fraxinus",
+    "ulmus",
+    "salix",
+    "abies",
+    "picea",
+    "taxus",
+    "juniperus",
+    "alnus",
+    "tsuga",
+    "larix",
+    "carpinus",
+    "corylus",
+    "castanea",
+    "aesculus",
+    "tilia",
+    "juglans",
+    "carya",
+    "platanus",
+    "magnolia",
+    "ginkgo",
+    "thuja",
+    "araucaria",
+    "zelkova",
+    "amanita",
+    "agaricus",
+    "boletus",
+    "morchella",
+    "cantharellus",
+    "pleurotus",
+    "ganoderma",
+    "lentinula",
+    "psilocybe",
+    "coprinus",
+    "hydnum",
+    "trametes",
+    "russula",
+    "lactarius",
+    "tuber",
+    "fomes",
+    "laricifomes",
+    "cordyceps",
+    "hericium",
+    "laetiporus",
+    "armillaria",
+    "clavaria",
+    "geastrum",
+    "lycoperdon",
+    "mycena",
+    "marasmius",
+    "cortinarius",
+    "hygrocybe",
+    "xylaria",
+    "fistulina",
+    "grifola",
+    "stereum",
+    "daedalea",
+    "clitocybe",
+    "lepiota",
+    "inocybe",
+    "pholiota",
+    "stropharia",
+    "suillus",
 ];
 
 /// Pick a random name from `RANDOM_NAMES` that isn't already in use.
@@ -293,6 +359,8 @@ pub struct InteractiveAgent {
     pub input_buffer: Arc<Mutex<String>>,
     /// Tracks when the PTY last received output (for detecting idle/waiting state).
     last_output_at: Arc<Mutex<DateTime<Utc>>>,
+    /// Tracks when the user last viewed/focused this agent.
+    last_viewed_at: Arc<Mutex<DateTime<Utc>>>,
     /// Whether the exit notification has already been sent (avoids repeats).
     pub exit_notified: bool,
 }
@@ -412,8 +480,17 @@ impl InteractiveAgent {
             prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
             input_buffer: Arc::new(Mutex::new(String::new())),
             last_output_at,
+            last_viewed_at: Arc::new(Mutex::new(Utc::now())),
             exit_notified: false,
         })
+    }
+
+    /// Mark the agent as having been viewed/attended by the user.
+    /// This suppresses the waiting indicator until new output arrives.
+    pub fn mark_viewed(&self) {
+        if let Ok(mut t) = self.last_viewed_at.lock() {
+            *t = Utc::now();
+        }
     }
 
     /// Send raw bytes to the agent's PTY stdin.
@@ -463,24 +540,6 @@ impl InteractiveAgent {
                 history.pop_front();
             }
         }
-    }
-
-    /// Inject a context block into the agent's PTY as a single paste.
-    ///
-    /// Uses bracketed paste mode (`ESC[200~` … `ESC[201~`) so the agent
-    /// treats the whole block as one pasted input rather than interpreting
-    /// each newline as a separate Enter press.
-    pub fn inject_context(&self, ctx_block: &str) -> Result<()> {
-        // Begin bracketed paste
-        self.write_to_pty(b"\x1b[200~")?;
-        let bytes: Vec<u8> = ctx_block
-            .bytes()
-            .map(|b| if b == b'\n' { b'\r' } else { b })
-            .collect();
-        self.write_to_pty(&bytes)?;
-        // End bracketed paste (without sending Enter — allows user to add instructions)
-        self.write_to_pty(b"\x1b[201~")?;
-        Ok(())
     }
 
     /// Get a snapshot of the virtual terminal screen for rendering.
@@ -579,42 +638,62 @@ impl InteractiveAgent {
         result.join("\n")
     }
 
-    /// Detect if the agent appears to be waiting for user input.
+    /// Detect if the agent appears to be waiting for user input / confirmation.
     ///
-    /// Heuristics:
-    /// - Cursor is on the last row (indicates prompt area)
-    /// - PTY output has been idle for at least 300ms (no new data from agent)
-    /// - Process is still running
+    /// Strategy (cursor-position only — no text-pattern matching):
+    /// 1. Process is running AND idle for 1_000ms (1 second) with no output.
+    /// 2. Cursor is on the last non-empty row of the visible screen.
+    ///
+    /// Text patterns were removed because box-drawing characters appear in all
+    /// TUI agents' normal output and caused constant false positives.
     pub fn is_waiting_for_input(&self) -> bool {
         if self.status != AgentStatus::Running {
             return false;
         }
 
-        // Check idle time FIRST — before screen_snapshot() so we don't snapshot unnecessarily.
-        // Use 500ms threshold for more reliable detection of "waiting" state
-        let idle_threshold = std::time::Duration::from_millis(500);
-        let is_idle = self
-            .last_output_at
-            .lock()
-            .ok()
-            .map(|t| {
-                let elapsed = Utc::now().signed_duration_since(*t);
-                elapsed.num_milliseconds() >= idle_threshold.as_millis() as i64
-            })
-            .unwrap_or(false);
+        let idle_threshold = std::time::Duration::from_millis(2000);
+        let (is_idle, new_output_since_viewed) =
+            if let (Ok(out), Ok(view)) = (self.last_output_at.lock(), self.last_viewed_at.lock()) {
+                let elapsed = Utc::now().signed_duration_since(*out);
+                (
+                    elapsed.num_milliseconds() >= idle_threshold.as_millis() as i64,
+                    *out > *view,
+                )
+            } else {
+                (false, false)
+            };
 
-        if !is_idle {
+        if !is_idle || !new_output_since_viewed {
             return false;
         }
 
         let Some(screen) = self.screen_snapshot() else {
-            return false;
+            return true;
         };
 
-        let rows = screen.cells.len() as u16;
+        let rows = screen.cells.len();
+        if rows == 0 {
+            return true;
+        }
 
-        // Cursor must be at or near the last row
-        rows > 0 && screen.cursor_row >= rows.saturating_sub(2)
+        // Find the last row that has any visible (non-space) content.
+        let last_nonempty = (0..rows).rev().find(|&r| {
+            screen.cells.get(r).is_some_and(|row| {
+                row.iter()
+                    .any(|c| c.as_ref().is_some_and(|cell| !cell.ch.trim().is_empty()))
+            })
+        });
+
+        let Some(_last_content_row) = last_nonempty else {
+            // Screen is blank but process is idle — assume waiting.
+            return true;
+        };
+
+        // Cursor should be in the lower half of the screen (common for prompts/input fields).
+        // This is more permissive than checking exact row position, reducing false negatives
+        // while still being selective enough to avoid constant false positives.
+        let cursor_in_lower_half = (screen.cursor_row as usize) > rows / 2;
+        is_idle && cursor_in_lower_half
     }
 
     /// Check if the process has exited.
