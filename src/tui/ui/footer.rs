@@ -37,11 +37,11 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Agent => {
             if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                 vec![
-                    ("EscEsc", "back"),
-                    ("Ctrl+↑↓", "cycle agents"),
-                    ("Ctrl+T", "transfer ctx"),
+                    ("Esc×2", "back"),
+                    ("Ctrl+↑↓", "agents"),
+                    ("Ctrl+T", "context"),
+                    ("Ctrl+B", "prompt"),
                     ("Ctrl+N", "new"),
-                    ("Shift+Click", "select"),
                     ("F1", "legend"),
                 ]
             } else {
@@ -59,9 +59,10 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("Esc", "cancel"),
         ],
         Focus::PromptTemplateDialog => vec![
-            ("↑↓", "navigate"),
-            ("Tab", "next field"),
-            ("Enter", "send"),
+            ("↑↓", "fields"),
+            ("⇧↑↓←→", "cursor"),
+            ("Ctrl+S", "send"),
+            ("Ctrl+A/X", "add/remove"),
             ("Esc", "cancel"),
         ],
     };
