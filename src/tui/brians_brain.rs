@@ -23,13 +23,13 @@ const EDGE_NOISE_PROBABILITY: f64 = 0.15; // 15% chance per edge cell
 const INITIAL_DELAY_SECONDS: u64 = 1;
 
 /// Probability of character corruption during glitch phase.
-const GLITCH_CORRUPTION_PROBABILITY: f64 = 0.3;
+const GLITCH_CORRUPTION_PROBABILITY: f64 = 0.5;
 
 /// Minimum glitch iterations before automaton activation.
-const MIN_GLITCH_ITERATIONS: usize = 1;
+const MIN_GLITCH_ITERATIONS: usize = 3;
 
 /// Maximum glitch iterations before automaton activation.
-const MAX_GLITCH_ITERATIONS: usize = 4;
+const MAX_GLITCH_ITERATIONS: usize = 6;
 
 /// Minimum milliseconds between glitch effects.
 const MIN_GLITCH_INTERVAL_MS: u64 = 200;
@@ -199,9 +199,9 @@ impl BriansBrain {
             }
         }
 
-        // Occasionally add random noise
-        if rand::random::<f64>() < 0.5 {
-            for _ in 0..10 {
+        // Add significant random noise for noticeable glitch effect
+        if rand::random::<f64>() < 0.7 {
+            for _ in 0..20 {
                 let row = rand::random::<u32>() as usize % self.rows;
                 let col = rand::random::<u32>() as usize % self.cols;
                 self.grid[row][col] = CellState::On;
@@ -216,15 +216,15 @@ impl BriansBrain {
 
     /// Apply dramatic explosion effect for final activation.
     fn apply_explosion_effect(&mut self) {
-        // Create explosion pattern from banner center
+        // Create smaller, progressive explosion pattern from banner center
         let center_row = self.rows / 2;
         let center_col = self.cols / 2;
 
-        // Explode outward in concentric circles
-        let max_radius = (self.rows.min(self.cols) / 2) as i32;
+        // Smaller, progressive explosion - only 30% of max radius
+        let max_radius = (self.rows.min(self.cols) / 3) as i32;
         for radius in 1..=max_radius {
-            for angle in 0..360 {
-                if rand::random::<f64>() < 0.7 { // 70% chance to place cell
+            for angle in (0..360).step_by(15) { // Fewer angles for sparser pattern
+                if rand::random::<f64>() < 0.8 { // 80% chance to place cell
                     let rad = angle as f64 * std::f64::consts::PI / 180.0;
                     let row = center_row as i32 + (rad.sin() * radius as f64) as i32;
                     let col = center_col as i32 + (rad.cos() * radius as f64) as i32;
@@ -236,8 +236,8 @@ impl BriansBrain {
             }
         }
 
-        // Add some random sparks
-        for _ in 0..50 {
+        // Add fewer random sparks
+        for _ in 0..20 {
             let row = rand::random::<u32>() as usize % self.rows;
             let col = rand::random::<u32>() as usize % self.cols;
             self.grid[row][col] = CellState::On;
