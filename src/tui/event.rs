@@ -69,7 +69,9 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     // Approximate instruction field width from terminal width
     // dialog is ~65% of terminal, minus borders/padding (~6 chars)
-    let field_width = (app.term_width as usize * 65 / 100).saturating_sub(6).max(20);
+    let field_width = (app.term_width as usize * 65 / 100)
+        .saturating_sub(6)
+        .max(20);
     let Some(dialog) = &mut app.simple_prompt_dialog else {
         app.focus = Focus::Agent;
         return Ok(());
@@ -136,7 +138,10 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 }
                 KeyCode::Backspace => {
                     dialog.picker_mode = SectionPickerMode::AddCustom {
-                        input: input_copy.chars().take(input_copy.len().saturating_sub(1)).collect(),
+                        input: input_copy
+                            .chars()
+                            .take(input_copy.len().saturating_sub(1))
+                            .collect(),
                     };
                 }
                 _ => {}
@@ -187,13 +192,27 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
         KeyCode::Esc => {
             app.close_simple_prompt_dialog();
         }
+        // Ctrl+S → send prompt (reliable across all terminals)
+        KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Ok(prompt) = dialog.build_prompt() {
+                if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+                    let idx = *idx;
+                    if idx < app.interactive_agents.len() {
+                        let pasted = format!("\x1b[200~{}\x1b[201~", prompt);
+                        let _ = app.interactive_agents[idx].write_to_pty(pasted.as_bytes());
+                        let _ = app.interactive_agents[idx].write_to_pty(b"\r");
+                    }
+                }
+                app.close_simple_prompt_dialog();
+            }
+        }
         KeyCode::Enter => {
-            if !modifiers.contains(KeyModifiers::CONTROL) {
-                // Insert newline at cursor position in any section
-                let dialog = app.simple_prompt_dialog.as_mut().unwrap();
+            let is_instruction =
+                section_name == "instruction" || section_name.starts_with("instruction_");
+            if is_instruction && modifiers.is_empty() {
                 dialog.insert_newline_at_cursor(&section_name, field_width);
-            } else {
-                // Ctrl+Enter → send prompt
+            } else if !is_instruction && modifiers.is_empty() {
+                // Enter in non-instruction fields also sends
                 if let Ok(prompt) = dialog.build_prompt() {
                     if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                         let idx = *idx;
@@ -241,13 +260,15 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 dialog.focused_section += 1;
             }
         }
-        KeyCode::Char('+') => {
+        // Ctrl+A → open add-section picker
+        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
             let addable = dialog.get_addable_sections();
             if !addable.is_empty() {
                 dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
             }
         }
-        KeyCode::Char('-') => {
+        // Ctrl+X → open remove-section picker
+        KeyCode::Char('x') if modifiers.contains(KeyModifiers::CONTROL) => {
             let removable = dialog.get_removable_sections();
             if !removable.is_empty() {
                 dialog.picker_mode = SectionPickerMode::RemoveSection { selected: 0 };
@@ -278,8 +299,8 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
         return Ok(());
     }
 
-    // Ctrl+P: open prompt template dialog from focus mode
-    if code == KeyCode::Char('p')
+    // Ctrl+B: open prompt builder dialog from focus mode
+    if code == KeyCode::Char('b')
         && modifiers.contains(KeyModifiers::CONTROL)
         && matches!(app.focus, Focus::Agent)
     {
@@ -707,6 +728,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             } else {
                 5
             };
+            let yolo_field: usize = 6; // interactive only
             let _ = (prompt_field, extra_field, name_field); // used in specific branches below
 
             match dialog.field {
@@ -779,10 +801,16 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Left => {
                         dialog.prev_cli();
                         dialog.refresh_model_suggestions();
+                        if dialog.selected_yolo_flag().is_none() {
+                            dialog.yolo_mode = false;
+                        }
                     }
                     KeyCode::Right => {
                         dialog.next_cli();
                         dialog.refresh_model_suggestions();
+                        if dialog.selected_yolo_flag().is_none() {
+                            dialog.yolo_mode = false;
+                        }
                     }
                     KeyCode::Down => dialog.field = model_field,
                     KeyCode::Up => {
@@ -840,8 +868,8 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => {
                         dialog.model_picker_open = false;
-                        dialog.field = if is_interactive { dir_field } else { 3 };
-                        // prompt or dir
+                        dialog.field = if is_interactive { yolo_field } else { 3 };
+                        // yolo (interactive) or prompt (non-interactive)
                     }
                     _ => {}
                 },
@@ -877,7 +905,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
                         } else if is_interactive {
-                            dialog.field = model_field;
+                            dialog.field = yolo_field; // yolo is above dir for interactive
                         } else if dialog.task_type == super::app::NewTaskType::Watcher {
                             dialog.field = 3; // prompt (watcher has no separate cron field)
                         } else {
@@ -894,6 +922,21 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Left => {
                         dialog.go_up();
+                    }
+                    _ => {}
+                },
+                // Yolo toggle (interactive only — field 6), sits between model and dir
+                n if n == yolo_field && is_interactive => match code {
+                    KeyCode::Char(' ') => {
+                        if dialog.selected_yolo_flag().is_some() {
+                            dialog.yolo_mode = !dialog.yolo_mode;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::BackTab => {
+                        dialog.field = model_field;
+                    }
+                    KeyCode::Down | KeyCode::Tab => {
+                        dialog.field = dir_field;
                     }
                     _ => {}
                 },

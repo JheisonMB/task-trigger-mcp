@@ -45,6 +45,9 @@ pub struct CliConfig {
     /// RGB accent color for this CLI's agents in the TUI.
     #[serde(default)]
     pub accent_color: Option<[u8; 3]>,
+    /// Flag to pass to disable approval prompts (yolo/autonomous mode).
+    #[serde(default)]
+    pub yolo_flag: Option<String>,
 }
 
 /// Persisted CLI configuration for available CLIs.
@@ -143,6 +146,7 @@ mod tests {
             session_list_cmd: None,
             session_resume_cmd: None,
             accent_color: None,
+            yolo_flag: None,
         }
     }
 
