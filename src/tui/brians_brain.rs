@@ -19,11 +19,23 @@ const MIN_PARTICLE_THRESHOLD: f64 = 0.005; // 0.5% of cells
 /// Probability of injecting noise at edge cells when below threshold.
 const EDGE_NOISE_PROBABILITY: f64 = 0.15; // 15% chance per edge cell
 
-/// Number of banner rows to reveal per side per tick during the unfold animation.
-const REVEAL_RATE: usize = 1;
+/// Minimum seconds before starting glitch effects.
+const INITIAL_DELAY_SECONDS: u64 = 1;
 
-/// Minimum seconds before the unfold animation completes (at least this long).
-const UNFOLD_SECONDS: u64 = 1;
+/// Probability of character corruption during glitch phase.
+const GLITCH_CORRUPTION_PROBABILITY: f64 = 0.3;
+
+/// Minimum glitch iterations before automaton activation.
+const MIN_GLITCH_ITERATIONS: usize = 1;
+
+/// Maximum glitch iterations before automaton activation.
+const MAX_GLITCH_ITERATIONS: usize = 4;
+
+/// Minimum milliseconds between glitch effects.
+const MIN_GLITCH_INTERVAL_MS: u64 = 200;
+
+/// Maximum milliseconds between glitch effects.
+const MAX_GLITCH_INTERVAL_MS: u64 = 1000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
@@ -47,12 +59,18 @@ pub struct BriansBrain {
     pub cols: usize,
     pub home_since: Instant,
     pub active: bool,
-    /// Full banner overlay grouped by row for progressive reveal.
+    /// Full banner overlay grouped by row.
     banner_overlay: Vec<BannerRow>,
-    /// Center row index in the overlay.
-    overlay_center: usize,
-    /// Number of rows revealed from center during unfold animation.
-    reveal_radius: usize,
+    /// Current glitch iteration count.
+    glitch_iteration: usize,
+    /// Total glitch iterations for this session.
+    total_glitch_iterations: usize,
+    /// Whether we're in glitch phase (before activation).
+    glitch_phase: bool,
+    /// Timestamp of last glitch effect.
+    last_glitch_time: Instant,
+    /// Random interval between glitch effects.
+    glitch_interval_ms: u64,
 }
 
 const BANNER: &[&str] = &[
@@ -69,7 +87,10 @@ const BANNER: &[&str] = &[
 
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize) -> Self {
-        let (grid, overlay, center_idx) = Self::make_banner_grid(rows, cols);
+        let (grid, overlay) = Self::make_banner_grid(rows, cols);
+        let total_glitch_iterations = rand::random::<u32>() as usize % (MAX_GLITCH_ITERATIONS - MIN_GLITCH_ITERATIONS + 1) + MIN_GLITCH_ITERATIONS;
+        let glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
+        
         Self {
             grid,
             rows,
@@ -77,8 +98,11 @@ impl BriansBrain {
             home_since: Instant::now(),
             active: false,
             banner_overlay: overlay,
-            overlay_center: center_idx,
-            reveal_radius: 0,
+            glitch_iteration: 0,
+            total_glitch_iterations,
+            glitch_phase: false,
+            last_glitch_time: Instant::now(),
+            glitch_interval_ms,
         }
     }
 
@@ -86,7 +110,7 @@ impl BriansBrain {
     /// Only full block characters (`█`) become On cells — they drive the explosion.
     /// Light shade characters (`░`) are recorded in the overlay for pre-activation
     /// rendering but do NOT participate in the automaton (they fade away).
-    fn make_banner_grid(rows: usize, cols: usize) -> (Vec<Vec<CellState>>, Vec<BannerRow>, usize) {
+    fn make_banner_grid(rows: usize, cols: usize) -> (Vec<Vec<CellState>>, Vec<BannerRow>) {
         let mut grid = vec![vec![CellState::Off; cols]; rows];
         let mut rows_data: Vec<BannerRow> = Vec::new();
 
@@ -95,9 +119,6 @@ impl BriansBrain {
 
         let top = rows.saturating_sub(banner_h) / 2;
         let left = cols.saturating_sub(banner_w) / 2;
-
-        // Center row of the banner relative to the overlay
-        let center = banner_h / 2;
 
         for (br, line) in BANNER.iter().enumerate() {
             let r = top + br;
@@ -122,56 +143,105 @@ impl BriansBrain {
             }
         }
 
-        // Find the center index in rows_data (closest to the actual center row of the banner)
-        let center_idx = rows_data
-            .iter()
-            .position(|rd| rd.row >= top + center)
-            .unwrap_or(rows_data.len().saturating_sub(1));
-
-        (grid, rows_data, center_idx)
+        (grid, rows_data)
     }
 
     pub fn should_activate(&self) -> bool {
-        // Wait for unfold animation to complete before activating
-        self.home_since.elapsed().as_secs() >= UNFOLD_SECONDS
-            && self.reveal_radius
-                >= self
-                    .overlay_center
-                    .max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center)
-            && !self.active
+        // Activate after all glitch iterations complete
+        self.glitch_iteration >= self.total_glitch_iterations && !self.active
     }
 
-    /// Advance the unfold animation by one step. Returns true if the animation just completed.
+    /// Advance the animation/glitch state. Returns true if automaton just activated.
     pub fn tick(&mut self) -> bool {
         if self.active {
             return false;
         }
-        let max_dist = self
-            .overlay_center
-            .max(self.banner_overlay.len().saturating_sub(1) - self.overlay_center);
-        if self.reveal_radius < max_dist {
-            self.reveal_radius = (self.reveal_radius + REVEAL_RATE).min(max_dist);
+
+        // Start glitch phase after initial delay
+        if !self.glitch_phase && self.home_since.elapsed().as_secs() >= INITIAL_DELAY_SECONDS {
+            self.glitch_phase = true;
+            self.last_glitch_time = Instant::now();
         }
-        self.reveal_radius >= max_dist
+
+        // During glitch phase, apply glitch effects at random intervals
+        if self.glitch_phase 
+            && self.glitch_iteration < self.total_glitch_iterations
+            && self.last_glitch_time.elapsed().as_millis() >= self.glitch_interval_ms as u128 {
+            self.apply_glitch_effects();
+            self.glitch_iteration += 1;
+            self.last_glitch_time = Instant::now();
+            // Randomize interval for next glitch
+            self.glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
+        }
+
+        // Check if we should activate
+        self.should_activate()
     }
 
-    /// Get the currently visible banner rows based on the reveal radius.
-    /// Returns rows sorted by distance from center (innermost first).
+    /// Get all banner rows (now shown complete from start).
     pub fn visible_overlay(&self) -> Vec<&BannerRow> {
-        if self.reveal_radius == 0 {
-            return vec![];
+        self.banner_overlay.iter().collect()
+    }
+
+    /// Apply random glitch effects to the banner grid.
+    fn apply_glitch_effects(&mut self) {
+        // Randomly corrupt some characters in the banner
+        for row_data in &self.banner_overlay {
+            for &(col, _is_shade) in &row_data.cells {
+                if rand::random::<f64>() < GLITCH_CORRUPTION_PROBABILITY {
+                    // Corrupt the cell state
+                    self.grid[row_data.row][col] = match self.grid[row_data.row][col] {
+                        CellState::On => CellState::Off,
+                        CellState::Off => CellState::On,
+                        CellState::Dying => CellState::On,
+                    };
+                }
+            }
         }
-        // Collect rows within reveal distance from center, sorted by distance
-        let mut visible: Vec<_> = self
-            .banner_overlay
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                (*i as i64 - self.overlay_center as i64).unsigned_abs() <= self.reveal_radius as u64
-            })
-            .collect();
-        visible.sort_by_key(|(i, _)| (*i as i64 - self.overlay_center as i64).unsigned_abs());
-        visible.into_iter().map(|(_, r)| r).collect()
+
+        // Occasionally add random noise
+        if rand::random::<f64>() < 0.5 {
+            for _ in 0..10 {
+                let row = rand::random::<u32>() as usize % self.rows;
+                let col = rand::random::<u32>() as usize % self.cols;
+                self.grid[row][col] = CellState::On;
+            }
+        }
+
+        // Final iteration: dramatic explosion effect
+        if self.glitch_iteration + 1 == self.total_glitch_iterations {
+            self.apply_explosion_effect();
+        }
+    }
+
+    /// Apply dramatic explosion effect for final activation.
+    fn apply_explosion_effect(&mut self) {
+        // Create explosion pattern from banner center
+        let center_row = self.rows / 2;
+        let center_col = self.cols / 2;
+
+        // Explode outward in concentric circles
+        let max_radius = (self.rows.min(self.cols) / 2) as i32;
+        for radius in 1..=max_radius {
+            for angle in 0..360 {
+                if rand::random::<f64>() < 0.7 { // 70% chance to place cell
+                    let rad = angle as f64 * std::f64::consts::PI / 180.0;
+                    let row = center_row as i32 + (rad.sin() * radius as f64) as i32;
+                    let col = center_col as i32 + (rad.cos() * radius as f64) as i32;
+                    
+                    if row >= 0 && row < self.rows as i32 && col >= 0 && col < self.cols as i32 {
+                        self.grid[row as usize][col as usize] = CellState::On;
+                    }
+                }
+            }
+        }
+
+        // Add some random sparks
+        for _ in 0..50 {
+            let row = rand::random::<u32>() as usize % self.rows;
+            let col = rand::random::<u32>() as usize % self.cols;
+            self.grid[row][col] = CellState::On;
+        }
     }
 
     pub fn activate(&mut self) {
@@ -181,11 +251,14 @@ impl BriansBrain {
     pub fn reset(&mut self) {
         self.active = false;
         self.home_since = Instant::now();
-        let (grid, overlay, center_idx) = Self::make_banner_grid(self.rows, self.cols);
+        let (grid, overlay) = Self::make_banner_grid(self.rows, self.cols);
         self.grid = grid;
         self.banner_overlay = overlay;
-        self.overlay_center = center_idx;
-        self.reveal_radius = 0;
+        self.glitch_iteration = 0;
+        self.total_glitch_iterations = rand::random::<u32>() as usize % (MAX_GLITCH_ITERATIONS - MIN_GLITCH_ITERATIONS + 1) + MIN_GLITCH_ITERATIONS;
+        self.glitch_phase = false;
+        self.last_glitch_time = Instant::now();
+        self.glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
     }
 
     pub fn step(&mut self) {
@@ -234,15 +307,12 @@ impl BriansBrain {
 
     /// Inject random noise at edge cells to reinvigorate the automaton.
     fn inject_edge_noise(&mut self) {
-        use rand::prelude::*;
-        let mut rng = rand::rng();
-
         for r in 0..self.rows {
             for c in 0..self.cols {
                 // Only inject noise at edge cells
                 if self.is_edge_cell(r, c)
                     && self.grid[r][c] == CellState::Off
-                    && rng.random_bool(EDGE_NOISE_PROBABILITY)
+                    && rand::random::<f64>() < EDGE_NOISE_PROBABILITY
                 {
                     self.grid[r][c] = CellState::On;
                 }
