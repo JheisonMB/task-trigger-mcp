@@ -840,9 +840,24 @@ pub enum SectionPickerMode {
 
 /// Directories ignored when walking for `@` file completion.
 const AT_IGNORE_DIRS: &[&str] = &[
-    ".git", ".svn", "target", "node_modules", ".idea", ".vscode",
-    "build", "dist", "out", "bin", "obj", "__pycache__",
-    ".pytest_cache", ".mypy_cache", ".tox", "venv", "env", ".venv",
+    ".git",
+    ".svn",
+    "target",
+    "node_modules",
+    ".idea",
+    ".vscode",
+    "build",
+    "dist",
+    "out",
+    "bin",
+    "obj",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+    "venv",
+    "env",
+    ".venv",
 ];
 
 /// A single entry shown in the `@`-file picker dropdown.
@@ -902,9 +917,17 @@ impl AtPicker {
                     if AT_IGNORE_DIRS.contains(&name.as_str()) {
                         continue;
                     }
-                    dirs.push(AtEntry { name, path, is_dir: true });
+                    dirs.push(AtEntry {
+                        name,
+                        path,
+                        is_dir: true,
+                    });
                 } else {
-                    files.push(AtEntry { name, path, is_dir: false });
+                    files.push(AtEntry {
+                        name,
+                        path,
+                        is_dir: false,
+                    });
                 }
             }
         }
@@ -1291,14 +1314,16 @@ impl SimplePromptDialog {
             .collect();
         let new_cursor = trigger_pos + replacement.chars().count();
         self.set_section_content(section_id, new_chars.into_iter().collect());
-        self.section_cursors.insert(section_id.to_string(), new_cursor);
+        self.section_cursors
+            .insert(section_id.to_string(), new_cursor);
         self.update_section_scroll(section_id, field_width);
 
         // Preserve focused section — resource insertion must not steal focus.
         let saved_focus = self.focused_section;
 
         // Add or append to a "resources" section with the full path.
-        let existing_resources = self.enabled_sections
+        let existing_resources = self
+            .enabled_sections
             .iter()
             .find(|id| id.starts_with("resources"))
             .cloned();
@@ -1320,7 +1345,11 @@ impl SimplePromptDialog {
     }
 
     /// Colorize `@word` tokens in rendered section text with a custom accent color.
-    pub fn get_file_reference_with_styling(&self, text: &str, accent: Color) -> Vec<(String, Option<Color>)> {
+    pub fn get_file_reference_with_styling(
+        &self,
+        text: &str,
+        accent: Color,
+    ) -> Vec<(String, Option<Color>)> {
         let mut result = Vec::new();
         let mut current_pos = 0;
 
@@ -1331,9 +1360,7 @@ impl SimplePromptDialog {
             }
             let remaining = &text[absolute_pos..];
             let ref_end = remaining
-                .find(|c: char| {
-                    c.is_whitespace() || c == ',' || c == '!' || c == '?' || c == '│'
-                })
+                .find(|c: char| c.is_whitespace() || c == ',' || c == '!' || c == '?' || c == '│')
                 .unwrap_or(remaining.len());
             let file_ref = &remaining[..ref_end];
             if file_ref.len() > 1

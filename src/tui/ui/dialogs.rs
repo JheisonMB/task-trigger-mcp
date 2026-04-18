@@ -1234,8 +1234,16 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let inner_bottom = inner.y + inner.height;
     if start_idx > 0 {
         let arrow = Span::styled(" ▲ ", Style::default().fg(accent));
-        let a = ratatui::layout::Rect { x: inner.x, y: sections_top, width: inner.width, height: 1 };
-        frame.render_widget(Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right), a);
+        let a = ratatui::layout::Rect {
+            x: inner.x,
+            y: sections_top,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right),
+            a,
+        );
     }
 
     let mut y_pos = sections_top;
@@ -1475,9 +1483,13 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             yy += section_heights.first().copied().unwrap_or(0);
         }
         for (i, _) in dialog.enabled_sections.iter().enumerate() {
-            if i == 0 || i < start_idx { continue; }
+            if i == 0 || i < start_idx {
+                continue;
+            }
             let sh = section_heights.get(i).copied().unwrap_or(4);
-            if yy + sh + 3 >= inner_bottom { break; }
+            if yy + sh + 3 >= inner_bottom {
+                break;
+            }
             yy += sh;
             last = i;
         }
@@ -1491,7 +1503,10 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             width: inner.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right), a);
+        frame.render_widget(
+            Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right),
+            a,
+        );
     }
 
     // Draw @ file picker dropdown if active

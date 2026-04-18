@@ -87,12 +87,7 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 .map(|ia| PathBuf::from(&ia.working_dir)),
             _ => None,
         })
-        .unwrap_or_else(|| {
-            app.data_dir
-                .parent()
-                .unwrap_or(&app.data_dir)
-                .to_path_buf()
-        });
+        .unwrap_or_else(|| app.data_dir.parent().unwrap_or(&app.data_dir).to_path_buf());
 
     let Some(dialog) = &mut app.simple_prompt_dialog else {
         app.focus = Focus::Agent;
@@ -265,12 +260,22 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                         p.enter_dir();
                     }
                 } else {
-                    let rel =
-                        dialog.at_picker.as_ref().and_then(|p| p.relative_path_of_selected());
-                    let full = dialog.at_picker.as_ref().and_then(|p| p.full_path_of_selected());
+                    let rel = dialog
+                        .at_picker
+                        .as_ref()
+                        .and_then(|p| p.relative_path_of_selected());
+                    let full = dialog
+                        .at_picker
+                        .as_ref()
+                        .and_then(|p| p.full_path_of_selected());
                     if let (Some(rel_path), Some(full_path)) = (rel, full) {
                         let full_str = full_path.to_string_lossy().to_string();
-                        dialog.insert_at_completion(&section_name, &rel_path, &full_str, field_width);
+                        dialog.insert_at_completion(
+                            &section_name,
+                            &rel_path,
+                            &full_str,
+                            field_width,
+                        );
                     }
                     dialog.at_picker = None;
                 }
