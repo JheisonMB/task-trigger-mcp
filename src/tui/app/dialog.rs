@@ -926,11 +926,8 @@ impl AtPicker {
         }
     }
 
-    /// Navigate one level up (but not above `workdir`).
+    /// Navigate one level up — no upper limit, allows going above `workdir`.
     pub fn go_up(&mut self) {
-        if self.current_dir == self.workdir {
-            return;
-        }
         if let Some(parent) = self.current_dir.parent() {
             self.current_dir = parent.to_path_buf();
             self.query.clear();
@@ -938,11 +935,15 @@ impl AtPicker {
         }
     }
 
-    /// Relative path of the selected entry from `workdir`, or `None`.
+    /// Path of the selected entry: relative to workdir when inside it, absolute otherwise.
     pub fn relative_path_of_selected(&self) -> Option<String> {
         let e = self.entries.get(self.selected)?;
-        let rel = e.path.strip_prefix(&self.workdir).ok()?;
-        Some(rel.to_string_lossy().replace('\\', "/"))
+        if let Ok(rel) = e.path.strip_prefix(&self.workdir) {
+            Some(rel.to_string_lossy().replace('\\', "/"))
+        } else {
+            // Outside workdir — use absolute path so the reference is unambiguous.
+            Some(e.path.to_string_lossy().replace('\\', "/"))
+        }
     }
 
     /// Absolute/full path of the selected entry.
@@ -950,16 +951,18 @@ impl AtPicker {
         self.entries.get(self.selected).map(|e| e.path.clone())
     }
 
-    /// Display title: `@` + relative current_dir + `/` + query.
+    /// Display title: `@` + current dir (relative inside workdir, absolute outside) + `/` + query.
     pub fn title(&self) -> String {
-        let rel = self
-            .current_dir
-            .strip_prefix(&self.workdir)
-            .ok()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| format!("{}/", p.to_string_lossy()))
-            .unwrap_or_default();
-        format!("@{}{}", rel, self.query)
+        let dir_label = if let Ok(rel) = self.current_dir.strip_prefix(&self.workdir) {
+            if rel.as_os_str().is_empty() {
+                String::new()
+            } else {
+                format!("{}/", rel.to_string_lossy())
+            }
+        } else {
+            format!("{}/", self.current_dir.to_string_lossy())
+        };
+        format!("@{}{}", dir_label, self.query)
     }
 }
 
