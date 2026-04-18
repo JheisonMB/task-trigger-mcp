@@ -7,35 +7,38 @@
 //! The grid is seeded from the CANOPY banner text so the automaton
 //! looks like the banner "exploding" when it activates.
 //!
+//! Before activation, a digital-corruption glitch replaces banner characters
+//! with 0s and 1s (Matrix-style) while vibrating, then snaps back to normal.
+//! This repeats with progressive intensity until the banner finally explodes.
+//!
 //! Includes automatic particle count validation and noise injection to prevent
 //! the automaton from stabilizing with too few particles.
 
 use std::time::Instant;
 
-/// Minimum percentage of particles (relative to total cells) to maintain activity.
-/// Below this threshold, edge noise is injected to keep the automaton fluid.
-const MIN_PARTICLE_THRESHOLD: f64 = 0.005; // 0.5% of cells
+// ── Automaton tuning ────────────────────────────────────────────
 
-/// Probability of injecting noise at edge cells when below threshold.
-const EDGE_NOISE_PROBABILITY: f64 = 0.15; // 15% chance per edge cell
+const MIN_PARTICLE_THRESHOLD: f64 = 0.006;
+const EDGE_NOISE_PROBABILITY: f64 = 0.16;
 
-/// Minimum seconds before starting glitch effects.
-const INITIAL_DELAY_SECONDS: u64 = 1;
+// ── Glitch tuning ──────────────────────────────────────────────
 
-/// Probability of character corruption during glitch phase.
-const GLITCH_CORRUPTION_PROBABILITY: f64 = 0.5;
+/// Fixed initial delay (ms) before glitch starts.
+const INITIAL_DELAY_MS: u64 = 1000;
+const MIN_GLITCH_CYCLES: usize = 3;
+const MAX_GLITCH_CYCLES: usize = 5;
+/// How long (ms) the disintegration builds up.
+const DISINTEGRATE_MS: u64 = 200;
+/// Pause (ms) between consecutive glitch cycles (random within range).
+const BETWEEN_CYCLES_MIN_MS: u64 = 200;
+const BETWEEN_CYCLES_MAX_MS: u64 = 1000;
+/// Max fraction of banner cells corrupted at peak.
+const MAX_CORRUPT_FRACTION: f64 = 0.65;
 
-/// Minimum glitch iterations before automaton activation.
-const MIN_GLITCH_ITERATIONS: usize = 3;
-
-/// Maximum glitch iterations before automaton activation.
-const MAX_GLITCH_ITERATIONS: usize = 6;
-
-/// Minimum milliseconds between glitch effects.
-const MIN_GLITCH_INTERVAL_MS: u64 = 200;
-
-/// Maximum milliseconds between glitch effects.
-const MAX_GLITCH_INTERVAL_MS: u64 = 1000;
+/// Base green channel for the banner seeded cells.
+const BANNER_GREEN: u8 = 175;
+/// Green channel for edge-noise injected cells.
+const NOISE_GREEN: u8 = 220;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
@@ -44,33 +47,61 @@ pub enum CellState {
     Dying,
 }
 
+/// Appearance of a single cell in the banner overlay.
+#[derive(Clone, Copy)]
+pub enum BannerCellKind {
+    /// Full block `█`.
+    Block,
+    /// Light shade `░`.
+    Shade,
+    /// Corrupted — shows a `0` or `1`.
+    Glitch(char),
+}
+
 /// Banner row data for the overlay.
 #[derive(Clone)]
 pub struct BannerRow {
-    /// Grid row index.
     pub row: usize,
-    /// Characters in this row: (`col_index`, `is_shade`).
-    pub cells: Vec<(usize, bool)>,
+    pub cells: Vec<(usize, BannerCellKind)>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum Phase {
+    Waiting,
+    Disintegrating,
+    BetweenCycles,
+    Done,
 }
 
 pub struct BriansBrain {
     pub grid: Vec<Vec<CellState>>,
+    /// Per-cell green channel (0-255) for automaton color variation.
+    pub green_grid: Vec<Vec<u8>>,
     pub rows: usize,
     pub cols: usize,
     pub home_since: Instant,
     pub active: bool,
-    /// Full banner overlay grouped by row.
-    banner_overlay: Vec<BannerRow>,
-    /// Current glitch iteration count.
-    glitch_iteration: usize,
-    /// Total glitch iterations for this session.
-    total_glitch_iterations: usize,
-    /// Whether we're in glitch phase (before activation).
-    glitch_phase: bool,
-    /// Timestamp of last glitch effect.
-    last_glitch_time: Instant,
-    /// Random interval between glitch effects.
-    glitch_interval_ms: u64,
+    /// Original banner (never mutated).
+    banner_base: Vec<BannerRow>,
+
+    phase: Phase,
+    phase_started: Instant,
+    glitch_cycle: usize,
+    total_glitch_cycles: usize,
+    /// Shuffled banner cell coordinates — corruption order.
+    corrupt_candidates: Vec<(usize, usize)>,
+    /// How many cells from front of candidates are corrupted right now.
+    corrupt_count: usize,
+    /// Peak corruption target for the current cycle.
+    peak_corrupt: usize,
+    /// Assigned glitch char per candidate (0 or 1).
+    corrupt_chars: Vec<char>,
+    /// Border noise cells (row, col) shown during disintegration.
+    border_noise: Vec<(usize, usize)>,
+    /// Random pause for current BetweenCycles.
+    next_between_ms: u64,
+    /// Vibration offset applied during Disintegrating.
+    pub vibration: (i16, i16),
 }
 
 const BANNER: &[&str] = &[
@@ -85,38 +116,67 @@ const BANNER: &[&str] = &[
     r"                                       ░░░░░       ░░░░░░",
 ];
 
+fn shuffle<T>(v: &mut [T]) {
+    let n = v.len();
+    for i in (1..n).rev() {
+        let j = rand::random::<u32>() as usize % (i + 1);
+        v.swap(i, j);
+    }
+}
+
+fn rand_between(lo: u64, hi: u64) -> u64 {
+    lo + rand::random::<u32>() as u64 % (hi - lo + 1)
+}
+
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize) -> Self {
-        let (grid, overlay) = Self::make_banner_grid(rows, cols);
-        let total_glitch_iterations = rand::random::<u32>() as usize % (MAX_GLITCH_ITERATIONS - MIN_GLITCH_ITERATIONS + 1) + MIN_GLITCH_ITERATIONS;
-        let glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
-        
+        let (grid, overlay, green_grid) = Self::make_banner_grid(rows, cols);
+
+        let total_glitch_cycles = MIN_GLITCH_CYCLES
+            + rand::random::<u32>() as usize % (MAX_GLITCH_CYCLES - MIN_GLITCH_CYCLES + 1);
+
+        let mut candidates: Vec<(usize, usize)> = overlay
+            .iter()
+            .flat_map(|row| row.cells.iter().map(move |&(col, _)| (row.row, col)))
+            .collect();
+        shuffle(&mut candidates);
+        let corrupt_chars = candidates
+            .iter()
+            .map(|_| if rand::random::<bool>() { '1' } else { '0' })
+            .collect();
+
         Self {
             grid,
+            green_grid,
             rows,
             cols,
             home_since: Instant::now(),
             active: false,
-            banner_overlay: overlay,
-            glitch_iteration: 0,
-            total_glitch_iterations,
-            glitch_phase: false,
-            last_glitch_time: Instant::now(),
-            glitch_interval_ms,
+            banner_base: overlay,
+            phase: Phase::Waiting,
+            phase_started: Instant::now(),
+            glitch_cycle: 0,
+            total_glitch_cycles,
+            corrupt_candidates: candidates,
+            corrupt_count: 0,
+            peak_corrupt: 0,
+            corrupt_chars,
+            border_noise: Vec::new(),
+            next_between_ms: 0,
+            vibration: (0, 0),
         }
     }
 
-    /// Seed the grid from the CANOPY banner text.
-    /// Only full block characters (`█`) become On cells — they drive the explosion.
-    /// Light shade characters (`░`) are recorded in the overlay for pre-activation
-    /// rendering but do NOT participate in the automaton (they fade away).
-    fn make_banner_grid(rows: usize, cols: usize) -> (Vec<Vec<CellState>>, Vec<BannerRow>) {
+    fn make_banner_grid(
+        rows: usize,
+        cols: usize,
+    ) -> (Vec<Vec<CellState>>, Vec<BannerRow>, Vec<Vec<u8>>) {
         let mut grid = vec![vec![CellState::Off; cols]; rows];
+        let mut green_grid = vec![vec![0u8; cols]; rows];
         let mut rows_data: Vec<BannerRow> = Vec::new();
 
         let banner_h = BANNER.len();
         let banner_w = BANNER.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-
         let top = rows.saturating_sub(banner_h) / 2;
         let left = cols.saturating_sub(banner_w) / 2;
 
@@ -133,9 +193,12 @@ impl BriansBrain {
                 }
                 if ch == '█' {
                     grid[r][c] = CellState::On;
-                    cells.push((c, false));
+                    // Slight per-cell variation around BANNER_GREEN
+                    green_grid[r][c] =
+                        BANNER_GREEN.saturating_add((rand::random::<u8>() % 30).wrapping_sub(15));
+                    cells.push((c, BannerCellKind::Block));
                 } else if ch == '░' {
-                    cells.push((c, true));
+                    cells.push((c, BannerCellKind::Shade));
                 }
             }
             if !cells.is_empty() {
@@ -143,105 +206,212 @@ impl BriansBrain {
             }
         }
 
-        (grid, rows_data)
+        (grid, rows_data, green_grid)
     }
 
     pub fn should_activate(&self) -> bool {
-        // Activate after all glitch iterations complete
-        self.glitch_iteration >= self.total_glitch_iterations && !self.active
+        self.phase == Phase::Done && !self.active
     }
 
-    /// Advance the animation/glitch state. Returns true if automaton just activated.
     pub fn tick(&mut self) -> bool {
         if self.active {
             return false;
         }
 
-        // Start glitch phase after initial delay
-        if !self.glitch_phase && self.home_since.elapsed().as_secs() >= INITIAL_DELAY_SECONDS {
-            self.glitch_phase = true;
-            self.last_glitch_time = Instant::now();
-        }
-
-        // During glitch phase, apply glitch effects at random intervals
-        if self.glitch_phase 
-            && self.glitch_iteration < self.total_glitch_iterations
-            && self.last_glitch_time.elapsed().as_millis() >= self.glitch_interval_ms as u128 {
-            self.apply_glitch_effects();
-            self.glitch_iteration += 1;
-            self.last_glitch_time = Instant::now();
-            // Randomize interval for next glitch
-            self.glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
-        }
-
-        // Check if we should activate
-        self.should_activate()
-    }
-
-    /// Get all banner rows (now shown complete from start).
-    pub fn visible_overlay(&self) -> Vec<&BannerRow> {
-        self.banner_overlay.iter().collect()
-    }
-
-    /// Apply random glitch effects to the banner grid.
-    fn apply_glitch_effects(&mut self) {
-        // Randomly corrupt some characters in the banner
-        for row_data in &self.banner_overlay {
-            for &(col, _is_shade) in &row_data.cells {
-                if rand::random::<f64>() < GLITCH_CORRUPTION_PROBABILITY {
-                    // Corrupt the cell state
-                    self.grid[row_data.row][col] = match self.grid[row_data.row][col] {
-                        CellState::On => CellState::Off,
-                        CellState::Off => CellState::On,
-                        CellState::Dying => CellState::On,
-                    };
-                }
-            }
-        }
-
-        // Add significant random noise for noticeable glitch effect
-        if rand::random::<f64>() < 0.7 {
-            for _ in 0..20 {
-                let row = rand::random::<u32>() as usize % self.rows;
-                let col = rand::random::<u32>() as usize % self.cols;
-                self.grid[row][col] = CellState::On;
-            }
-        }
-
-        // Final iteration: dramatic explosion effect
-        if self.glitch_iteration + 1 == self.total_glitch_iterations {
-            self.apply_explosion_effect();
-        }
-    }
-
-    /// Apply dramatic explosion effect for final activation.
-    fn apply_explosion_effect(&mut self) {
-        // Create smaller, progressive explosion pattern from banner center
-        let center_row = self.rows / 2;
-        let center_col = self.cols / 2;
-
-        // Smaller, progressive explosion - only 30% of max radius
-        let max_radius = (self.rows.min(self.cols) / 3) as i32;
-        for radius in 1..=max_radius {
-            for angle in (0..360).step_by(15) { // Fewer angles for sparser pattern
-                if rand::random::<f64>() < 0.8 { // 80% chance to place cell
-                    let rad = angle as f64 * std::f64::consts::PI / 180.0;
-                    let row = center_row as i32 + (rad.sin() * radius as f64) as i32;
-                    let col = center_col as i32 + (rad.cos() * radius as f64) as i32;
-                    
-                    if row >= 0 && row < self.rows as i32 && col >= 0 && col < self.cols as i32 {
-                        self.grid[row as usize][col as usize] = CellState::On;
+        match self.phase.clone() {
+            Phase::Waiting => {
+                if self.home_since.elapsed().as_millis() as u64 >= INITIAL_DELAY_MS {
+                    if self.total_glitch_cycles == 0 {
+                        self.phase = Phase::Done;
+                    } else {
+                        self.start_corruption_cycle();
                     }
                 }
             }
+            Phase::Disintegrating => {
+                let elapsed = self.phase_started.elapsed().as_millis() as u64;
+                let progress = (elapsed as f64 / DISINTEGRATE_MS as f64).min(1.0);
+                self.corrupt_count =
+                    ((progress * self.peak_corrupt as f64) as usize).min(self.peak_corrupt);
+
+                // Vibrate: ±1 early, ±2 past 50%
+                let max_shake = if progress > 0.5 { 2i16 } else { 1i16 };
+                self.vibration = (
+                    (rand::random::<i16>() % (max_shake * 2 + 1)) - max_shake,
+                    (rand::random::<i16>() % (max_shake * 2 + 1)) - max_shake,
+                );
+
+                // Scatter border noise progressively
+                if elapsed % 60 < 16 {
+                    self.inject_border_noise_incremental(3 + (progress * 8.0) as usize);
+                }
+
+                if elapsed >= DISINTEGRATE_MS {
+                    // SNAP: instantly reset everything
+                    self.corrupt_count = 0;
+                    self.vibration = (0, 0);
+                    self.border_noise.clear();
+                    self.glitch_cycle += 1;
+                    if self.glitch_cycle >= self.total_glitch_cycles {
+                        self.phase = Phase::Done;
+                    } else {
+                        self.next_between_ms =
+                            rand_between(BETWEEN_CYCLES_MIN_MS, BETWEEN_CYCLES_MAX_MS);
+                        self.phase = Phase::BetweenCycles;
+                        self.phase_started = Instant::now();
+                    }
+                }
+            }
+            Phase::BetweenCycles => {
+                if self.phase_started.elapsed().as_millis() as u64 >= self.next_between_ms {
+                    self.start_corruption_cycle();
+                }
+            }
+            Phase::Done => {}
         }
 
-        // Add fewer random sparks
-        for _ in 0..20 {
-            let row = rand::random::<u32>() as usize % self.rows;
-            let col = rand::random::<u32>() as usize % self.cols;
-            self.grid[row][col] = CellState::On;
+        self.should_activate()
+    }
+
+    fn start_corruption_cycle(&mut self) {
+        shuffle(&mut self.corrupt_candidates);
+        // Regenerate glitch chars each cycle
+        for ch in self.corrupt_chars.iter_mut() {
+            *ch = if rand::random::<bool>() { '1' } else { '0' };
         }
+        let total = self.corrupt_candidates.len();
+        let cycle_progress = if self.total_glitch_cycles > 1 {
+            self.glitch_cycle as f64 / (self.total_glitch_cycles - 1) as f64
+        } else {
+            1.0
+        };
+        let min_frac = 0.15 + 0.25 * cycle_progress;
+        let max_frac = (min_frac + 0.20).min(MAX_CORRUPT_FRACTION);
+        let frac = min_frac + rand::random::<f64>() * (max_frac - min_frac);
+        self.peak_corrupt = ((total as f64 * frac) as usize).max(1);
+        self.corrupt_count = 0;
+        self.border_noise.clear();
+        self.phase = Phase::Disintegrating;
+        self.phase_started = Instant::now();
+    }
+
+    fn inject_border_noise_incremental(&mut self, count: usize) {
+        if self.banner_base.is_empty() {
+            return;
+        }
+        let min_row = self.banner_base.iter().map(|r| r.row).min().unwrap_or(0);
+        let max_row = self.banner_base.iter().map(|r| r.row).max().unwrap_or(0);
+        let min_col = self
+            .banner_base
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|&(c, _)| c))
+            .min()
+            .unwrap_or(0);
+        let max_col = self
+            .banner_base
+            .iter()
+            .flat_map(|r| r.cells.iter().map(|&(c, _)| c))
+            .max()
+            .unwrap_or(0);
+
+        let margin = 3usize;
+        for _ in 0..count {
+            let side = rand::random::<u32>() % 4;
+            let (r, c) = match side {
+                0 => {
+                    let r = min_row.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % (margin + 1);
+                    let span = max_col.saturating_sub(min_col) + 2 * margin + 1;
+                    let c = min_col.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % span.max(1);
+                    (r, c)
+                }
+                1 => {
+                    let r = max_row + 1 + rand::random::<u32>() as usize % margin.max(1);
+                    let span = max_col.saturating_sub(min_col) + 2 * margin + 1;
+                    let c = min_col.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % span.max(1);
+                    (r, c)
+                }
+                2 => {
+                    let span = max_row.saturating_sub(min_row) + 2 * margin + 1;
+                    let r = min_row.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % span.max(1);
+                    let c = min_col.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % (margin + 1);
+                    (r, c)
+                }
+                _ => {
+                    let span = max_row.saturating_sub(min_row) + 2 * margin + 1;
+                    let r = min_row.saturating_sub(margin)
+                        + rand::random::<u32>() as usize % span.max(1);
+                    let c = max_col + 1 + rand::random::<u32>() as usize % margin.max(1);
+                    (r, c)
+                }
+            };
+            if r < self.rows && c < self.cols {
+                self.border_noise.push((r, c));
+            }
+        }
+    }
+
+    /// Build the overlay for rendering. During disintegration, corrupted cells
+    /// become `0`/`1` glitch chars; border noise is appended.
+    pub fn visible_overlay(&self) -> Vec<BannerRow> {
+        let corrupted: std::collections::HashSet<(usize, usize)> = self.corrupt_candidates
+            [..self.corrupt_count]
+            .iter()
+            .cloned()
+            .collect();
+
+        // Map corruption index → char for fast lookup
+        let corrupt_map: std::collections::HashMap<(usize, usize), char> = self.corrupt_candidates
+            [..self.corrupt_count]
+            .iter()
+            .enumerate()
+            .map(|(i, &pos)| (pos, self.corrupt_chars[i]))
+            .collect();
+
+        let mut rows: Vec<BannerRow> = self
+            .banner_base
+            .iter()
+            .map(|row| {
+                let cells = row
+                    .cells
+                    .iter()
+                    .map(|&(col, kind)| {
+                        if corrupted.contains(&(row.row, col)) {
+                            let ch = corrupt_map.get(&(row.row, col)).copied().unwrap_or('0');
+                            (col, BannerCellKind::Glitch(ch))
+                        } else {
+                            (col, kind)
+                        }
+                    })
+                    .collect();
+                BannerRow {
+                    row: row.row,
+                    cells,
+                }
+            })
+            .collect();
+
+        // Border noise as glitch 0/1 cells
+        if !self.border_noise.is_empty() {
+            let mut by_row: std::collections::HashMap<usize, Vec<(usize, BannerCellKind)>> =
+                std::collections::HashMap::new();
+            for &(r, c) in &self.border_noise {
+                let ch = if rand::random::<bool>() { '1' } else { '0' };
+                by_row
+                    .entry(r)
+                    .or_default()
+                    .push((c, BannerCellKind::Glitch(ch)));
+            }
+            for (r, cells) in by_row {
+                rows.push(BannerRow { row: r, cells });
+            }
+        }
+
+        rows
     }
 
     pub fn activate(&mut self) {
@@ -251,35 +421,87 @@ impl BriansBrain {
     pub fn reset(&mut self) {
         self.active = false;
         self.home_since = Instant::now();
-        let (grid, overlay) = Self::make_banner_grid(self.rows, self.cols);
+        let (grid, overlay, green_grid) = Self::make_banner_grid(self.rows, self.cols);
         self.grid = grid;
-        self.banner_overlay = overlay;
-        self.glitch_iteration = 0;
-        self.total_glitch_iterations = rand::random::<u32>() as usize % (MAX_GLITCH_ITERATIONS - MIN_GLITCH_ITERATIONS + 1) + MIN_GLITCH_ITERATIONS;
-        self.glitch_phase = false;
-        self.last_glitch_time = Instant::now();
-        self.glitch_interval_ms = rand::random::<u32>() as u64 % (MAX_GLITCH_INTERVAL_MS - MIN_GLITCH_INTERVAL_MS + 1) + MIN_GLITCH_INTERVAL_MS;
+        self.green_grid = green_grid;
+        let mut candidates: Vec<(usize, usize)> = overlay
+            .iter()
+            .flat_map(|row| row.cells.iter().map(move |&(col, _)| (row.row, col)))
+            .collect();
+        shuffle(&mut candidates);
+        let corrupt_chars = candidates
+            .iter()
+            .map(|_| if rand::random::<bool>() { '1' } else { '0' })
+            .collect();
+        self.banner_base = overlay;
+        self.corrupt_candidates = candidates;
+        self.corrupt_chars = corrupt_chars;
+        self.phase = Phase::Waiting;
+        self.phase_started = Instant::now();
+        self.total_glitch_cycles = MIN_GLITCH_CYCLES
+            + rand::random::<u32>() as usize % (MAX_GLITCH_CYCLES - MIN_GLITCH_CYCLES + 1);
+        self.glitch_cycle = 0;
+        self.corrupt_count = 0;
+        self.peak_corrupt = 0;
+        self.border_noise.clear();
+        self.next_between_ms = 0;
+        self.vibration = (0, 0);
     }
 
     pub fn step(&mut self) {
         let mut next = vec![vec![CellState::Off; self.cols]; self.rows];
+        let mut next_green = vec![vec![0u8; self.cols]; self.rows];
+
         for (r, row) in next.iter_mut().enumerate().take(self.rows) {
             for (c, cell) in row.iter_mut().enumerate().take(self.cols) {
                 *cell = match self.grid[r][c] {
-                    CellState::On => CellState::Dying,
+                    CellState::On => {
+                        // Dying cells inherit their parent's green
+                        next_green[r][c] = self.green_grid[r][c];
+                        CellState::Dying
+                    }
                     CellState::Dying => CellState::Off,
-                    CellState::Off if self.count_on_neighbors(r, c) == 2 => CellState::On,
+                    CellState::Off if self.count_on_neighbors(r, c) == 2 => {
+                        // Newborn: average green of the 2 On neighbors
+                        next_green[r][c] = self.avg_neighbor_green(r, c);
+                        CellState::On
+                    }
                     CellState::Off => CellState::Off,
                 };
             }
         }
         self.grid = next;
-
-        // Validate particle count and inject noise if too low
+        self.green_grid = next_green;
         self.validate_and_inject_noise();
     }
 
-    /// Count the total number of On particles in the grid.
+    /// Average green channel of On neighbors (used for newborn inheritance).
+    fn avg_neighbor_green(&self, row: usize, col: usize) -> u8 {
+        let mut sum = 0u32;
+        let mut count = 0u32;
+        for dr in [-1i32, 0, 1] {
+            for dc in [-1i32, 0, 1] {
+                if dr == 0 && dc == 0 {
+                    continue;
+                }
+                let r = (row as i32 + dr).rem_euclid(self.rows as i32) as usize;
+                let c = (col as i32 + dc).rem_euclid(self.cols as i32) as usize;
+                if self.grid[r][c] == CellState::On {
+                    sum += self.green_grid[r][c] as u32;
+                    count += 1;
+                }
+            }
+        }
+        if count > 0 {
+            // Small random drift ±5 to create gradual color variation
+            let avg = (sum / count) as i16;
+            let drift = (rand::random::<i16>() % 11) - 5;
+            (avg + drift).clamp(100, 255) as u8
+        } else {
+            BANNER_GREEN
+        }
+    }
+
     fn count_particles(&self) -> usize {
         self.grid
             .iter()
@@ -288,39 +510,32 @@ impl BriansBrain {
             .count()
     }
 
-    /// Check if a cell is on the edge of the grid.
     fn is_edge_cell(&self, row: usize, col: usize) -> bool {
         row == 0 || row == self.rows - 1 || col == 0 || col == self.cols - 1
     }
 
-    /// Validate particle count and inject random noise at edges if below threshold.
     fn validate_and_inject_noise(&mut self) {
         let total_cells = self.rows * self.cols;
-        let particle_count = self.count_particles();
-        let particle_ratio = particle_count as f64 / total_cells as f64;
-
-        // If particles drop below threshold, inject noise at edges
+        let particle_ratio = self.count_particles() as f64 / total_cells as f64;
         if particle_ratio < MIN_PARTICLE_THRESHOLD {
             self.inject_edge_noise();
         }
     }
 
-    /// Inject random noise at edge cells to reinvigorate the automaton.
     fn inject_edge_noise(&mut self) {
         for r in 0..self.rows {
             for c in 0..self.cols {
-                // Only inject noise at edge cells
                 if self.is_edge_cell(r, c)
                     && self.grid[r][c] == CellState::Off
                     && rand::random::<f64>() < EDGE_NOISE_PROBABILITY
                 {
                     self.grid[r][c] = CellState::On;
+                    self.green_grid[r][c] = NOISE_GREEN;
                 }
             }
         }
     }
 
-    /// Count On neighbours with toroidal (wrap-around) boundaries.
     fn count_on_neighbors(&self, row: usize, col: usize) -> usize {
         let mut count = 0;
         for dr in [-1i32, 0, 1] {

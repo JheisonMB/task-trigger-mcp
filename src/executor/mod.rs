@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::process::Command;
 
+use crate::application::notification_service::NotificationService;
 use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
 use crate::db::Database;
 use crate::domain::models::{BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, Watcher};
@@ -39,11 +40,15 @@ struct CliRunResult {
 /// BackgroundAgent execution engine.
 pub struct Executor {
     db: Arc<Database>,
+    notification_service: Arc<dyn NotificationService>,
 }
 
 impl Executor {
-    pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<Database>, notification_service: Arc<dyn NotificationService>) -> Self {
+        Self {
+            db,
+            notification_service,
+        }
     }
 
     /// Resolve a timed-out active run by marking it as timeout.
@@ -194,6 +199,21 @@ impl Executor {
             );
         }
 
+        {
+            if result.success {
+                self.notification_service.notify_task_completed(
+                    &background_agent.id,
+                    true,
+                    Some(result.exit_code),
+                );
+            } else {
+                self.notification_service.notify_task_failed(
+                    &background_agent.id,
+                    result.exit_code,
+                    &format!("Scheduled task failed with exit code {}", result.exit_code),
+                );
+            }
+        }
         Ok(result.exit_code)
     }
 
@@ -295,6 +315,21 @@ impl Executor {
             }
         }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
+
+        // Send notification for watcher task completion
+        if result.success {
+            self.notification_service.notify_task_completed(
+                &watcher.id,
+                true,
+                Some(result.exit_code),
+            );
+        } else {
+            self.notification_service.notify_task_failed(
+                &watcher.id,
+                result.exit_code,
+                &format!("Watcher task failed with exit code {}", result.exit_code),
+            );
+        }
 
         if let Err(e) = self.db.update_watcher_triggered(&watcher.id) {
             tracing::error!(

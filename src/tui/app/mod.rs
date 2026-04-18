@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::application::notification_service::{DefaultNotificationService, NotificationService};
 use crate::application::ports::{BackgroundAgentRepository, WatcherRepository};
 use crate::db::Database;
 use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
@@ -76,7 +77,6 @@ pub struct App {
     pub log_scroll: u16,
     pub running: bool,
     pub new_agent_dialog: Option<NewAgentDialog>,
-    pub last_esc: std::time::Instant,
     pub quit_confirm: bool,
 
     // Brian's Brain automaton
@@ -104,6 +104,8 @@ pub struct App {
     pub simple_prompt_dialog: Option<SimplePromptDialog>,
     /// Whether to send OS-level desktop notifications (agent done/failed).
     pub notifications_enabled: bool,
+    /// Notification service for sending cross-platform notifications.
+    pub notification_service: Arc<dyn NotificationService>,
     /// IDs of runs that were active on the previous refresh tick.
     prev_active_run_ids: std::collections::HashSet<String>,
     /// Tick counter for animation (increments every refresh)
@@ -128,7 +130,6 @@ impl App {
             log_scroll: 0,
             running: true,
             new_agent_dialog: None,
-            last_esc: std::time::Instant::now() - std::time::Duration::from_secs(10),
             quit_confirm: false,
             brain: None,
             sidebar_click_map: Vec::new(),
@@ -147,6 +148,7 @@ impl App {
                 .unwrap_or_else(|_| PromptTemplates::internal_templates()),
             simple_prompt_dialog: None,
             notifications_enabled: true,
+            notification_service: Arc::new(DefaultNotificationService),
             prev_active_run_ids: std::collections::HashSet::new(),
             animation_tick: 0,
         };
@@ -504,8 +506,30 @@ impl App {
                 .map(|[r, g, b]| ratatui::style::Color::Rgb(r, g, b))
                 .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
 
-            // Use resume_args if available, otherwise fall back to original args
-            let args = resume_args.or(session.args.as_deref());
+            // Use resume_args if available, otherwise fall back to original args.
+            // If the original session was launched with the yolo flag, preserve it.
+            let yolo_flag = cli_config.and_then(|c| c.yolo_flag.as_deref());
+            let had_yolo = yolo_flag
+                .map(|flag| {
+                    session
+                        .args
+                        .as_deref()
+                        .unwrap_or("")
+                        .split_whitespace()
+                        .any(|a| a == flag)
+                })
+                .unwrap_or(false);
+
+            let args_str: Option<String> = if let Some(ra) = resume_args {
+                if had_yolo {
+                    Some(format!("{} {}", ra, yolo_flag.unwrap()))
+                } else {
+                    Some(ra.to_string())
+                }
+            } else {
+                session.args.clone()
+            };
+            let args = args_str.as_deref();
 
             let existing_ids: Vec<&str> = self
                 .interactive_agents

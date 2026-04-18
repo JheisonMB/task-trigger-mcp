@@ -231,7 +231,49 @@ pub(crate) fn draw_brians_brain(
     area: Rect,
     brain: &crate::tui::brians_brain::BriansBrain,
 ) {
+    use crate::tui::brians_brain::BannerCellKind;
     let buf = frame.buffer_mut();
+
+    if !brain.active {
+        // Pre-activation: render banner overlay with glitch effects.
+        let accent_dim = Color::Rgb(80, 140, 80);
+        let glitch_color = Color::Rgb(50, 220, 50);
+        let (vx, vy) = brain.vibration;
+        for br in brain.visible_overlay() {
+            let render_row = br.row as i32 + vy as i32;
+            if render_row < 0 || render_row as u16 >= area.height {
+                continue;
+            }
+            for &(c, kind) in &br.cells {
+                let render_col = c as i32 + vx as i32;
+                if render_col < 0 || render_col as u16 >= area.width {
+                    continue;
+                }
+                let x = area.x + render_col as u16;
+                let y = area.y + render_row as u16;
+                let buf_cell = &mut buf[(x, y)];
+                match kind {
+                    BannerCellKind::Block => {
+                        buf_cell.set_symbol("█");
+                        buf_cell.set_style(Style::default().fg(ACCENT));
+                    }
+                    BannerCellKind::Shade => {
+                        buf_cell.set_symbol("░");
+                        buf_cell.set_style(Style::default().fg(accent_dim));
+                    }
+                    BannerCellKind::Glitch(ch) => {
+                        // Render as single-char string
+                        let s: String = std::iter::once(ch).collect();
+                        buf_cell.set_symbol(&s);
+                        buf_cell.set_style(Style::default().fg(glitch_color));
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Active automaton: use per-cell green from green_grid.
     for (r, row) in brain.grid.iter().enumerate() {
         if r as u16 >= area.height {
             break;
@@ -242,33 +284,18 @@ pub(crate) fn draw_brians_brain(
             }
             let x = area.x + c as u16;
             let y = area.y + r as u16;
+            let g = brain.green_grid[r][c];
             let (ch, color) = match cell {
-                CellState::On => ("█", ACCENT),
-                CellState::Dying => ("░", Color::Rgb(100, 130, 100)),
+                CellState::On => ("█", Color::Rgb(0, g, 0)),
+                CellState::Dying => {
+                    let dim_g = (g as u16 * 6 / 10) as u8;
+                    ("░", Color::Rgb(dim_g / 3, dim_g, dim_g / 3))
+                }
                 CellState::Off => (" ", Color::Reset),
             };
             let buf_cell = &mut buf[(x, y)];
             buf_cell.set_symbol(ch);
             buf_cell.set_style(Style::default().fg(color));
-        }
-    }
-    // Overlay the banner progressively during pre-activation.
-    if !brain.active {
-        let accent_dim = Color::Rgb(80, 140, 80);
-        for br in brain.visible_overlay() {
-            if br.row as u16 >= area.height {
-                continue;
-            }
-            for &(c, is_shade) in &br.cells {
-                if c as u16 >= area.width {
-                    continue;
-                }
-                let x = area.x + c as u16;
-                let y = area.y + br.row as u16;
-                let buf_cell = &mut buf[(x, y)];
-                buf_cell.set_symbol(if is_shade { "░" } else { "█" });
-                buf_cell.set_style(Style::default().fg(if is_shade { accent_dim } else { ACCENT }));
-            }
         }
     }
 }

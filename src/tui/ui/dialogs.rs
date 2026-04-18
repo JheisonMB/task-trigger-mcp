@@ -2,7 +2,7 @@
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, truncate_str};
@@ -10,6 +10,7 @@ use super::{
     ACCENT, DIM, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING, STATUS_WAIT_OFF,
     STATUS_WAIT_ON,
 };
+use crate::tui::app::dialog::SimplePromptDialog;
 use crate::tui::app::{AgentEntry, App};
 use crate::tui::context_transfer::ContextTransferStep;
 
@@ -981,6 +982,90 @@ fn generate_bottom_border(width: u16, style: Style) -> Line<'static> {
     Line::from(vec![Span::styled(border, style)])
 }
 
+/// Inline `@`-file picker — a compact dropdown below the dialog box.
+fn draw_at_picker_dropdown(
+    frame: &mut Frame,
+    dialog_area: ratatui::layout::Rect,
+    accent: Color,
+    dialog: &SimplePromptDialog,
+) {
+    let Some(picker) = &dialog.at_picker else {
+        return;
+    };
+
+    const MAX_VISIBLE: usize = 8;
+    let n = picker.entries.len().clamp(1, MAX_VISIBLE);
+    let drop_h = n as u16 + 2; // entries + top/bottom border
+
+    // Try to place the dropdown right below the dialog; flip above if no room.
+    let screen_h = frame.area().height;
+    let drop_y = if dialog_area.y + dialog_area.height + drop_h <= screen_h {
+        dialog_area.y + dialog_area.height
+    } else if dialog_area.y >= drop_h {
+        dialog_area.y - drop_h
+    } else {
+        return; // no room at all
+    };
+
+    let drop_area = ratatui::layout::Rect {
+        x: dialog_area.x,
+        y: drop_y,
+        width: dialog_area.width,
+        height: drop_h,
+    };
+    frame.render_widget(Clear, drop_area);
+
+    let title = format!(" {} ", picker.title());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().bg(Color::Rgb(10, 20, 10)));
+    let inner = block.inner(drop_area);
+    frame.render_widget(block, drop_area);
+
+    if picker.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  no matches",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let scroll = if picker.selected >= MAX_VISIBLE {
+        picker.selected - MAX_VISIBLE + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .skip(scroll)
+        .take(MAX_VISIBLE)
+        .enumerate()
+        .map(|(i, entry)| {
+            let abs_idx = i + scroll;
+            let icon = if entry.is_dir { "📁 " } else { "   " };
+            let label = format!("{}{}", icon, entry.name);
+            let style = if abs_idx == picker.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Span::styled(label, style))
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), inner);
+}
+
 pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let Some(dialog) = &app.simple_prompt_dialog else {
         return;
@@ -1069,6 +1154,8 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         Span::styled("fields  ", Style::default().fg(Color::White)),
         Span::styled("⇧↑↓←→ ", Style::default().fg(DIM)),
         Span::styled("cursor  ", Style::default().fg(Color::White)),
+        Span::styled("@ ", Style::default().fg(DIM)),
+        Span::styled("file  ", Style::default().fg(Color::White)),
         Span::styled("Ctrl+A ", Style::default().fg(DIM)),
         Span::styled("add  ", Style::default().fg(Color::White)),
         Span::styled("Ctrl+X ", Style::default().fg(DIM)),
@@ -1273,9 +1360,19 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             (text, 1u16, 0u16)
         };
 
-        let content_style = Style::default().fg(Color::White).bg(section_bg);
-        let content_paragraph = Paragraph::new(render_text)
-            .style(content_style)
+        // Apply file reference styling
+        let styled_content = dialog.get_file_reference_with_styling(&render_text, accent);
+        let mut spans = Vec::new();
+        for (text, color) in styled_content {
+            let span_style = if let Some(c) = color {
+                Style::default().fg(c).bg(section_bg)
+            } else {
+                Style::default().fg(Color::White).bg(section_bg)
+            };
+            spans.push(Span::styled(text, span_style));
+        }
+        
+        let content_paragraph = Paragraph::new(Line::from(spans))
             .wrap(ratatui::widgets::Wrap { trim: false })
             .scroll((scroll_offset, 0));
 
@@ -1297,6 +1394,11 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         };
         frame.render_widget(Paragraph::new(bottom_border), border_area);
         y_pos += 2;
+    }
+
+    // Draw @ file picker dropdown if active
+    if dialog.at_picker.is_some() {
+        draw_at_picker_dropdown(frame, area, accent, dialog);
     }
 
     // Draw picker modal if open

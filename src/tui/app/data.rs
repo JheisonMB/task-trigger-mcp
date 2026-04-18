@@ -59,10 +59,23 @@ impl App {
         if self.notifications_enabled {
             for finished_id in &prev_ids {
                 if !self.active_runs.contains_key(finished_id.as_str()) {
-                    crate::domain::notification::send_notification(
-                        "Canopy — task finished",
-                        &format!("{finished_id} completed"),
-                    );
+                    // Check if the task completed successfully by looking at the run status
+                    if let Some(run) = self.db.get_run(finished_id).ok().flatten() {
+                        let success =
+                            matches!(run.status, crate::domain::models::RunStatus::Success);
+                        self.notification_service.notify_task_completed(
+                            finished_id,
+                            success,
+                            run.exit_code,
+                        );
+                    } else {
+                        // Fallback if we can't get run details
+                        self.notification_service.notify_task_completed(
+                            finished_id,
+                            true, // Assume success if we can't determine
+                            None,
+                        );
+                    }
                 }
             }
         }

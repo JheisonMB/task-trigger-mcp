@@ -12,6 +12,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::agent::key_to_bytes;
@@ -34,8 +35,11 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             Focus::Preview if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) => {
                 Duration::from_millis(100)
             }
+            Focus::Home if app.brain.as_ref().is_some_and(|b| !b.active) => {
+                Duration::from_millis(50)
+            }
             Focus::Home if app.brain.as_ref().is_some_and(|b| b.active) => {
-                Duration::from_millis(100)
+                Duration::from_millis(110)
             }
             _ => Duration::from_secs(1),
         };
@@ -72,6 +76,24 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
     let field_width = (app.term_width as usize * 65 / 100)
         .saturating_sub(6)
         .max(20);
+
+    // Resolve workdir for @ file picker (needs agent borrow before dialog borrow).
+    let workdir: PathBuf = app
+        .selected_agent()
+        .and_then(|a| match a {
+            AgentEntry::Interactive(idx) => app
+                .interactive_agents
+                .get(*idx)
+                .map(|ia| PathBuf::from(&ia.working_dir)),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            app.data_dir
+                .parent()
+                .unwrap_or(&app.data_dir)
+                .to_path_buf()
+        });
+
     let Some(dialog) = &mut app.simple_prompt_dialog else {
         app.focus = Focus::Agent;
         return Ok(());
@@ -188,6 +210,107 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
     let is_shift = modifiers.contains(KeyModifiers::SHIFT);
     let section_name = dialog.enabled_sections[dialog.focused_section].clone();
 
+    // ── @ file-picker intercepts keys when active ─────────────────
+    if dialog.at_picker.is_some() {
+        match code {
+            KeyCode::Esc => {
+                // Close picker but keep the lone `@` in the text.
+                dialog.at_picker = None;
+            }
+            KeyCode::Up => {
+                if let Some(p) = &mut dialog.at_picker {
+                    if p.selected > 0 {
+                        p.selected -= 1;
+                    } else {
+                        p.selected = p.entries.len().saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if let Some(p) = &mut dialog.at_picker {
+                    if p.selected + 1 < p.entries.len() {
+                        p.selected += 1;
+                    } else {
+                        p.selected = 0;
+                    }
+                }
+            }
+            KeyCode::Left => {
+                if let Some(p) = &mut dialog.at_picker {
+                    p.go_up();
+                }
+            }
+            KeyCode::Right => {
+                let is_dir = dialog
+                    .at_picker
+                    .as_ref()
+                    .and_then(|p| p.entries.get(p.selected))
+                    .map(|e| e.is_dir)
+                    .unwrap_or(false);
+                if is_dir {
+                    if let Some(p) = &mut dialog.at_picker {
+                        p.enter_dir();
+                    }
+                }
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                let is_dir = dialog
+                    .at_picker
+                    .as_ref()
+                    .and_then(|p| p.entries.get(p.selected))
+                    .map(|e| e.is_dir)
+                    .unwrap_or(false);
+                if is_dir {
+                    if let Some(p) = &mut dialog.at_picker {
+                        p.enter_dir();
+                    }
+                } else {
+                    let rel =
+                        dialog.at_picker.as_ref().and_then(|p| p.relative_path_of_selected());
+                    let full = dialog.at_picker.as_ref().and_then(|p| p.full_path_of_selected());
+                    if let (Some(rel_path), Some(full_path)) = (rel, full) {
+                        let full_str = full_path.to_string_lossy().to_string();
+                        dialog.insert_at_completion(&section_name, &rel_path, &full_str, field_width);
+                    }
+                    dialog.at_picker = None;
+                }
+            }
+            KeyCode::Backspace => {
+                let query_empty = dialog
+                    .at_picker
+                    .as_ref()
+                    .map(|p| p.query.is_empty())
+                    .unwrap_or(true);
+                if query_empty {
+                    // Remove the `@` and close.
+                    dialog.at_picker = None;
+                    dialog.backspace_at_cursor(&section_name, field_width);
+                } else {
+                    if let Some(p) = &mut dialog.at_picker {
+                        p.query.pop();
+                        p.refresh();
+                    }
+                }
+            }
+            KeyCode::Char(c) if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT => {
+                let ch = if modifiers.contains(KeyModifiers::SHIFT) {
+                    c.to_uppercase().next().unwrap_or(c)
+                } else {
+                    c
+                };
+                if let Some(p) = &mut dialog.at_picker {
+                    p.query.push(ch);
+                    p.refresh();
+                }
+            }
+            _ => {}
+        }
+        // Trigger a fresh picker on `@` even while picker is active? No — just close old one.
+        // Ensure the workdir-owned AtPicker is available (no extra work needed here).
+        let _ = workdir; // consumed above if needed
+        return Ok(());
+    }
+
     match code {
         KeyCode::Esc => {
             app.close_simple_prompt_dialog();
@@ -275,7 +398,13 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
             }
         }
         KeyCode::Char(c) => {
+            // Insert first so cursor advances, then check for `@` trigger.
             dialog.insert_char_at_cursor(&section_name, c, field_width);
+            if c == '@' && dialog.at_picker.is_none() {
+                use crate::tui::app::dialog::AtPicker;
+                let trigger_pos = dialog.cursor(&section_name).saturating_sub(1);
+                dialog.at_picker = Some(AtPicker::new(workdir, trigger_pos));
+            }
         }
         KeyCode::Backspace => {
             dialog.backspace_at_cursor(&section_name, field_width);
@@ -512,14 +641,10 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Interactive agents: double-Esc → Preview
-    if code == KeyCode::Esc {
-        if app.last_esc.elapsed() < Duration::from_millis(400) {
-            app.focus = Focus::Preview;
-            app.last_esc = std::time::Instant::now() - Duration::from_secs(10);
-            return Ok(());
-        }
-        app.last_esc = std::time::Instant::now();
+    // F10 = switch to Preview mode (replaces double-Esc)
+    if code == KeyCode::F(10) {
+        app.focus = Focus::Preview;
+        return Ok(());
     }
 
     // F1 = toggle legend (intercept before PTY)

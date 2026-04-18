@@ -7,6 +7,7 @@ use crate::domain::models_db::{self, ModelCatalog, ModelEntry};
 
 use super::Focus;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// Type of background_agent to create.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -837,6 +838,131 @@ pub enum SectionPickerMode {
     },
 }
 
+/// Directories ignored when walking for `@` file completion.
+const AT_IGNORE_DIRS: &[&str] = &[
+    ".git", ".svn", "target", "node_modules", ".idea", ".vscode",
+    "build", "dist", "out", "bin", "obj", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".tox", "venv", "env", ".venv",
+];
+
+/// A single entry shown in the `@`-file picker dropdown.
+pub struct AtEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
+/// Inline `@`-file picker state for `SimplePromptDialog`.
+pub struct AtPicker {
+    /// Root workdir — used for computing relative paths.
+    pub workdir: PathBuf,
+    /// Currently browsed directory (starts at `workdir`).
+    pub current_dir: PathBuf,
+    /// Filtered + sorted entries (dirs before files).
+    pub entries: Vec<AtEntry>,
+    /// Selected index into `entries`.
+    pub selected: usize,
+    /// Text typed after `@` — used for filtering.
+    pub query: String,
+    /// Char-index of the `@` character in the section text.
+    pub trigger_pos: usize,
+}
+
+impl AtPicker {
+    pub fn new(workdir: PathBuf, trigger_pos: usize) -> Self {
+        let current_dir = workdir.clone();
+        let mut p = Self {
+            workdir,
+            current_dir,
+            entries: Vec::new(),
+            selected: 0,
+            query: String::new(),
+            trigger_pos,
+        };
+        p.refresh();
+        p
+    }
+
+    /// Rebuild `entries` from `current_dir` filtered by `query`.
+    pub fn refresh(&mut self) {
+        let q = self.query.to_lowercase();
+        let mut dirs: Vec<AtEntry> = Vec::new();
+        let mut files: Vec<AtEntry> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(&self.current_dir) {
+            for entry in rd.flatten() {
+                let path = entry.path();
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
+                if !q.is_empty() && !name.to_lowercase().contains(&q) {
+                    continue;
+                }
+                if path.is_dir() {
+                    if AT_IGNORE_DIRS.contains(&name.as_str()) {
+                        continue;
+                    }
+                    dirs.push(AtEntry { name, path, is_dir: true });
+                } else {
+                    files.push(AtEntry { name, path, is_dir: false });
+                }
+            }
+        }
+        dirs.sort_by(|a, b| a.name.cmp(&b.name));
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        dirs.extend(files);
+        self.entries = dirs;
+        self.selected = 0;
+    }
+
+    /// Navigate into the currently selected directory.
+    pub fn enter_dir(&mut self) {
+        if let Some(e) = self.entries.get(self.selected) {
+            if e.is_dir {
+                self.current_dir = e.path.clone();
+                self.query.clear();
+                self.refresh();
+            }
+        }
+    }
+
+    /// Navigate one level up (but not above `workdir`).
+    pub fn go_up(&mut self) {
+        if self.current_dir == self.workdir {
+            return;
+        }
+        if let Some(parent) = self.current_dir.parent() {
+            self.current_dir = parent.to_path_buf();
+            self.query.clear();
+            self.refresh();
+        }
+    }
+
+    /// Relative path of the selected entry from `workdir`, or `None`.
+    pub fn relative_path_of_selected(&self) -> Option<String> {
+        let e = self.entries.get(self.selected)?;
+        let rel = e.path.strip_prefix(&self.workdir).ok()?;
+        Some(rel.to_string_lossy().replace('\\', "/"))
+    }
+
+    /// Absolute/full path of the selected entry.
+    pub fn full_path_of_selected(&self) -> Option<PathBuf> {
+        self.entries.get(self.selected).map(|e| e.path.clone())
+    }
+
+    /// Display title: `@` + relative current_dir + `/` + query.
+    pub fn title(&self) -> String {
+        let rel = self
+            .current_dir
+            .strip_prefix(&self.workdir)
+            .ok()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| format!("{}/", p.to_string_lossy()))
+            .unwrap_or_default();
+        format!("@{}{}", rel, self.query)
+    }
+}
+
 /// New simplified prompt template dialog with dynamic sections
 /// Now supports multiple instances of the same section type
 pub struct SimplePromptDialog {
@@ -856,6 +982,8 @@ pub struct SimplePromptDialog {
     pub section_cursors: HashMap<String, usize>,
     /// Per-section scroll offsets (visual line)
     pub section_scrolls: HashMap<String, usize>,
+    /// Active `@`-file picker (inline dropdown), if open.
+    pub at_picker: Option<AtPicker>,
 }
 
 impl SimplePromptDialog {
@@ -875,6 +1003,7 @@ impl SimplePromptDialog {
             section_counters: counters,
             section_cursors: cursors,
             section_scrolls: scrolls,
+            at_picker: None,
         };
         dialog
             .sections
@@ -1132,6 +1261,93 @@ impl SimplePromptDialog {
         }
 
         Ok(result)
+    }
+
+    /// Replace the `@`-trigger with `@rel_path` in the section text, and add the full path
+    /// to a "resources" section (creating one if needed).
+    pub fn insert_at_completion(
+        &mut self,
+        section_id: &str,
+        rel_path: &str,
+        full_path: &str,
+        field_width: usize,
+    ) {
+        let Some(trigger_pos) = self.at_picker.as_ref().map(|p| p.trigger_pos) else {
+            return;
+        };
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        // The `@` is at trigger_pos; cursor is currently at trigger_pos + 1
+        // (we never insert query chars into the text, only into picker.query).
+        let replacement: String = format!("@{}", rel_path);
+        let new_chars: Vec<char> = chars[..trigger_pos]
+            .iter()
+            .chain(replacement.chars().collect::<Vec<_>>().iter())
+            .chain(chars[(trigger_pos + 1)..].iter())
+            .cloned()
+            .collect();
+        let new_cursor = trigger_pos + replacement.chars().count();
+        self.set_section_content(section_id, new_chars.into_iter().collect());
+        self.section_cursors.insert(section_id.to_string(), new_cursor);
+        self.update_section_scroll(section_id, field_width);
+
+        // Preserve focused section — resource insertion must not steal focus.
+        let saved_focus = self.focused_section;
+
+        // Add or append to a "resources" section with the full path.
+        let existing_resources = self.enabled_sections
+            .iter()
+            .find(|id| id.starts_with("resources"))
+            .cloned();
+        if let Some(res_id) = existing_resources {
+            let res_content = self.get_section_content(&res_id);
+            let new_res_content = if res_content.is_empty() {
+                full_path.to_string()
+            } else {
+                format!("{}\n{}", res_content, full_path)
+            };
+            self.set_section_content(&res_id, new_res_content);
+        } else {
+            // Create a new resources section with this full path
+            self.add_section_with_content("resources", full_path.to_string());
+        }
+
+        // Restore focus to the field the user was editing.
+        self.focused_section = saved_focus;
+    }
+
+    /// Colorize `@word` tokens in rendered section text with a custom accent color.
+    pub fn get_file_reference_with_styling(&self, text: &str, accent: Color) -> Vec<(String, Option<Color>)> {
+        let mut result = Vec::new();
+        let mut current_pos = 0;
+
+        while let Some(at_pos) = text[current_pos..].find('@') {
+            let absolute_pos = current_pos + at_pos;
+            if absolute_pos > current_pos {
+                result.push((text[current_pos..absolute_pos].to_string(), None));
+            }
+            let remaining = &text[absolute_pos..];
+            let ref_end = remaining
+                .find(|c: char| {
+                    c.is_whitespace() || c == ',' || c == '!' || c == '?' || c == '│'
+                })
+                .unwrap_or(remaining.len());
+            let file_ref = &remaining[..ref_end];
+            if file_ref.len() > 1
+                && file_ref[1..].chars().all(|c| {
+                    c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/'
+                })
+            {
+                result.push((file_ref.to_string(), Some(accent)));
+            } else {
+                result.push((file_ref.to_string(), None));
+            }
+            current_pos = absolute_pos + ref_end;
+        }
+        if current_pos < text.len() {
+            result.push((text[current_pos..].to_string(), None));
+        }
+        result
     }
 
     /// Count visual (wrapped) lines for a text given a field width

@@ -25,6 +25,7 @@ use clap::{Parser, Subcommand};
 use rmcp::ServiceExt;
 use std::sync::Arc;
 
+use application::notification_service::{DefaultNotificationService, NotificationService};
 use application::ports::{BackgroundAgentRepository, StateRepository, WatcherRepository};
 use daemon::TaskTriggerHandler;
 use db::Database;
@@ -135,7 +136,11 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
     let port = resolve_port(port_override);
     let data_dir = ensure_data_dir()?;
     let db = Arc::new(Database::new(&data_dir.join("background_agents.db"))?);
-    let executor = Arc::new(Executor::new(Arc::clone(&db)));
+    let notification_service: Arc<dyn NotificationService> = Arc::new(DefaultNotificationService);
+    let executor = Arc::new(Executor::new(
+        Arc::clone(&db),
+        Arc::clone(&notification_service),
+    ));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
     tracing::info!(
@@ -172,6 +177,7 @@ async fn handle_http_server(port_override: Option<u16>) -> Result<()> {
                 Arc::clone(&handler_executor),
                 Arc::clone(&handler_watcher_engine),
                 Arc::clone(&handler_scheduler_notify),
+                Arc::clone(&notification_service),
                 port,
             ))
         },
@@ -544,7 +550,11 @@ async fn handle_stdio() -> Result<()> {
 
     let data_dir = ensure_data_dir()?;
     let db = Arc::new(Database::new(&data_dir.join("background_agents.db"))?);
-    let executor = Arc::new(Executor::new(Arc::clone(&db)));
+    let notification_service: Arc<dyn NotificationService> = Arc::new(DefaultNotificationService);
+    let executor = Arc::new(Executor::new(
+        Arc::clone(&db),
+        Arc::clone(&notification_service),
+    ));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
 
     if let Err(e) = watcher_engine.reload_from_db().await {
@@ -560,6 +570,7 @@ async fn handle_stdio() -> Result<()> {
         Arc::clone(&executor),
         Arc::clone(&watcher_engine),
         scheduler_notify,
+        Arc::clone(&notification_service),
         0,
     );
 

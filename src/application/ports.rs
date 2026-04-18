@@ -77,3 +77,19 @@ pub trait StateRepository {
     fn set_state(&self, key: &str, value: &str) -> Result<()>;
     fn get_state(&self, key: &str) -> Result<Option<String>>;
 }
+
+/// Notification service for sending cross-platform desktop notifications.
+#[allow(dead_code)]
+pub trait NotificationService: Send + Sync {
+    /// Send a notification about a completed background task.
+    fn notify_task_completed(&self, task_id: &str, success: bool, exit_code: Option<i32>);
+
+    /// Send a notification about a failed background task.
+    fn notify_task_failed(&self, task_id: &str, exit_code: i32, error_msg: &str);
+
+    /// Send a notification about a completed watcher trigger.
+    fn notify_watcher_triggered(&self, watcher_id: &str, path: &str, event: &str);
+
+    /// Send a notification about an interactive agent failure.
+    fn notify_agent_failed(&self, agent_id: &str, cli: &str, exit_code: i32, output: &str);
+}

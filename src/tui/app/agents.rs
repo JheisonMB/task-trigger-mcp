@@ -203,14 +203,16 @@ impl App {
                     self.whimsg
                         .notify_event(crate::tui::whimsg::WhimContext::AgentFailed);
                     if self.notifications_enabled {
-                        let msg = if output_snippet.is_empty() {
-                            format!("{agent_id} exited with code {code}")
+                        let output = if output_snippet.is_empty() {
+                            String::new()
                         } else {
-                            format!("{agent_id} exited ({code}){output_snippet}")
+                            output_snippet.trim_start_matches('\n').to_string()
                         };
-                        crate::domain::notification::send_notification(
-                            "Canopy — agent failed",
-                            &msg,
+                        self.notification_service.notify_agent_failed(
+                            &agent_id,
+                            self.interactive_agents[idx].cli.as_str(),
+                            code,
+                            &output,
                         );
                     }
                 }

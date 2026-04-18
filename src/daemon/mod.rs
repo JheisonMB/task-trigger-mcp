@@ -18,6 +18,7 @@ use rmcp::ServerHandler;
 use serde::Deserialize;
 use tokio::sync::Notify;
 
+use crate::application::notification_service::NotificationService;
 use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
 use crate::db::Database;
 use crate::domain::models::{BackgroundAgent, Cli, WatchEvent, Watcher};
@@ -125,6 +126,7 @@ pub struct TaskTriggerHandler {
     pub executor: Arc<Executor>,
     pub watcher_engine: Arc<WatcherEngine>,
     pub scheduler_notify: Arc<Notify>,
+    pub notification_service: Arc<dyn NotificationService>,
     pub start_time: std::time::Instant,
     pub port: u16,
     #[allow(dead_code)]
@@ -138,6 +140,7 @@ impl TaskTriggerHandler {
         executor: Arc<Executor>,
         watcher_engine: Arc<WatcherEngine>,
         scheduler_notify: Arc<Notify>,
+        notification_service: Arc<dyn NotificationService>,
         port: u16,
     ) -> Self {
         Self {
@@ -145,6 +148,7 @@ impl TaskTriggerHandler {
             executor,
             watcher_engine,
             scheduler_notify,
+            notification_service,
             start_time: std::time::Instant::now(),
             port,
             tool_router: Self::tool_router(),
@@ -523,6 +527,7 @@ impl TaskTriggerHandler {
 
         if is_task {
             let background_agent = self.db.get_background_agent(&id).unwrap().unwrap();
+            let notification_service = Arc::clone(&self.notification_service);
             tokio::spawn(async move {
                 match executor
                     .execute_task(
@@ -532,27 +537,72 @@ impl TaskTriggerHandler {
                     )
                     .await
                 {
-                    Ok(code) => tracing::info!(
-                        "Manual run '{}' finished (exit {})",
-                        background_agent_id,
-                        code
-                    ),
-                    Err(e) => tracing::error!("Manual run '{}' failed: {}", background_agent_id, e),
+                    Ok(code) => {
+                        tracing::info!(
+                            "Manual run '{}' finished (exit {})",
+                            background_agent_id,
+                            code
+                        );
+                        if code == 0 {
+                            notification_service.notify_task_completed(
+                                &background_agent_id,
+                                true,
+                                Some(code),
+                            );
+                        } else {
+                            notification_service.notify_task_failed(
+                                &background_agent_id,
+                                code,
+                                "Manual run failed",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Manual run '{}' failed: {}", background_agent_id, e);
+                        notification_service.notify_task_failed(
+                            &background_agent_id,
+                            1,
+                            &e.to_string(),
+                        );
+                    }
                 }
             });
         } else {
             let watcher = self.db.get_watcher(&id).unwrap().unwrap();
+            let notification_service = self.notification_service.clone();
             tokio::spawn(async move {
                 match executor
                     .execute_watcher_task(&watcher, "manual", "manual")
                     .await
                 {
-                    Ok(code) => tracing::info!(
-                        "Manual run '{}' finished (exit {})",
-                        background_agent_id,
-                        code
-                    ),
-                    Err(e) => tracing::error!("Manual run '{}' failed: {}", background_agent_id, e),
+                    Ok(code) => {
+                        tracing::info!(
+                            "Manual run '{}' finished (exit {})",
+                            background_agent_id,
+                            code
+                        );
+                        if code == 0 {
+                            notification_service.notify_task_completed(
+                                &background_agent_id,
+                                true,
+                                Some(code),
+                            );
+                        } else {
+                            notification_service.notify_task_failed(
+                                &background_agent_id,
+                                code,
+                                "Manual watcher run failed",
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("Manual run '{}' failed: {}", background_agent_id, e);
+                        notification_service.notify_task_failed(
+                            &background_agent_id,
+                            1,
+                            &e.to_string(),
+                        );
+                    }
                 }
             });
         }
