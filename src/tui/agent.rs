@@ -239,7 +239,7 @@ fn ignore_signals() {
     }
 }
 
-/// Creative session names assigned when the user doesn't provide one.
+/// Creative session names assigned when the user doesn't provide one (interactive agents).
 const RANDOM_NAMES: &[&str] = &[
     "liquidambar",
     "wollemia",
@@ -313,20 +313,93 @@ const RANDOM_NAMES: &[&str] = &[
     "phallus",
 ];
 
-/// Pick a random name from `RANDOM_NAMES` that isn't already in use.
-/// Falls back to UUID-based ID if all names are taken.
-fn pick_random_name(existing_ids: &[&str]) -> String {
+/// Session names for background/scheduled agents (weather/nature terms).
+const BACKGROUND_NAMES: &[&str] = &[
+    "foehn",
+    "mistral",
+    "tramontana",
+    "galerna",
+    "fitoncida",
+    "espora",
+    "micela",
+    "rizoma",
+    "lignina",
+    "tanino",
+    "resina",
+    "humus",
+];
+
+/// Session names for raw terminal sessions (minerals).
+const TERMINAL_NAMES: &[&str] = &[
+    "feldspato",
+    "cuarzo",
+    "olivino",
+    "piroxeno",
+    "anfíbol",
+    "biotita",
+    "moscovita",
+    "clorita",
+    "caolinita",
+    "illita",
+    "esmectita",
+    "vermiculita",
+    "haloisita",
+    "sepiolita",
+    "palygorskita",
+    "bario",
+    "estroncio",
+    "rubidio",
+    "vanadio",
+    "cobalto",
+    "molibdeno",
+    "niquel",
+    "cesio",
+];
+
+/// Pick a name from `names` that isn't already in `existing`.
+///
+/// First tries each name bare.  On collision appends `-2`, `-3`, …
+/// Falls back to a UUID-based ID if every combination is taken.
+fn pick_name_from(names: &[&str], existing: &[&str]) -> String {
     use rand::prelude::IndexedRandom;
-    let available: Vec<&str> = RANDOM_NAMES
+
+    // First try: pick a random bare name that isn't in use
+    let available: Vec<&str> = names
         .iter()
         .copied()
-        .filter(|n| !existing_ids.iter().any(|e| e == n))
+        .filter(|n| !existing.contains(n))
         .collect();
-    if let Some(name) = available.choose(&mut rand::rng()) {
-        name.to_string()
-    } else {
-        format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8])
+    if let Some(&name) = available.choose(&mut rand::rng()) {
+        return name.to_string();
     }
+
+    // Second try: pick a random base name and try <name>-2, <name>-3, …
+    if let Some(&base) = names.choose(&mut rand::rng()) {
+        for n in 2..=999u32 {
+            let candidate = format!("{}-{}", base, n);
+            if !existing.contains(&candidate.as_str()) {
+                return candidate;
+            }
+        }
+    }
+
+    format!("session-{}", &uuid::Uuid::new_v4().to_string()[..8])
+}
+
+/// Pick a random name for interactive agents (trees + fungi).
+pub fn pick_random_name(existing: &[&str]) -> String {
+    pick_name_from(RANDOM_NAMES, existing)
+}
+
+/// Pick a name for terminal sessions (minerals).
+pub fn pick_terminal_name(existing: &[&str]) -> String {
+    pick_name_from(TERMINAL_NAMES, existing)
+}
+
+/// Pick a name for background/scheduled agents (weather/nature terms).
+#[allow(dead_code)]
+pub fn pick_background_name(existing: &[&str]) -> String {
+    pick_name_from(BACKGROUND_NAMES, existing)
 }
 
 /// An interactive agent with a virtual terminal screen.
@@ -343,6 +416,11 @@ pub struct InteractiveAgent {
     pub status: AgentStatus,
     /// Accent color for this agent's TUI elements (from `CliConfig`).
     pub accent_color: Color,
+    /// Whether this is a raw terminal session (no AI CLI).
+    #[allow(dead_code)]
+    pub is_terminal: bool,
+    /// Shell binary for terminal sessions (e.g. "zsh", "bash").
+    pub shell: String,
     /// PTY writer — send bytes to the agent's stdin.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Virtual terminal screen — fed by PTY output (for live rendering with colors).
@@ -475,6 +553,98 @@ impl InteractiveAgent {
             started_at: Utc::now(),
             status: AgentStatus::Running,
             accent_color,
+            is_terminal: false,
+            shell: String::new(),
+            writer: Arc::new(Mutex::new(writer)),
+            vt,
+            child: Arc::new(Mutex::new(child)),
+            master: Arc::new(Mutex::new(master)),
+            scroll_offset: 0,
+            last_pty_cols: cols,
+            last_pty_rows: rows,
+            prompt_history: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_PROMPT_HISTORY))),
+            input_buffer: Arc::new(Mutex::new(String::new())),
+            last_output_at,
+            last_viewed_at: Arc::new(Mutex::new(Utc::now())),
+            exit_notified: false,
+        })
+    }
+
+    /// Spawn a raw terminal session (no AI CLI model).
+    ///
+    /// Uses `shell` as the command (e.g. `"bash"`, `"zsh"`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_terminal(
+        shell: &str,
+        working_dir: &str,
+        cols: u16,
+        rows: u16,
+        name: Option<&str>,
+        existing_ids: &[&str],
+        accent_color: Color,
+    ) -> Result<Self> {
+        #[cfg(unix)]
+        ignore_signals();
+
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
+
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.cwd(working_dir);
+
+        let child = pair.slave.spawn_command(cmd)?;
+        drop(pair.slave);
+
+        let writer = pair.master.take_writer()?;
+        let mut reader = pair.master.try_clone_reader()?;
+        let master = pair.master;
+
+        let vt = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
+        let vt_clone = Arc::clone(&vt);
+
+        let last_output_at = Arc::new(Mutex::new(Utc::now()));
+        let last_output_at_clone = Arc::clone(&last_output_at);
+
+        std::thread::spawn(move || {
+            let mut tmp = [0u8; 4096];
+            loop {
+                match reader.read(&mut tmp) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut parser) = vt_clone.lock() {
+                            parser.process(&tmp[..n]);
+                        }
+                        if let Ok(mut t) = last_output_at_clone.lock() {
+                            *t = Utc::now();
+                        }
+                    }
+                }
+            }
+        });
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let session_name = if let Some(n) = name {
+            n.to_string()
+        } else {
+            pick_terminal_name(existing_ids)
+        };
+        let cli = Cli::new(shell);
+
+        Ok(Self {
+            id,
+            name: session_name,
+            cli,
+            working_dir: working_dir.to_string(),
+            started_at: Utc::now(),
+            status: AgentStatus::Running,
+            accent_color,
+            is_terminal: true,
+            shell: shell.to_string(),
             writer: Arc::new(Mutex::new(writer)),
             vt,
             child: Arc::new(Mutex::new(child)),
