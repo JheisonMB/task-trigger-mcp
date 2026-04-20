@@ -673,13 +673,15 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
             app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {
-            // For Group entries: Enter activates the split
+            // For Group entries: Enter activates the split and enters focus
             if let Some(AgentEntry::Group(idx)) = app.selected_agent() {
                 let idx = *idx;
                 if let Some(group) = app.split_groups.get(idx) {
                     let id = group.id.clone();
                     app.active_split_id = Some(id);
+                    app.split_right_focused = false;
                 }
+                app.focus = Focus::Agent;
                 return Ok(());
             }
             app.log_scroll = 0;
@@ -716,6 +718,11 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
 // ── Focus: PTY interaction or log scroll ────────────────────────────
 
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Suggestion picker intercepts keys when open (terminal autocomplete)
+    if app.suggestion_picker.is_some() {
+        return handle_suggestion_picker_key(app, code);
+    }
+
     // Split picker intercepts ALL keys when open
     if app.split_picker_open {
         match code {
@@ -752,10 +759,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Background agents: simple log-scrolling, single Esc → Preview
+    // Background agents (non-interactive, non-terminal, non-group): simple log-scrolling
     if !matches!(
         app.selected_agent(),
-        Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+        Some(AgentEntry::Interactive(_))
+            | Some(AgentEntry::Terminal(_))
+            | Some(AgentEntry::Group(_))
     ) {
         match code {
             KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Preview,
@@ -809,8 +818,9 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         }
     }
 
-    // F10 = switch to Preview mode (replaces double-Esc)
+    // F10 = switch to Preview mode
     if code == KeyCode::F(10) {
+        app.active_split_id = None;
         app.focus = Focus::Preview;
         return Ok(());
     }
@@ -993,11 +1003,285 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         }
     }
 
+    // Terminal: track input buffer + record history on Enter
+    if agent_vec == "terminal" {
+        let warp = app.terminal_agents[idx].warp_mode;
+
+        if warp {
+            return handle_terminal_warp_key(app, idx, code, modifiers);
+        }
+
+        // Non-warp terminal: track input for history but forward keystrokes normally
+        if code == KeyCode::Enter {
+            let captured = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|buf| buf.trim().to_string())
+                .unwrap_or_default();
+            record_terminal_command(app, idx, &captured);
+            if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
+                input.clear();
+            }
+        } else if code == KeyCode::Tab {
+            return open_terminal_suggestion_picker(app, idx);
+        } else if let KeyCode::Char(c) = code {
+            if !modifiers.contains(KeyModifiers::CONTROL) {
+                if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
+                    input.push(c);
+                }
+            }
+        } else if code == KeyCode::Backspace {
+            if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
+                input.pop();
+            }
+        }
+    }
+
     let bytes = key_to_bytes(code, modifiers);
     if !bytes.is_empty() {
         let _ = agent_mut!().write_to_pty(&bytes);
     }
 
+    Ok(())
+}
+
+// ── Terminal warp-mode key handling ─────────────────────────────────
+
+/// Handle keystrokes for a terminal agent in warp mode.
+/// Keys are accumulated in the input buffer and only sent to PTY on Enter.
+fn handle_terminal_warp_key(
+    app: &mut App,
+    idx: usize,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<()> {
+    let agent = &mut app.terminal_agents[idx];
+
+    match code {
+        KeyCode::Enter => {
+            let captured = agent
+                .input_buffer
+                .lock()
+                .map(|buf| buf.to_string())
+                .unwrap_or_default();
+
+            // Send entire line to PTY + newline
+            if !captured.is_empty() {
+                let mut bytes: Vec<u8> = captured.as_bytes().to_vec();
+                bytes.push(b'\n');
+                let _ = agent.write_to_pty(&bytes);
+            } else {
+                let _ = agent.write_to_pty(b"\n");
+            }
+
+            // Record in history
+            let captured_trimmed = captured.trim().to_string();
+            record_terminal_command(app, idx, &captured_trimmed);
+
+            if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
+                input.clear();
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+        }
+        KeyCode::Tab => {
+            return open_terminal_suggestion_picker(app, idx);
+        }
+        KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            let cursor = app.terminal_agents[idx].warp_cursor;
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                let pos = cursor.min(buf.len());
+                buf.insert(pos, c);
+            }
+            app.terminal_agents[idx].warp_cursor = cursor + c.len_utf8();
+        }
+        KeyCode::Backspace => {
+            let cursor = app.terminal_agents[idx].warp_cursor;
+            if cursor > 0 {
+                let new_cursor = app.terminal_agents[idx]
+                    .input_buffer
+                    .lock()
+                    .map(|mut buf| {
+                        let clamped = cursor.min(buf.len());
+                        let prev = buf[..clamped]
+                            .char_indices()
+                            .last()
+                            .map(|(i, _)| i)
+                            .unwrap_or(0);
+                        buf.remove(prev);
+                        prev
+                    })
+                    .unwrap_or(0);
+                app.terminal_agents[idx].warp_cursor = new_cursor;
+            }
+        }
+        KeyCode::Delete => {
+            let cursor = app.terminal_agents[idx].warp_cursor;
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                if cursor < buf.len() {
+                    buf.remove(cursor);
+                }
+            }
+        }
+        KeyCode::Left => {
+            let cursor = app.terminal_agents[idx].warp_cursor;
+            if cursor > 0 {
+                let new_pos = app.terminal_agents[idx]
+                    .input_buffer
+                    .lock()
+                    .map(|buf| {
+                        buf[..cursor]
+                            .char_indices()
+                            .last()
+                            .map(|(i, _)| i)
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
+                app.terminal_agents[idx].warp_cursor = new_pos;
+            }
+        }
+        KeyCode::Right => {
+            let cursor = app.terminal_agents[idx].warp_cursor;
+            let new_pos = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|buf| {
+                    if cursor < buf.len() {
+                        buf[cursor..]
+                            .char_indices()
+                            .nth(1)
+                            .map(|(i, _)| cursor + i)
+                            .unwrap_or(buf.len())
+                    } else {
+                        cursor
+                    }
+                })
+                .unwrap_or(cursor);
+            app.terminal_agents[idx].warp_cursor = new_pos;
+        }
+        KeyCode::Home => {
+            app.terminal_agents[idx].warp_cursor = 0;
+        }
+        KeyCode::End => {
+            let len = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|buf| buf.len())
+                .unwrap_or(0);
+            app.terminal_agents[idx].warp_cursor = len;
+        }
+        KeyCode::Up => {
+            // TODO: history navigation (up = previous command)
+        }
+        KeyCode::Down => {
+            // TODO: history navigation (down = next command)
+        }
+        // Ctrl+C — send SIGINT to PTY and clear input
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let _ = app.terminal_agents[idx].write_to_pty(&[0x03]); // ETX
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                buf.clear();
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+        }
+        // Ctrl+D — send EOF
+        KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let _ = app.terminal_agents[idx].write_to_pty(&[0x04]); // EOT
+        }
+        // Ctrl+L — clear screen
+        KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let _ = app.terminal_agents[idx].write_to_pty(&[0x0c]); // FF
+        }
+        // Ctrl+U — clear input before cursor
+        KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                let cursor = app.terminal_agents[idx].warp_cursor.min(buf.len());
+                buf.drain(..cursor);
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+        }
+        // Ctrl+K — clear input after cursor
+        KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                let cursor = app.terminal_agents[idx].warp_cursor.min(buf.len());
+                buf.truncate(cursor);
+            }
+        }
+        // Ctrl+A — go to start
+        KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.terminal_agents[idx].warp_cursor = 0;
+        }
+        // Ctrl+E — go to end
+        KeyCode::Char('e') if modifiers.contains(KeyModifiers::CONTROL) => {
+            let len = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|buf| buf.len())
+                .unwrap_or(0);
+            app.terminal_agents[idx].warp_cursor = len;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Record a terminal command to the session history.
+fn record_terminal_command(app: &mut App, idx: usize, captured: &str) {
+    if captured.is_empty() {
+        return;
+    }
+    // Skip "cd" commands — the directory picker handles navigation
+    let trimmed = captured.trim();
+    if trimmed == "cd" || trimmed.starts_with("cd ") || trimmed.starts_with("cd\t") {
+        return;
+    }
+    let session_name = app.terminal_agents[idx].name.clone();
+    let cwd = app.terminal_agents[idx].working_dir.clone();
+    let hist = app
+        .terminal_histories
+        .entry(session_name.clone())
+        .or_default();
+    hist.record(captured, &cwd);
+    super::terminal_history::save_history(&app.data_dir, &session_name, hist);
+}
+
+/// Open the suggestion picker for a terminal agent.
+fn open_terminal_suggestion_picker(app: &mut App, idx: usize) -> Result<()> {
+    let input_text = app.terminal_agents[idx]
+        .input_buffer
+        .lock()
+        .map(|buf| buf.to_string())
+        .unwrap_or_default();
+    let session_name = app.terminal_agents[idx].name.clone();
+    let cwd = app.terminal_agents[idx].working_dir.clone();
+
+    // Detect "cd" prefix: "cd", "cd ", "cd foo"
+    let is_cd =
+        input_text == "cd" || input_text.starts_with("cd ") || input_text.starts_with("cd\t");
+
+    if is_cd {
+        let partial = if input_text.len() > 2 {
+            input_text[3..].trim()
+        } else {
+            ""
+        };
+        // cd picker uses global history for known directories
+        let global = super::terminal_history::load_all_histories(&app.data_dir);
+        app.suggestion_picker = Some(super::terminal_history::SuggestionPicker::for_cd(
+            partial, &cwd, &global,
+        ));
+    } else {
+        // Command history uses session-only history (per-session counts)
+        let sn = session_name.clone();
+        let session_hist = app
+            .terminal_histories
+            .entry(session_name)
+            .or_insert_with(|| super::terminal_history::load_history(&app.data_dir, &sn));
+        app.suggestion_picker = Some(super::terminal_history::SuggestionPicker::from_history(
+            &input_text,
+            session_hist,
+            &cwd,
+        ));
+    }
     Ok(())
 }
 
@@ -1281,11 +1565,17 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     _ => {}
                 },
-                // Shell field (Terminal only — field 2)
+                // Shell picker (Terminal only — field 2): ←→ cycle shells
                 2 if is_terminal => match code {
-                    KeyCode::Char(c) => dialog.shell.push(c),
-                    KeyCode::Backspace => {
-                        dialog.shell.pop();
+                    KeyCode::Left | KeyCode::Right => {
+                        let count = dialog.available_shells.len();
+                        if count > 0 {
+                            dialog.shell_index = if code == KeyCode::Right {
+                                (dialog.shell_index + 1) % count
+                            } else {
+                                (dialog.shell_index + count - 1) % count
+                            };
+                        }
                     }
                     KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
                     _ => {}
@@ -1438,4 +1728,145 @@ fn resolve_session(app: &App, name: &str) -> (&'static str, usize) {
         return ("terminal", idx);
     }
     ("interactive", usize::MAX)
+}
+
+// ── Suggestion picker (terminal Tab autocomplete) ───────────────────
+
+/// Handle keys while the terminal suggestion picker is visible.
+fn handle_suggestion_picker_key(app: &mut App, code: KeyCode) -> Result<()> {
+    match code {
+        KeyCode::Down => {
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                picker.move_down();
+            }
+        }
+        KeyCode::Up => {
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                picker.move_up();
+            }
+        }
+        KeyCode::Right => {
+            let focused_name = app.focused_agent_name();
+            let base_cwd = app
+                .terminal_agents
+                .iter()
+                .find(|a| a.name == focused_name)
+                .map(|a| a.working_dir.clone())
+                .unwrap_or_default();
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                if picker.mode == super::terminal_history::PickerMode::CdDirectory {
+                    let _ = picker.navigate_into(&base_cwd);
+                }
+            }
+        }
+        KeyCode::Left => {
+            let focused_name = app.focused_agent_name();
+            let base_cwd = app
+                .terminal_agents
+                .iter()
+                .find(|a| a.name == focused_name)
+                .map(|a| a.working_dir.clone())
+                .unwrap_or_default();
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                if picker.mode == super::terminal_history::PickerMode::CdDirectory {
+                    let _ = picker.navigate_parent(&base_cwd);
+                }
+            }
+        }
+        KeyCode::Enter => {
+            // For cd mode, resolve full path from the browsed directory
+            let resolved = app.suggestion_picker.as_ref().and_then(|p| {
+                if p.mode != super::terminal_history::PickerMode::CdDirectory {
+                    return p.selected_text().map(|t| (t.to_string(), false));
+                }
+                let selected = p.selected_text()?;
+                if selected == ".." {
+                    // Parent directory — use the cd_current_dir's parent
+                    let parent = p.cd_current_dir.as_ref()?.parent()?;
+                    return Some((parent.to_string_lossy().to_string(), true));
+                }
+                let cd_dir = p.cd_current_dir.as_ref()?;
+                if let Some(stripped) = selected.strip_prefix("./") {
+                    let full = cd_dir.join(stripped);
+                    Some((full.to_string_lossy().to_string(), true))
+                } else {
+                    Some((selected.to_string(), true))
+                }
+            });
+            app.suggestion_picker = None;
+
+            if let Some((text, is_cd)) = resolved {
+                insert_suggestion_into_terminal(app, &text, is_cd);
+            }
+        }
+        KeyCode::Esc | KeyCode::Tab => {
+            app.suggestion_picker = None;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Insert the selected suggestion into the terminal's input.
+fn insert_suggestion_into_terminal(app: &mut App, text: &str, is_cd: bool) {
+    let term_idx = find_focused_terminal(app);
+    let Some(idx) = term_idx else { return };
+
+    let full_text = if is_cd {
+        format!("cd {text}")
+    } else {
+        text.to_string()
+    };
+
+    let Some(agent) = app.terminal_agents.get_mut(idx) else {
+        return;
+    };
+
+    if agent.warp_mode {
+        // Warp mode: only update the input buffer (PTY has nothing typed yet)
+        if let Ok(mut buf) = agent.input_buffer.lock() {
+            buf.clear();
+            buf.push_str(&full_text);
+        }
+        agent.warp_cursor = full_text.len();
+    } else {
+        // Non-warp: clear PTY line with Ctrl+U then type suggestion
+        let mut bytes: Vec<u8> = vec![0x15]; // Ctrl+U
+        bytes.extend(full_text.as_bytes());
+        let _ = agent.write_to_pty(&bytes);
+        if let Ok(mut buf) = agent.input_buffer.lock() {
+            buf.clear();
+            buf.push_str(&full_text);
+        }
+    }
+}
+
+/// Find the index of the terminal agent that currently has focus.
+fn find_focused_terminal(app: &App) -> Option<usize> {
+    if let Some(ref split_id) = app.active_split_id {
+        let name = app
+            .split_groups
+            .iter()
+            .find(|g| g.id == *split_id)
+            .map(|g| {
+                if app.split_right_focused {
+                    &g.session_b
+                } else {
+                    &g.session_a
+                }
+            })?;
+        app.terminal_agents.iter().position(|a| &a.name == name)
+    } else {
+        match app.selected_agent() {
+            Some(AgentEntry::Terminal(idx)) => {
+                let idx = *idx;
+                if idx < app.terminal_agents.len() {
+                    Some(idx)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
 }
