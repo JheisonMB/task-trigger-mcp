@@ -444,6 +444,11 @@ pub struct InteractiveAgent {
     last_viewed_at: Arc<Mutex<DateTime<Utc>>>,
     /// Whether the exit notification has already been sent (avoids repeats).
     pub exit_notified: bool,
+    /// Warp-like input mode: accumulate keystrokes in input_buffer, send on Enter.
+    /// Only used for terminal sessions (is_terminal == true).
+    pub warp_mode: bool,
+    /// Cursor position within the warp input buffer (byte offset).
+    pub warp_cursor: usize,
 }
 
 impl InteractiveAgent {
@@ -567,6 +572,8 @@ impl InteractiveAgent {
             last_output_at,
             last_viewed_at: Arc::new(Mutex::new(Utc::now())),
             exit_notified: false,
+            warp_mode: false,
+            warp_cursor: 0,
         })
     }
 
@@ -596,6 +603,9 @@ impl InteractiveAgent {
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(working_dir);
+        // Compact prompt since warp mode shows its own prompt line
+        cmd.env("PS1", "$ ");
+        cmd.env("PROMPT_COMMAND", "");
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -657,6 +667,8 @@ impl InteractiveAgent {
             last_output_at,
             last_viewed_at: Arc::new(Mutex::new(Utc::now())),
             exit_notified: false,
+            warp_mode: true,
+            warp_cursor: 0,
         })
     }
 
