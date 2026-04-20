@@ -1131,7 +1131,8 @@ fn handle_terminal_warp_key(
             if empty {
                 return open_terminal_suggestion_picker(app, idx);
             }
-            // Non-empty: send current input + Tab to PTY for native autocomplete
+            // Non-empty: send current input + Tab to PTY for native autocomplete.
+            // Keep the warp buffer intact — the user continues editing from where they were.
             let text = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
@@ -1139,11 +1140,6 @@ fn handle_terminal_warp_key(
                 .unwrap_or_default();
             let _ = app.terminal_agents[idx].write_to_pty(text.as_bytes());
             let _ = app.terminal_agents[idx].write_to_pty(b"\t");
-            // Clear warp buffer — PTY will handle completion
-            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
-                buf.clear();
-            }
-            app.terminal_agents[idx].warp_cursor = 0;
             return Ok(());
         }
         KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
