@@ -449,6 +449,8 @@ pub struct InteractiveAgent {
     pub warp_mode: bool,
     /// Cursor position within the warp input buffer (byte offset).
     pub warp_cursor: usize,
+    /// Index into session history for Up/Down browsing (None = not browsing).
+    pub history_index: Option<usize>,
 }
 
 impl InteractiveAgent {
@@ -574,6 +576,7 @@ impl InteractiveAgent {
             exit_notified: false,
             warp_mode: false,
             warp_cursor: 0,
+            history_index: None,
         })
     }
 
@@ -669,6 +672,7 @@ impl InteractiveAgent {
             exit_notified: false,
             warp_mode: true,
             warp_cursor: 0,
+            history_index: None,
         })
     }
 
