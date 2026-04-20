@@ -62,6 +62,9 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
                 Event::Resize(_, _) => {
                     // Resize is handled by refresh() on next tick
                 }
+                Event::Paste(text) => {
+                    handle_paste(app, &text);
+                }
                 _ => {}
             }
         }
@@ -1939,6 +1942,55 @@ fn find_focused_terminal(app: &App) -> Option<usize> {
                 }
             }
             _ => None,
+        }
+    }
+}
+
+// ── Paste handling (bracketed paste) ─────────────────────────────────
+
+/// Handle pasted text — inserts into the active input buffer without triggering sends.
+/// Newlines are replaced with spaces to prevent accidental prompt submission.
+fn handle_paste(app: &mut App, text: &str) {
+    // Replace newlines with spaces
+    let clean = text.replace('\n', " ").replace('\r', "");
+
+    match app.focus {
+        Focus::Agent => {
+            let (vec, idx) = if let Some(split_id) = &app.active_split_id {
+                let id = split_id.clone();
+                resolve_session(app, &id)
+            } else {
+                match app.selected_agent() {
+                    Some(AgentEntry::Interactive(idx)) => ("interactive", *idx),
+                    Some(AgentEntry::Terminal(idx)) => ("terminal", *idx),
+                    _ => return,
+                }
+            };
+
+            let agent = if vec == "terminal" {
+                app.terminal_agents.get_mut(idx)
+            } else {
+                app.interactive_agents.get_mut(idx)
+            };
+            if let Some(agent) = agent {
+                if agent.warp_mode {
+                    // Warp mode: insert into input buffer at cursor
+                    if let Ok(mut buf) = agent.input_buffer.lock() {
+                        let pos = agent.warp_cursor.min(buf.len());
+                        buf.insert_str(pos, &clean);
+                        agent.warp_cursor = pos + clean.len();
+                    }
+                } else {
+                    // Non-warp: send directly to PTY (with newlines preserved for PTY)
+                    let _ = agent.write_to_pty(text.as_bytes());
+                }
+            }
+        }
+        _ => {
+            // For dialogs or other contexts, simulate typing each char
+            for c in clean.chars() {
+                let _ = handle_key(app, KeyCode::Char(c), KeyModifiers::NONE);
+            }
         }
     }
 }
