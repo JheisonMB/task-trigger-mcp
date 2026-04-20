@@ -129,6 +129,10 @@ pub struct App {
     prev_active_run_ids: std::collections::HashSet<String>,
     /// Tick counter for animation (increments every refresh)
     pub animation_tick: u32,
+    /// Terminal autocomplete suggestion picker (shown on Tab).
+    pub suggestion_picker: Option<super::terminal_history::SuggestionPicker>,
+    /// Per-session terminal histories (loaded on demand, cached in memory).
+    pub terminal_histories: HashMap<String, super::terminal_history::SessionHistory>,
 }
 
 impl App {
@@ -178,6 +182,8 @@ impl App {
             notification_service: Arc::new(DefaultNotificationService),
             prev_active_run_ids: std::collections::HashSet::new(),
             animation_tick: 0,
+            suggestion_picker: None,
+            terminal_histories: HashMap::new(),
         };
         app.refresh()?;
         Ok(app)
@@ -229,6 +235,19 @@ impl App {
 
     pub fn selected_agent(&self) -> Option<&AgentEntry> {
         self.agents.get(self.selected)
+    }
+
+    pub fn focused_agent_name(&self) -> String {
+        match self.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                self.interactive_agents.get(*idx).map(|a| a.name.clone())
+            }
+            Some(AgentEntry::Terminal(idx)) => {
+                self.terminal_agents.get(*idx).map(|a| a.name.clone())
+            }
+            _ => None,
+        }
+        .unwrap_or_default()
     }
 
     pub fn selected_id(&self) -> String {
@@ -764,7 +783,7 @@ impl App {
                 rows,
                 Some(&session.name),
                 &existing_refs,
-                ratatui::style::Color::Green,
+                crate::tui::ui::ACCENT,
             ) {
                 Ok(agent) => {
                     let _ = self.db.insert_terminal_session(
@@ -773,6 +792,9 @@ impl App {
                         &session.shell,
                         &session.working_dir,
                     );
+                    // Load command history into cache
+                    let hist = super::terminal_history::load_history(&self.data_dir, &agent.name);
+                    self.terminal_histories.insert(agent.name.clone(), hist);
                     self.terminal_agents.push(agent);
                 }
                 Err(e) => {
