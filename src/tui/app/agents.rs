@@ -75,7 +75,7 @@ impl App {
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_)))
             .map(|(i, _)| i)
             .collect();
 
@@ -92,8 +92,14 @@ impl App {
         self.selected = interactive_indices[next_pos];
         self.focus = Focus::Agent;
 
-        if let AgentEntry::Interactive(idx) = &self.agents[self.selected] {
-            self.interactive_agents[*idx].mark_viewed();
+        match &self.agents[self.selected] {
+            AgentEntry::Interactive(idx) => {
+                self.interactive_agents[*idx].mark_viewed();
+            }
+            AgentEntry::Terminal(idx) => {
+                self.terminal_agents[*idx].mark_viewed();
+            }
+            _ => {}
         }
     }
 
@@ -102,7 +108,7 @@ impl App {
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
+            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_)))
             .map(|(i, _)| i)
             .collect();
 
@@ -123,8 +129,14 @@ impl App {
         self.selected = interactive_indices[prev_pos];
         self.focus = Focus::Agent;
 
-        if let AgentEntry::Interactive(idx) = &self.agents[self.selected] {
-            self.interactive_agents[*idx].mark_viewed();
+        match &self.agents[self.selected] {
+            AgentEntry::Interactive(idx) => {
+                self.interactive_agents[*idx].mark_viewed();
+            }
+            AgentEntry::Terminal(idx) => {
+                self.terminal_agents[*idx].mark_viewed();
+            }
+            _ => {}
         }
     }
 
@@ -134,10 +146,44 @@ impl App {
             return;
         }
 
+        // In split mode, only resize the two sessions participating in the split.
+        // Other sessions keep their last size to avoid unnecessary resize churn.
+        let split_sessions: Option<(String, String)> =
+            self.active_split_id.as_ref().and_then(|id| {
+                self.split_groups
+                    .iter()
+                    .find(|g| g.id == *id)
+                    .map(|g| (g.session_a.clone(), g.session_b.clone()))
+            });
+
         for agent in &mut self.interactive_agents {
+            let dominated = split_sessions
+                .as_ref()
+                .is_some_and(|(a, b)| agent.name != *a && agent.name != *b);
+            if dominated {
+                continue;
+            }
             if agent.last_pty_cols != cols || agent.last_pty_rows != rows {
                 agent.resize(cols, rows);
             }
+        }
+        for agent in &mut self.terminal_agents {
+            let dominated = split_sessions
+                .as_ref()
+                .is_some_and(|(a, b)| agent.name != *a && agent.name != *b);
+            if dominated {
+                continue;
+            }
+            if agent.last_pty_cols != cols || agent.last_pty_rows != rows {
+                agent.resize(cols, rows);
+            }
+        }
+    }
+
+    /// Poll terminal agent processes for exit status.
+    pub(super) fn poll_terminal_agents(&mut self) {
+        for agent in &mut self.terminal_agents {
+            agent.poll();
         }
     }
 
@@ -275,7 +321,7 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::Interactive(_) => Ok(()),
+            AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_) => Ok(()),
             _ => {
                 use crate::application::ports::StateRepository;
                 let port = self
@@ -316,12 +362,39 @@ impl App {
                 self.db.delete_watcher(&w.id)?;
             }
             AgentEntry::Interactive(idx) => {
-                // Mark session as completed in DB so it won't be offered for resume on restart.
-                // If already in a non-active state (error), finish_interactive_session is a no-op.
-                let agent_id = self.interactive_agents[*idx].id.clone();
+                let idx = *idx;
+                if idx >= self.interactive_agents.len() {
+                    return Ok(());
+                }
+                let agent_name = self.interactive_agents[idx].name.clone();
+                let agent_id = self.interactive_agents[idx].id.clone();
                 let _ = self.db.finish_interactive_session(&agent_id, 0);
-                self.interactive_agents[*idx].kill();
-                self.interactive_agents.remove(*idx);
+                self.interactive_agents[idx].kill();
+                self.interactive_agents.remove(idx);
+                self.dissolve_groups_for_session(&agent_name);
+            }
+            AgentEntry::Terminal(idx) => {
+                let idx = *idx;
+                if idx >= self.terminal_agents.len() {
+                    return Ok(());
+                }
+                let agent_id = self.terminal_agents[idx].id.clone();
+                let agent_name = self.terminal_agents[idx].name.clone();
+                let _ = self.db.finish_terminal_session(&agent_id);
+                self.terminal_agents[idx].kill();
+                self.terminal_agents.remove(idx);
+                self.dissolve_groups_for_session(&agent_name);
+            }
+            AgentEntry::Group(idx) => {
+                let idx = *idx;
+                if idx < self.split_groups.len() {
+                    let id = self.split_groups[idx].id.clone();
+                    let _ = self.db.delete_group(&id);
+                    self.split_groups.remove(idx);
+                    if self.active_split_id.as_deref() == Some(&id) {
+                        self.active_split_id = None;
+                    }
+                }
             }
         }
         let _ = self.refresh_agents();
@@ -332,11 +405,103 @@ impl App {
         Ok(())
     }
 
+    /// Dissolve all split groups that contain the given session name.
+    fn dissolve_groups_for_session(&mut self, session_name: &str) {
+        let ids_to_dissolve: Vec<String> = self
+            .split_groups
+            .iter()
+            .filter(|g| g.session_a == session_name || g.session_b == session_name)
+            .map(|g| g.id.clone())
+            .collect();
+
+        for id in &ids_to_dissolve {
+            let _ = self.db.delete_group(id);
+            if self.active_split_id.as_deref() == Some(id.as_str()) {
+                self.active_split_id = None;
+            }
+        }
+        self.split_groups
+            .retain(|g| !ids_to_dissolve.contains(&g.id));
+    }
+
     pub fn cleanup(&mut self) {
-        // Leave sessions marked 'active' so auto-resume picks them up on restart.
-        // Only kill the PTY processes — the CLI's own session resume will handle reconnection.
         for agent in &mut self.interactive_agents {
             agent.kill();
+        }
+        for agent in &mut self.terminal_agents {
+            agent.kill();
+        }
+    }
+
+    /// Terminate the session(s) currently in focus.
+    ///
+    /// - Single agent/terminal: kill it and remove.
+    /// - Active split group: kill both sessions and dissolve the group.
+    pub fn terminate_focused_session(&mut self) {
+        if let Some(ref split_id) = self.active_split_id.clone() {
+            // Split mode — kill both sessions in the group
+            let group = self.split_groups.iter().find(|g| g.id == *split_id);
+            let Some(group) = group else { return };
+            let names = [group.session_a.clone(), group.session_b.clone()];
+
+            for name in &names {
+                self.kill_session_by_name(name);
+            }
+
+            // Dissolve the group
+            let _ = self.db.delete_group(split_id);
+            self.split_groups.retain(|g| g.id != *split_id);
+            self.active_split_id = None;
+        } else {
+            // Single session — kill the selected agent
+            match self.selected_agent() {
+                Some(AgentEntry::Interactive(idx)) => {
+                    let idx = *idx;
+                    if idx >= self.interactive_agents.len() {
+                        return;
+                    }
+                    let agent_id = self.interactive_agents[idx].id.clone();
+                    let agent_name = self.interactive_agents[idx].name.clone();
+                    let _ = self.db.finish_interactive_session(&agent_id, 0);
+                    self.interactive_agents[idx].kill();
+                    self.interactive_agents.remove(idx);
+                    self.dissolve_groups_for_session(&agent_name);
+                }
+                Some(AgentEntry::Terminal(idx)) => {
+                    let idx = *idx;
+                    if idx >= self.terminal_agents.len() {
+                        return;
+                    }
+                    let agent_id = self.terminal_agents[idx].id.clone();
+                    let agent_name = self.terminal_agents[idx].name.clone();
+                    let _ = self.db.finish_terminal_session(&agent_id);
+                    self.terminal_agents[idx].kill();
+                    self.terminal_agents.remove(idx);
+                    self.dissolve_groups_for_session(&agent_name);
+                }
+                _ => return,
+            }
+        }
+
+        let _ = self.refresh_agents();
+        if self.selected >= self.agents.len() && !self.agents.is_empty() {
+            self.selected = self.agents.len() - 1;
+        }
+        self.focus = Focus::Preview;
+    }
+
+    /// Kill and remove a session by name (interactive or terminal).
+    fn kill_session_by_name(&mut self, name: &str) {
+        if let Some(idx) = self.interactive_agents.iter().position(|a| a.name == name) {
+            let agent_id = self.interactive_agents[idx].id.clone();
+            let _ = self.db.finish_interactive_session(&agent_id, 0);
+            self.interactive_agents[idx].kill();
+            self.interactive_agents.remove(idx);
+        } else if let Some(idx) = self.terminal_agents.iter().position(|a| a.name == name) {
+            let agent_id = self.terminal_agents[idx].id.clone();
+            let _ = self.db.finish_terminal_session(&agent_id);
+            self.terminal_agents[idx].kill();
+            self.terminal_agents.remove(idx);
         }
     }
 }
