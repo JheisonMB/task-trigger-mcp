@@ -1029,7 +1029,15 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
                 input.clear();
             }
         } else if code == KeyCode::Tab {
-            return open_terminal_suggestion_picker(app, idx);
+            let empty = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|b| b.trim().is_empty())
+                .unwrap_or(true);
+            if empty {
+                return open_terminal_suggestion_picker(app, idx);
+            }
+            // Non-empty: forward Tab to PTY for native autocomplete
         } else if let KeyCode::Char(c) = code {
             if !modifiers.contains(KeyModifiers::CONTROL) {
                 if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
@@ -1090,7 +1098,28 @@ fn handle_terminal_warp_key(
             app.terminal_agents[idx].warp_cursor = 0;
         }
         KeyCode::Tab => {
-            return open_terminal_suggestion_picker(app, idx);
+            let empty = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|b| b.trim().is_empty())
+                .unwrap_or(true);
+            if empty {
+                return open_terminal_suggestion_picker(app, idx);
+            }
+            // Non-empty: send current input + Tab to PTY for native autocomplete
+            let text = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|b| b.clone())
+                .unwrap_or_default();
+            let _ = app.terminal_agents[idx].write_to_pty(text.as_bytes());
+            let _ = app.terminal_agents[idx].write_to_pty(b"\t");
+            // Clear warp buffer — PTY will handle completion
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                buf.clear();
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+            return Ok(());
         }
         KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
             let cursor = app.terminal_agents[idx].warp_cursor;

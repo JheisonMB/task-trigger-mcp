@@ -263,6 +263,7 @@ pub struct SuggestionItem {
 
 impl SuggestionPicker {
     /// Create a new command history picker from session history.
+    #[allow(dead_code)]
     pub fn from_history(input: &str, session_history: &SessionHistory, cwd: &str) -> Self {
         let matches = session_history.filter(input);
         let items: Vec<SuggestionItem> = matches

@@ -658,6 +658,7 @@ fn is_process_running(pid: u32) -> bool {
 }
 
 /// Check if systemd is available and running (important for WSL compatibility).
+#[allow(dead_code)]
 fn is_systemd_available() -> bool {
     #[cfg(target_os = "linux")]
     {
