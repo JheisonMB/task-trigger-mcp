@@ -95,6 +95,73 @@ fn history_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("terminals")
 }
 
+fn global_catalog_path(data_dir: &Path) -> PathBuf {
+    history_dir(data_dir).join("global_catalog.toml")
+}
+
+/// Load the global command catalog.
+pub fn load_global_catalog(data_dir: &Path) -> SessionHistory {
+    let path = global_catalog_path(data_dir);
+    match fs::read_to_string(&path) {
+        Ok(content) => toml::from_str(&content).unwrap_or_default(),
+        Err(_) => SessionHistory::default(),
+    }
+}
+
+/// Record a command to the global catalog (idempotent — deduplicates by cmd).
+pub fn record_global_catalog(data_dir: &Path, cmd: &str, cwd: &str) {
+    let cmd = cmd.trim();
+    if cmd.is_empty() || cmd == "cd" || cmd.starts_with("cd ") || cmd.starts_with("cd\t") {
+        return;
+    }
+    let mut catalog = load_global_catalog(data_dir);
+    let now = chrono::Utc::now();
+    // Idempotent: match by cmd only (ignore cwd for global catalog)
+    if let Some(entry) = catalog.commands.iter_mut().find(|e| e.cmd == cmd) {
+        entry.count += 1;
+        entry.last_run = now;
+        // Update cwd to most recent
+        entry.cwd = cwd.to_string();
+    } else {
+        catalog.commands.push(CommandEntry {
+            cmd: cmd.to_string(),
+            cwd: cwd.to_string(),
+            last_run: now,
+            count: 1,
+        });
+    }
+    catalog.enforce_limit();
+    let path = global_catalog_path(data_dir);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(content) = toml::to_string_pretty(&catalog) {
+        let _ = fs::write(&path, content);
+    }
+}
+
+/// Create a suggestion picker from the global catalog.
+pub fn from_global_catalog(input: &str, data_dir: &Path, _cwd: &str) -> SuggestionPicker {
+    let catalog = load_global_catalog(data_dir);
+    let matches = catalog.filter(input);
+    let items: Vec<SuggestionItem> = matches
+        .into_iter()
+        .map(|e| SuggestionItem {
+            label: format!("{}  ×{}", e.cmd, e.count),
+            text: e.cmd.clone(),
+            count: e.count,
+        })
+        .collect();
+    SuggestionPicker {
+        input: input.to_string(),
+        mode: PickerMode::CommandHistory,
+        items,
+        selected: 0,
+        scroll_offset: 0,
+        cd_current_dir: None,
+    }
+}
+
 fn history_path(data_dir: &Path, session_name: &str) -> PathBuf {
     history_dir(data_dir)
         .join(session_name)
