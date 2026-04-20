@@ -804,7 +804,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     // Ctrl+Left/Right: switch panel focus in split view
-    if modifiers.contains(KeyModifiers::CONTROL) {
+    if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
             KeyCode::Left => {
                 app.split_right_focused = false;
@@ -837,8 +837,8 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Ctrl+Down = next interactive agent, Ctrl+Up = prev (focus mode)
-    if modifiers.contains(KeyModifiers::CONTROL) {
+    // Shift+Down = next interactive agent, Shift+Up = prev (focus mode)
+    if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
             KeyCode::Down => {
                 app.next_interactive();
@@ -1005,6 +1005,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 
     // Terminal: track input buffer + record history on Enter
     if agent_vec == "terminal" {
+        // Ctrl+W = toggle warp mode
+        if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
+            app.terminal_agents[idx].warp_mode = !app.terminal_agents[idx].warp_mode;
+            return Ok(());
+        }
+
         let warp = app.terminal_agents[idx].warp_mode;
 
         if warp {
@@ -1229,19 +1235,21 @@ fn record_terminal_command(app: &mut App, idx: usize, captured: &str) {
     if captured.is_empty() {
         return;
     }
-    // Skip "cd" commands — the directory picker handles navigation
     let trimmed = captured.trim();
     if trimmed == "cd" || trimmed.starts_with("cd ") || trimmed.starts_with("cd\t") {
         return;
     }
     let session_name = app.terminal_agents[idx].name.clone();
     let cwd = app.terminal_agents[idx].working_dir.clone();
+    // Per-session history
     let hist = app
         .terminal_histories
         .entry(session_name.clone())
         .or_default();
     hist.record(captured, &cwd);
     super::terminal_history::save_history(&app.data_dir, &session_name, hist);
+    // Global catalog (idempotent, excludes cd)
+    super::terminal_history::record_global_catalog(&app.data_dir, captured, &cwd);
 }
 
 /// Open the suggestion picker for a terminal agent.
@@ -1251,7 +1259,6 @@ fn open_terminal_suggestion_picker(app: &mut App, idx: usize) -> Result<()> {
         .lock()
         .map(|buf| buf.to_string())
         .unwrap_or_default();
-    let session_name = app.terminal_agents[idx].name.clone();
     let cwd = app.terminal_agents[idx].working_dir.clone();
 
     // Detect "cd" prefix: "cd", "cd ", "cd foo"
@@ -1271,14 +1278,10 @@ fn open_terminal_suggestion_picker(app: &mut App, idx: usize) -> Result<()> {
         ));
     } else {
         // Command history uses session-only history (per-session counts)
-        let sn = session_name.clone();
-        let session_hist = app
-            .terminal_histories
-            .entry(session_name)
-            .or_insert_with(|| super::terminal_history::load_history(&app.data_dir, &sn));
-        app.suggestion_picker = Some(super::terminal_history::SuggestionPicker::from_history(
+        // Tab: global command catalog (all terminals contribute)
+        app.suggestion_picker = Some(super::terminal_history::from_global_catalog(
             &input_text,
-            session_hist,
+            &app.data_dir,
             &cwd,
         ));
     }

@@ -46,17 +46,18 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                 let mut h = vec![
                     ("F4", "end"),
                     ("F10", "back"),
-                    ("Ctrl+↑↓", "agents"),
+                    ("Shift+↑↓", "agents"),
                     ("Ctrl+T", "context"),
                 ];
                 if matches!(app.selected_agent(), Some(AgentEntry::Terminal(_))) {
-                    h.push(("Tab", "suggest"));
+                    h.push(("Tab", "catalog"));
+                    h.push(("Ctrl+W", "warp"));
                 }
                 if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                     h.push(("Ctrl+B", "prompt"));
                 }
                 if in_split {
-                    h.push(("Ctrl+←→", "split focus"));
+                    h.push(("Shift+←→", "split focus"));
                     h.push(("Ctrl+X", "dissolve"));
                 } else {
                     h.push(("Ctrl+S", "split"));
