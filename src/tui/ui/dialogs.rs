@@ -1203,7 +1203,7 @@ fn draw_section_picker_modal(
                 );
             } else {
                 let mut y_pos = inner.y;
-                for (i, (label, _, _)) in entries.iter().enumerate() {
+                for (i, (_label, raw_name, prefix)) in entries.iter().enumerate() {
                     if y_pos >= inner.y + inner.height.saturating_sub(1) {
                         break;
                     }
@@ -1216,7 +1216,9 @@ fn draw_section_picker_modal(
                     } else {
                         Style::default().fg(Color::White)
                     };
-                    let line = Line::from(vec![Span::styled(format!("  {label} "), style)]);
+                    // Picker shows [prefix]:name for clarity (skill vs global)
+                    let display = format!("  [{prefix}]:{raw_name} ");
+                    let line = Line::from(vec![Span::styled(display, style)]);
                     frame.render_widget(
                         Paragraph::new(line),
                         ratatui::layout::Rect {

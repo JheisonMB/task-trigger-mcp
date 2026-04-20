@@ -1202,7 +1202,8 @@ impl SimplePromptDialog {
                     if crate::skills::find_skill_instructions(&path).is_none() {
                         continue;
                     }
-                    let label = format!("[{prefix}]:{raw_name}");
+                    // Label uses skill:name format (what the agent sees)
+                    let label = format!("skill:{raw_name}");
                     out.push((label, raw_name, prefix.to_string()));
                 }
             };
