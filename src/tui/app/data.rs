@@ -26,20 +26,24 @@ impl App {
         let watchers = self.db.list_watchers()?;
 
         self.agents.clear();
+        // Interactive sessions first
+        for i in 0..self.interactive_agents.len() {
+            self.agents.push(AgentEntry::Interactive(i));
+        }
+        // Then terminals
+        for i in 0..self.terminal_agents.len() {
+            self.agents.push(AgentEntry::Terminal(i));
+        }
+        // Then split groups
+        for i in 0..self.split_groups.len() {
+            self.agents.push(AgentEntry::Group(i));
+        }
+        // Background agents and watchers last
         for t in background_agents {
             self.agents.push(AgentEntry::BackgroundAgent(t));
         }
         for w in watchers {
             self.agents.push(AgentEntry::Watcher(w));
-        }
-        for i in 0..self.interactive_agents.len() {
-            self.agents.push(AgentEntry::Interactive(i));
-        }
-        for i in 0..self.terminal_agents.len() {
-            self.agents.push(AgentEntry::Terminal(i));
-        }
-        for i in 0..self.split_groups.len() {
-            self.agents.push(AgentEntry::Group(i));
         }
 
         let total = self.agents.len();
