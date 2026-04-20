@@ -105,6 +105,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         dialogs::draw_suggestion_picker(frame, app, panel_area);
     }
 
+    // Terminal search bar overlay (Ctrl+F)
+    if let Some(search) = &app.terminal_search {
+        let w = panel_area.width.min(50);
+        let x = panel_area.x + panel_area.width.saturating_sub(w + 1);
+        let y = panel_area.y;
+        let area = Rect::new(x, y, w, 1);
+        let match_info = if search.match_rows.is_empty() {
+            if search.query.is_empty() {
+                String::new()
+            } else {
+                " (no matches)".to_string()
+            }
+        } else {
+            format!(" {}/{}", search.current_match + 1, search.match_rows.len())
+        };
+        let text = format!(" 🔍 {}{} ", search.query, match_info);
+        let style = ratatui::style::Style::default()
+            .fg(Color::Black)
+            .bg(Color::Rgb(255, 235, 59));
+        frame.render_widget(ratatui::widgets::Paragraph::new(text).style(style), area);
+    }
+
     // Top-level overlays rendered last so they appear above all content
     if app.show_copied {
         let full = frame.area();

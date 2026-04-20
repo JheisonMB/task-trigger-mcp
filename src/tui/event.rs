@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::agent::key_to_bytes;
-use super::app::{AgentEntry, App, Focus};
+use super::app::{AgentEntry, App, Focus, TerminalSearch};
 use super::ui;
 
 type Terminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
@@ -515,6 +515,28 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
     {
         app.open_simple_prompt_dialog(None);
         return Ok(());
+    }
+
+    // Ctrl+F: search in scrollback (interactive or terminal agents)
+    if code == KeyCode::Char('f')
+        && modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(app.focus, Focus::Agent)
+    {
+        match app.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                app.terminal_search = Some(super::app::TerminalSearch::new_interactive(*idx));
+            }
+            Some(AgentEntry::Terminal(idx)) => {
+                app.terminal_search = Some(super::app::TerminalSearch::new(*idx));
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
+    // Handle active terminal search overlay
+    if app.terminal_search.is_some() {
+        return handle_terminal_search_key(app, code);
     }
 
     match app.focus {
@@ -1205,10 +1227,28 @@ fn handle_terminal_warp_key(
             app.terminal_agents[idx].warp_cursor = len;
         }
         KeyCode::Up => {
-            // TODO: history navigation (up = previous command)
+            // Scroll up through terminal scrollback
+            let max = app.terminal_agents[idx].max_scroll();
+            app.terminal_agents[idx].scroll_offset =
+                (app.terminal_agents[idx].scroll_offset + 3).min(max);
         }
         KeyCode::Down => {
-            // TODO: history navigation (down = next command)
+            // Scroll down (towards live view)
+            app.terminal_agents[idx].scroll_offset =
+                app.terminal_agents[idx].scroll_offset.saturating_sub(3);
+        }
+        KeyCode::PageUp => {
+            let max = app.terminal_agents[idx].max_scroll();
+            app.terminal_agents[idx].scroll_offset =
+                (app.terminal_agents[idx].scroll_offset + 15).min(max);
+        }
+        KeyCode::PageDown => {
+            app.terminal_agents[idx].scroll_offset =
+                app.terminal_agents[idx].scroll_offset.saturating_sub(15);
+        }
+        // Ctrl+F — search in scrollback
+        KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.terminal_search = Some(TerminalSearch::new(idx));
         }
         // Ctrl+C — send SIGINT to PTY and clear input
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1901,4 +1941,94 @@ fn find_focused_terminal(app: &App) -> Option<usize> {
             _ => None,
         }
     }
+}
+
+// ── Terminal scrollback search (Ctrl+F) ─────────────────────────────
+
+fn handle_terminal_search_key(app: &mut App, code: KeyCode) -> Result<()> {
+    let Some(search) = &mut app.terminal_search else {
+        return Ok(());
+    };
+
+    match code {
+        KeyCode::Esc => {
+            app.terminal_search = None;
+        }
+        KeyCode::Enter => {
+            // Jump to current match and cycle to next
+            let is_terminal = search.is_terminal;
+            let idx = search.agent_idx;
+            let agent = if is_terminal {
+                &mut app.terminal_agents[idx]
+            } else {
+                &mut app.interactive_agents[idx]
+            };
+            search.jump_to_match(agent);
+            search.next_match();
+        }
+        KeyCode::Up => {
+            if let Some(s) = &mut app.terminal_search {
+                s.prev_match();
+                let is_terminal = s.is_terminal;
+                let idx = s.agent_idx;
+                let agent = if is_terminal {
+                    &mut app.terminal_agents[idx]
+                } else {
+                    &mut app.interactive_agents[idx]
+                };
+                s.jump_to_match(agent);
+            }
+        }
+        KeyCode::Down => {
+            if let Some(s) = &mut app.terminal_search {
+                s.next_match();
+                let is_terminal = s.is_terminal;
+                let idx = s.agent_idx;
+                let agent = if is_terminal {
+                    &mut app.terminal_agents[idx]
+                } else {
+                    &mut app.interactive_agents[idx]
+                };
+                s.jump_to_match(agent);
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(s) = &mut app.terminal_search {
+                s.query.push(c);
+                let is_terminal = s.is_terminal;
+                let idx = s.agent_idx;
+                let agent = if is_terminal {
+                    &app.terminal_agents[idx]
+                } else {
+                    &app.interactive_agents[idx]
+                };
+                s.search(agent);
+                // Auto-jump to first match
+                if !s.match_rows.is_empty() {
+                    s.current_match = 0;
+                    let agent = if is_terminal {
+                        &mut app.terminal_agents[idx]
+                    } else {
+                        &mut app.interactive_agents[idx]
+                    };
+                    s.jump_to_match(agent);
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(s) = &mut app.terminal_search {
+                s.query.pop();
+                let is_terminal = s.is_terminal;
+                let idx = s.agent_idx;
+                let agent = if is_terminal {
+                    &app.terminal_agents[idx]
+                } else {
+                    &app.interactive_agents[idx]
+                };
+                s.search(agent);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

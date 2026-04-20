@@ -424,7 +424,7 @@ pub struct InteractiveAgent {
     /// PTY writer — send bytes to the agent's stdin.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     /// Virtual terminal screen — fed by PTY output (for live rendering with colors).
-    vt: Arc<Mutex<vt100::Parser>>,
+    pub(super) vt: Arc<Mutex<vt100::Parser>>,
     /// Child process handle.
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
     /// PTY master — needed for resize.
