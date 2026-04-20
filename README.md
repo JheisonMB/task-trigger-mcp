@@ -33,6 +33,7 @@ agent-canopy is a modern, self-contained MCP (Multi-Agent Control Point) server 
 - **💻 Terminal Sessions:** Raw terminal sessions with command history, autocomplete, and Warp-like input mode.
 - **🔄 Split View:** Side-by-side or stacked terminal/agent sessions with independent focus management.
 - **⏰ Task/Watcher Models:** Tasks and watchers support expiration, locking, per-run logs, and flexible triggers.
+- **🔄 Auto-Updates:** Automatically checks for and installs stable releases from GitHub (24-hour interval).
 - **🌐 Cross-Platform:** Runs on Linux, macOS, and Windows (single static binary, no external dependencies).
 
 ---
@@ -73,6 +74,8 @@ agent-canopy is a modern, self-contained MCP (Multi-Agent Control Point) server 
 3. **Monitor and manage:**
    - View logs, status, and manage agents interactively via the TUI.
    - All state is persisted in `~/.canopy/tasks.db`.
+
+**Note:** Canopy automatically checks for updates every 24 hours and installs stable releases. No manual intervention required!
 
 ---
 

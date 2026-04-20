@@ -9,6 +9,7 @@
 //! - (no args) — start in foreground with Streamable HTTP transport
 
 mod application;
+mod autoupdate;
 mod config;
 mod daemon;
 mod db;
@@ -110,6 +111,8 @@ async fn main() -> Result<()> {
                 }
                 // Background daily registry refresh
                 setup::maybe_refresh_registry();
+                // Check for updates (autoupdate)
+                let _ = autoupdate::check_and_update_if_needed();
                 tui::run_tui()
             })?;
             Ok(())
