@@ -35,6 +35,12 @@ impl App {
         for i in 0..self.interactive_agents.len() {
             self.agents.push(AgentEntry::Interactive(i));
         }
+        for i in 0..self.terminal_agents.len() {
+            self.agents.push(AgentEntry::Terminal(i));
+        }
+        for i in 0..self.split_groups.len() {
+            self.agents.push(AgentEntry::Group(i));
+        }
 
         let total = self.agents.len();
         if total > 0 && self.selected >= total {
@@ -106,6 +112,32 @@ impl App {
                 } else {
                     output
                 };
+            }
+            AgentEntry::Terminal(idx) => {
+                if *idx >= self.terminal_agents.len() {
+                    self.log_content = String::from("Terminal removed");
+                    return;
+                }
+                let output = self.terminal_agents[*idx].output();
+                self.log_content = if output.is_empty() {
+                    format!(
+                        "Terminal '{}' — waiting for output...",
+                        self.terminal_agents[*idx].name
+                    )
+                } else {
+                    output
+                };
+            }
+            AgentEntry::Group(idx) => {
+                if let Some(group) = self.split_groups.get(*idx) {
+                    self.log_content = format!(
+                        "Split Group: {}\n{} · {}\nOrientation: {}",
+                        group.id,
+                        group.session_a,
+                        group.session_b,
+                        group.orientation.as_str(),
+                    );
+                }
             }
             _ => {
                 let id = agent.id(self).to_string();
