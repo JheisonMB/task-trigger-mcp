@@ -101,6 +101,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         dialogs::draw_split_picker(frame, app);
     }
 
+    if app.suggestion_picker.is_some() {
+        dialogs::draw_suggestion_picker(frame, app, panel_area);
+    }
+
     // Top-level overlays rendered last so they appear above all content
     if app.show_copied {
         let full = frame.area();
