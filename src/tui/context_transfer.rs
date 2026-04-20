@@ -150,6 +150,29 @@ fn is_status_noise(line: &str) -> bool {
     false
 }
 
+/// Build a context payload from a terminal session's PTY scrollback.
+///
+/// Each "unit" is 50 lines of scrollback. `n_units` controls how many
+/// 50-line blocks (from the bottom) are included.
+pub fn build_terminal_context_payload(agent: &InteractiveAgent, n_units: usize) -> String {
+    let n_lines = (n_units * 50).max(50);
+    let scrollback = agent.last_lines(n_lines);
+
+    let mut out = String::new();
+    out.push_str(&format!(
+        "--- context from terminal: {} | workdir: {} ---\n",
+        agent.name, agent.working_dir
+    ));
+    if !scrollback.is_empty() {
+        out.push_str(&scrollback);
+        if !scrollback.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push_str("--- end context ---\n");
+    clean_context_output(&out)
+}
+
 fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<PromptEntry> {
     history
         .iter()
@@ -178,9 +201,11 @@ pub enum ContextTransferStep {
 /// State for the context transfer modal.
 pub struct ContextTransferModal {
     pub step: ContextTransferStep,
-    /// Index into `App::interactive_agents` for the source agent.
+    /// Index into `App::interactive_agents` (or `terminal_agents` when `source_is_terminal`).
     pub source_agent_idx: usize,
-    /// Number of recent prompts to include (adjustable in Step 1).
+    /// Whether the source is a terminal session (indexes `terminal_agents`).
+    pub source_is_terminal: bool,
+    /// Number of recent prompts / scroll-back pages to include (adjustable in Step 1).
     pub n_prompts: usize,
     /// Currently highlighted agent in the picker (index into the picker list).
     pub picker_selected: usize,
@@ -193,6 +218,18 @@ impl ContextTransferModal {
         Self {
             step: ContextTransferStep::Preview,
             source_agent_idx,
+            source_is_terminal: false,
+            n_prompts: config.default_prompt_history,
+            picker_selected: 0,
+            payload_preview: String::new(),
+        }
+    }
+
+    pub fn new_terminal(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
+        Self {
+            step: ContextTransferStep::Preview,
+            source_agent_idx,
+            source_is_terminal: true,
             n_prompts: config.default_prompt_history,
             picker_selected: 0,
             payload_preview: String::new(),
@@ -201,7 +238,11 @@ impl ContextTransferModal {
 
     /// Rebuild the payload preview from the source agent's current state.
     pub fn refresh_preview(&mut self, agent: &InteractiveAgent) {
-        self.payload_preview = build_context_payload(agent, self.n_prompts);
+        if self.source_is_terminal {
+            self.payload_preview = build_terminal_context_payload(agent, self.n_prompts);
+        } else {
+            self.payload_preview = build_context_payload(agent, self.n_prompts);
+        }
     }
 
     pub fn decrement_field(&mut self) {
