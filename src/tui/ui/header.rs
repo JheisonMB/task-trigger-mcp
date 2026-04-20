@@ -46,7 +46,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
         " ",
-        Style::default().bg(Color::Rgb(102, 187, 106)),
+        Style::default().fg(Color::Black).bg(Color::Rgb(102, 187, 106)),
     ));
 
     if wf.title_visible > 0 {
@@ -62,7 +62,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         // Single trailing green space after title, then raw separator
         spans.push(Span::styled(
             " ",
-            Style::default().bg(Color::Rgb(102, 187, 106)),
+            Style::default().fg(Color::Black).bg(Color::Rgb(102, 187, 106)),
         ));
         spans.push(Span::raw(" "));
     } else if !wf.kaomoji.is_empty() && wf.text_visible == 0 && wf.text.is_empty() {
@@ -85,7 +85,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         // Single trailing green space after kaomoji, then raw separator
         spans.push(Span::styled(
             " ",
-            Style::default().bg(Color::Rgb(102, 187, 106)),
+            Style::default().fg(Color::Black).bg(Color::Rgb(102, 187, 106)),
         ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
