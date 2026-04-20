@@ -1,5 +1,6 @@
 //! Dialog overlays — new agent, quit confirmation, color legend, context transfer.
 
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
@@ -224,14 +225,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             lines.push(Line::from(""));
         }
 
+        let selected_shell = dialog.selected_shell();
+        let shell_display = if dialog.available_shells.len() > 1 {
+            format!("◂ {} ▸", selected_shell)
+        } else {
+            selected_shell.to_string()
+        };
         lines.push(Line::from(vec![
             Span::styled("  Shell: ", Style::default().fg(DIM)),
             Span::styled(
-                if dialog.shell.is_empty() {
-                    " bash".to_string()
-                } else {
-                    format!(" {}▏", dialog.shell)
-                },
+                format!(" {} ", shell_display),
                 focus_style(term_shell_field),
             ),
         ]));
@@ -1818,4 +1821,133 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
     // Draw picker modal if open
     draw_section_picker_modal(frame, app, accent, &dialog.picker_mode);
+}
+
+// ── Suggestion picker (terminal Tab autocomplete) ───────────────
+
+pub(super) fn draw_suggestion_picker(
+    frame: &mut Frame,
+    app: &App,
+    panel_area: ratatui::layout::Rect,
+) {
+    let Some(picker) = &app.suggestion_picker else {
+        return;
+    };
+
+    // Determine the actual area to draw the picker in (respecting split view)
+    let picker_area = if let Some(ref split_id) = app.active_split_id {
+        if let Some(group) = app.split_groups.iter().find(|g| g.id == *split_id) {
+            let orientation = group.orientation;
+            let areas = match orientation {
+                crate::domain::models::SplitOrientation::Horizontal => {
+                    Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(panel_area)
+                }
+                crate::domain::models::SplitOrientation::Vertical => {
+                    Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(panel_area)
+                }
+            };
+            let [area_a, area_b]: [Rect; 2] = areas;
+            let raw = if app.split_right_focused {
+                area_b
+            } else {
+                area_a
+            };
+            // Account for the split panel border (1px each side)
+            Rect::new(
+                raw.x.saturating_add(1),
+                raw.y.saturating_add(1),
+                raw.width.saturating_sub(2),
+                raw.height.saturating_sub(2),
+            )
+        } else {
+            panel_area
+        }
+    } else {
+        panel_area
+    };
+
+    if picker.items.is_empty() {
+        // Show "no matches" indicator
+        let w = 30u16.min(picker_area.width.saturating_sub(2));
+        let area = ratatui::layout::Rect::new(
+            picker_area.x + 1,
+            picker_area.y + picker_area.height.saturating_sub(3),
+            w,
+            2,
+        );
+        frame.render_widget(Clear, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(DIM))
+            .style(Style::default().bg(Color::Rgb(15, 15, 25)));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let msg = Paragraph::new("  No matches").style(Style::default().fg(DIM));
+        frame.render_widget(msg, inner);
+        return;
+    }
+
+    let visible = picker.visible_count().min(10) as u16;
+    let w = 60u16.min(picker_area.width.saturating_sub(2));
+    let h = visible + 2; // items + border
+
+    let total = picker.items.len();
+    let title = match picker.mode {
+        crate::tui::terminal_history::PickerMode::CommandHistory => {
+            if total > picker.visible_count() {
+                format!(" History [{}/{}] ", picker.selected + 1, total)
+            } else {
+                " History ".to_string()
+            }
+        }
+        crate::tui::terminal_history::PickerMode::CdDirectory => {
+            format!(" {} ←→ ", picker.input)
+        }
+    };
+
+    // Anchor above the warp input box (3 rows from bottom)
+    let area = ratatui::layout::Rect::new(
+        picker_area.x + 1,
+        picker_area.y + picker_area.height.saturating_sub(h + 4),
+        w,
+        h,
+    );
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ACCENT))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let scroll_offset = picker.scroll_offset;
+    let items: Vec<ListItem> = picker
+        .visible_items()
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let abs_index = scroll_offset + i;
+            let selected = abs_index == picker.selected;
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(ACCENT)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if selected { "> " } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(&item.label, style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
 }
