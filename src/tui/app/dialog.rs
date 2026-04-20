@@ -1269,21 +1269,32 @@ impl SimplePromptDialog {
     pub fn build_prompt(&self) -> Result<String> {
         let mut result = String::new();
 
-        // Add all context sections (each in its own <problem_context> block)
+        // Context sections
+        let mut ctx_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("context") {
                 if let Some(content) = self.sections.get(section_id) {
-                    if !content.is_empty() {
-                        result.push_str("# [CONTEXT]: Project Background\n");
-                        result.push_str("<problem_context>\n");
-                        result.push_str(content);
-                        result.push_str("\n</problem_context>\n\n");
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        if ctx_count == 0 {
+                            result.push_str("# [CONTEXT]: Project Background\n");
+                            result.push_str("<context>\n");
+                        }
+                        ctx_count += 1;
+                        result.push_str(&format!("  <context_{}>\n", ctx_count));
+                        for line in trimmed.lines() {
+                            result.push_str(&format!("    {}\n", line));
+                        }
+                        result.push_str(&format!("  </context_{}>\n\n", ctx_count));
                     }
                 }
             }
         }
+        if ctx_count > 0 {
+            result.push_str("</context>\n\n");
+        }
 
-        // Add all instruction sections (base "instruction" + any "instruction_N")
+        // Instruction sections
         result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
         result.push_str("<instruction_set>\n");
         let mut instr_count = 0;
@@ -1294,7 +1305,9 @@ impl SimplePromptDialog {
                     if !trimmed.is_empty() {
                         instr_count += 1;
                         result.push_str(&format!("  <instruction_{}>\n", instr_count));
-                        result.push_str(&format!("    {}\n", trimmed));
+                        for line in trimmed.lines() {
+                            result.push_str(&format!("    {}\n", line));
+                        }
                         result.push_str(&format!("  </instruction_{}>\n\n", instr_count));
                     }
                 }
@@ -1302,61 +1315,57 @@ impl SimplePromptDialog {
         }
         result.push_str("</instruction_set>\n\n");
 
-        // Add all resources sections (can have multiple)
+        // Resources sections
         let mut resources_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("resources") {
                 if let Some(content) = self.sections.get(section_id) {
-                    if !content.is_empty() {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
                         if resources_count == 0 {
                             result.push_str("# [RESOURCES]: Knowledge Base & Data\n");
-                            result.push_str("<reference_materials>\n");
+                            result.push_str("<resources>\n");
                         }
-                        result.push_str("--- START DATA ---\n");
-                        result.push_str(content);
-                        result.push_str("\n--- END DATA ---\n");
                         resources_count += 1;
+                        result.push_str(&format!("  <resource_{}>\n", resources_count));
+                        for line in trimmed.lines() {
+                            result.push_str(&format!("    {}\n", line));
+                        }
+                        result.push_str(&format!("  </resource_{}>\n\n", resources_count));
                     }
                 }
             }
         }
         if resources_count > 0 {
-            result.push_str("</reference_materials>\n\n");
+            result.push_str("</resources>\n\n");
         }
 
-        // Add all examples sections (can have multiple)
+        // Examples sections
         let mut examples_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("examples") {
                 if let Some(content) = self.sections.get(section_id) {
-                    if !content.is_empty() {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
                         if examples_count == 0 {
                             result.push_str("# [EXAMPLES]: Multi-Shot Learning\n");
-                            result.push_str("<example_gallery>\n");
-                        }
-                        let lines: Vec<&str> =
-                            content.lines().filter(|s| !s.trim().is_empty()).collect();
-                        for (i, line) in lines.into_iter().enumerate() {
-                            result.push_str(&format!(
-                                "  <example_{}>\n",
-                                examples_count * 100 + i + 1
-                            ));
-                            result.push_str(&format!("    {}\n", line.trim()));
-                            result.push_str(&format!(
-                                "  </example_{}>\n\n",
-                                examples_count * 100 + i + 1
-                            ));
+                            result.push_str("<examples>\n");
                         }
                         examples_count += 1;
+                        result.push_str(&format!("  <example_{}>\n", examples_count));
+                        for line in trimmed.lines() {
+                            result.push_str(&format!("    {}\n", line));
+                        }
+                        result.push_str(&format!("  </example_{}>\n\n", examples_count));
                     }
                 }
             }
         }
         if examples_count > 0 {
-            result.push_str("</example_gallery>\n\n");
+            result.push_str("</examples>\n\n");
         }
 
-        // Add constraints sections
+        // Constraints sections
         let mut constraints_count = 0;
         for section_id in &self.enabled_sections {
             if section_id == "constraints" || section_id.starts_with("constraints_") {
@@ -1369,7 +1378,9 @@ impl SimplePromptDialog {
                         }
                         constraints_count += 1;
                         result.push_str(&format!("  <constraint_{}>\n", constraints_count));
-                        result.push_str(&format!("    {}\n", trimmed));
+                        for line in trimmed.lines() {
+                            result.push_str(&format!("    {}\n", line));
+                        }
                         result.push_str(&format!("  </constraint_{}>\n\n", constraints_count));
                     }
                 }
@@ -1379,7 +1390,7 @@ impl SimplePromptDialog {
             result.push_str("</constraints>\n\n");
         }
 
-        // Add tools sections
+        // Tools sections
         let mut tools_count = 0;
         for section_id in &self.enabled_sections {
             if section_id == "tools" || section_id.starts_with("tools_") {
@@ -1392,10 +1403,9 @@ impl SimplePromptDialog {
                                 result.push_str("<tools>\n");
                             }
                             tools_count += 1;
-                            result.push_str(&format!(
-                                "  <skill_{}>{}</skill_{}>\n\n",
-                                tools_count, trimmed, tools_count
-                            ));
+                            result.push_str(&format!("  <skill_{}>\n", tools_count));
+                            result.push_str(&format!("    {}\n", trimmed));
+                            result.push_str(&format!("  </skill_{}>\n\n", tools_count));
                         }
                     }
                 }
