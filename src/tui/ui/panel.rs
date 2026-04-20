@@ -20,7 +20,14 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         Focus::Agent | Focus::Preview => app
             .selected_agent()
             .map(|a| match a {
-                AgentEntry::Interactive(idx) => app.interactive_agents[*idx].accent_color,
+                AgentEntry::Interactive(idx) => app
+                    .interactive_agents
+                    .get(*idx)
+                    .map_or(ACCENT, |a| a.accent_color),
+                AgentEntry::Terminal(idx) => app
+                    .terminal_agents
+                    .get(*idx)
+                    .map_or(ACCENT, |a| a.accent_color),
                 _ => ACCENT,
             })
             .unwrap_or(DIM),
@@ -72,30 +79,65 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 return;
             }
             Some(AgentEntry::Interactive(idx)) => {
-                let agent = &app.interactive_agents[*idx];
-                if let Some(snap) = agent.screen_snapshot() {
-                    render_vt_screen(frame, inner, &snap);
-                    return;
+                if let Some(agent) = app.interactive_agents.get(*idx) {
+                    if let Some(snap) = agent.screen_snapshot() {
+                        render_vt_screen(frame, inner, &snap);
+                        return;
+                    }
                 }
+            }
+            Some(AgentEntry::Terminal(idx)) => {
+                if let Some(agent) = app.terminal_agents.get(*idx) {
+                    if let Some(snap) = agent.screen_snapshot() {
+                        render_vt_screen(frame, inner, &snap);
+                        return;
+                    }
+                }
+            }
+            Some(AgentEntry::Group(idx)) => {
+                draw_group_details(frame, inner, app, *idx);
+                return;
             }
             _ => {}
         },
 
-        Focus::Agent => {
-            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                let agent = &app.interactive_agents[*idx];
-                if let Some(snap) = agent.screen_snapshot() {
-                    render_vt_screen(frame, inner, &snap);
-                    if !snap.scrolled {
-                        let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
-                        let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
-                        frame.set_cursor_position((cx, cy));
+        Focus::Agent => match app.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                let idx = *idx;
+                if let Some(agent) = app.interactive_agents.get(idx) {
+                    if let Some(snap) = agent.screen_snapshot() {
+                        render_vt_screen(frame, inner, &snap);
+                        if !snap.scrolled {
+                            let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
+                            let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
+                            frame.set_cursor_position((cx, cy));
+                        }
+                        render_indicators(frame, inner, &snap, app);
+                        return;
                     }
-                    render_indicators(frame, inner, &snap, app);
-                    return;
                 }
             }
-        }
+            Some(AgentEntry::Terminal(idx)) => {
+                let idx = *idx;
+                if let Some(agent) = app.terminal_agents.get(idx) {
+                    if let Some(snap) = agent.screen_snapshot() {
+                        render_vt_screen(frame, inner, &snap);
+                        if !snap.scrolled {
+                            let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
+                            let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
+                            frame.set_cursor_position((cx, cy));
+                        }
+                        render_indicators(frame, inner, &snap, app);
+                        return;
+                    }
+                }
+            }
+            Some(AgentEntry::Group(idx)) => {
+                draw_group_details(frame, inner, app, *idx);
+                return;
+            }
+            _ => {}
+        },
 
         Focus::NewAgentDialog => {
             let prev = app.new_agent_dialog.as_ref().and_then(|d| d.prev_focus);
@@ -124,6 +166,188 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // ── Log / text content fallback ──
     draw_log_text(frame, area, inner, app);
+}
+
+// ── Split panel ─────────────────────────────────────────────────
+
+/// Render one half of a split view — finds the session by name and draws its PTY.
+pub(super) fn draw_split_panel(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    session_name: &str,
+    focused: bool,
+) {
+    // Find the agent by name (could be interactive or terminal)
+    let found = find_session_by_name(app, session_name);
+
+    let accent = match &found {
+        Some(SessionRef::Interactive(idx)) => app.interactive_agents[*idx].accent_color,
+        Some(SessionRef::Terminal(idx)) => app.terminal_agents[*idx].accent_color,
+        None => DIM,
+    };
+
+    let border_color = if focused { accent } else { DIM };
+    let border_style = Style::default().fg(border_color);
+
+    let title = if focused {
+        format!(" ● {session_name} ")
+    } else {
+        format!("   {session_name} ")
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Store dimensions for the focused panel so PTY resizes match
+    if focused {
+        app.last_panel_inner = (inner.width, inner.height);
+    }
+
+    let snap = match &found {
+        Some(SessionRef::Interactive(idx)) => app.interactive_agents[*idx].screen_snapshot(),
+        Some(SessionRef::Terminal(idx)) => app.terminal_agents[*idx].screen_snapshot(),
+        None => None,
+    };
+
+    if let Some(snap) = snap {
+        render_vt_screen(frame, inner, &snap);
+        if focused && !snap.scrolled && matches!(app.focus, Focus::Agent) {
+            let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
+            let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
+            frame.set_cursor_position((cx, cy));
+        }
+        render_indicators(frame, inner, &snap, app);
+    } else {
+        let msg = Paragraph::new(format!("  Session '{session_name}' not found"))
+            .style(Style::default().fg(DIM));
+        frame.render_widget(msg, inner);
+    }
+}
+
+enum SessionRef {
+    Interactive(usize),
+    Terminal(usize),
+}
+
+fn find_session_by_name(app: &App, name: &str) -> Option<SessionRef> {
+    if let Some(idx) = app.interactive_agents.iter().position(|a| a.name == name) {
+        return Some(SessionRef::Interactive(idx));
+    }
+    if let Some(idx) = app.terminal_agents.iter().position(|a| a.name == name) {
+        return Some(SessionRef::Terminal(idx));
+    }
+    None
+}
+
+// ── Group details panel ─────────────────────────────────────────
+
+fn draw_group_details(frame: &mut Frame, area: Rect, app: &App, group_idx: usize) {
+    let Some(group) = app.split_groups.get(group_idx) else {
+        return;
+    };
+
+    let is_active = app
+        .active_split_id
+        .as_deref()
+        .is_some_and(|id| id == group.id);
+
+    let header_color = if is_active {
+        Color::Green
+    } else {
+        Color::Rgb(150, 150, 200)
+    };
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Split Group  ",
+                Style::default()
+                    .fg(header_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            if is_active {
+                Span::styled("● active", Style::default().fg(Color::Green))
+            } else {
+                Span::styled("○ inactive", Style::default().fg(DIM))
+            },
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Session A:  ", Style::default().fg(DIM)),
+            Span::styled(
+                &group.session_a,
+                Style::default()
+                    .fg(INTERACTIVE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  Session B:  ", Style::default().fg(DIM)),
+            Span::styled(
+                &group.session_b,
+                Style::default()
+                    .fg(INTERACTIVE_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Orientation: ", Style::default().fg(DIM)),
+            Span::styled(
+                group.orientation.as_str(),
+                Style::default().fg(Color::White),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            if is_active {
+                "  Ctrl+X to dissolve  ·  Ctrl+←/→ switch panel"
+            } else {
+                "  Enter to activate split  ·  D to dissolve"
+            },
+            Style::default().fg(DIM),
+        )),
+    ];
+
+    // Show whether sessions still exist
+    let session_a_exists = app
+        .interactive_agents
+        .iter()
+        .any(|a| a.name == group.session_a)
+        || app
+            .terminal_agents
+            .iter()
+            .any(|a| a.name == group.session_a);
+    let session_b_exists = app
+        .interactive_agents
+        .iter()
+        .any(|a| a.name == group.session_b)
+        || app
+            .terminal_agents
+            .iter()
+            .any(|a| a.name == group.session_b);
+
+    if !session_a_exists || !session_b_exists {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ⚠ one or more sessions no longer exist",
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ── Indicators (SCROLLED / COPIED) ──────────────────────────────
