@@ -35,15 +35,30 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("Esc", "cancel"),
         ],
         Focus::Agent => {
-            if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
-                vec![
+            let is_pty = matches!(
+                app.selected_agent(),
+                Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+            );
+            let in_split = app.active_split_id.is_some();
+            if is_pty {
+                let mut h = vec![
+                    ("F4", "end"),
                     ("F10", "back"),
                     ("Ctrl+↑↓", "agents"),
                     ("Ctrl+T", "context"),
-                    ("Ctrl+B", "prompt"),
-                    ("Ctrl+N", "new"),
-                    ("F1", "legend"),
-                ]
+                ];
+                if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+                    h.push(("Ctrl+B", "prompt"));
+                }
+                if in_split {
+                    h.push(("Ctrl+←→", "split focus"));
+                    h.push(("Ctrl+X", "dissolve"));
+                } else {
+                    h.push(("Ctrl+S", "split"));
+                }
+                h.push(("Ctrl+N", "new"));
+                h.push(("F1", "legend"));
+                h
             } else {
                 vec![
                     ("↑↓/jk", "scroll"),
