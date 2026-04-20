@@ -29,6 +29,8 @@ pub enum AgentEntry {
     BackgroundAgent(BackgroundAgent),
     Watcher(Watcher),
     Interactive(usize), // index into App::interactive_agents
+    Terminal(usize),    // index into App::terminal_agents
+    Group(usize),       // index into App::split_groups
 }
 
 impl AgentEntry {
@@ -36,7 +38,9 @@ impl AgentEntry {
         match self {
             Self::BackgroundAgent(t) => &t.id,
             Self::Watcher(w) => &w.id,
-            Self::Interactive(idx) => &app.interactive_agents[*idx].name,
+            Self::Interactive(idx) => app.interactive_agents.get(*idx).map_or("?", |a| &a.name),
+            Self::Terminal(idx) => app.terminal_agents.get(*idx).map_or("?", |a| &a.name),
+            Self::Group(idx) => app.split_groups.get(*idx).map_or("?", |g| &g.id),
         }
     }
 }
@@ -64,6 +68,21 @@ pub struct App {
     pub active_runs: HashMap<String, RunLog>,
     pub recent_runs: Vec<RunLog>,
     pub interactive_agents: Vec<InteractiveAgent>,
+    /// Raw terminal sessions (no AI CLI).
+    pub terminal_agents: Vec<InteractiveAgent>,
+
+    // Split group state
+    pub split_groups: Vec<crate::domain::models::SplitGroup>,
+    /// ID of the split group currently being viewed (if any).
+    pub active_split_id: Option<String>,
+    /// True = right/bottom panel is focused in split view.
+    pub split_right_focused: bool,
+    /// Whether the split picker overlay is open.
+    pub split_picker_open: bool,
+    pub split_picker_idx: usize,
+    pub split_picker_orientation: crate::domain::models::SplitOrientation,
+    /// (name, type_label) for each available session in the picker.
+    pub split_picker_sessions: Vec<(String, String)>,
 
     // Daemon info
     pub daemon_running: bool,
@@ -121,6 +140,14 @@ impl App {
             active_runs: HashMap::new(),
             recent_runs: Vec::new(),
             interactive_agents: Vec::new(),
+            terminal_agents: Vec::new(),
+            split_groups: Vec::new(),
+            active_split_id: None,
+            split_right_focused: false,
+            split_picker_open: false,
+            split_picker_idx: 0,
+            split_picker_orientation: crate::domain::models::SplitOrientation::Horizontal,
+            split_picker_sessions: Vec::new(),
             daemon_running: false,
             daemon_pid: None,
             daemon_version: String::new(),
@@ -163,6 +190,7 @@ impl App {
         self.refresh_agents()?;
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
+        self.poll_terminal_agents();
         self.tick_brians_brain();
         self.refresh_log();
         self.auto_hide_sidebar();
@@ -221,6 +249,8 @@ impl App {
                 self.db.update_watcher_enabled(&w.id, !w.enabled)?;
             }
             AgentEntry::Interactive(_) => {}
+            AgentEntry::Terminal(_) => {}
+            AgentEntry::Group(_) => {}
         }
         Ok(())
     }
@@ -229,9 +259,9 @@ impl App {
         if let Ok((tw, _th)) = ratatui::crossterm::terminal::size() {
             self.term_width = tw;
             let should_hide = self.focus == Focus::Agent
-                && self
-                    .selected_agent()
-                    .is_some_and(|a| matches!(a, AgentEntry::Interactive(_)))
+                && self.selected_agent().is_some_and(|a| {
+                    matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_))
+                })
                 && tw < 80;
             let should_show = tw >= 80 && !self.sidebar_visible;
             if should_hide {
@@ -285,6 +315,13 @@ impl App {
             let raw_log = match agent {
                 AgentEntry::Interactive(idx) => {
                     if let Some(ia) = self.interactive_agents.get(*idx) {
+                        ia.last_lines(50)
+                    } else {
+                        String::new()
+                    }
+                }
+                AgentEntry::Terminal(idx) => {
+                    if let Some(ia) = self.terminal_agents.get(*idx) {
                         ia.last_lines(50)
                     } else {
                         String::new()
@@ -371,22 +408,129 @@ impl App {
         }
     }
 
-    // ── Context Transfer ────────────────────────────────────────
+    // ── Split Groups ────────────────────────────────────────────
 
-    /// Open the context transfer modal for the currently focused interactive agent.
-    pub fn open_context_transfer_modal(&mut self) {
-        let Some(AgentEntry::Interactive(idx)) = self.selected_agent() else {
-            return;
-        };
-        let idx = *idx;
-        if idx >= self.interactive_agents.len() {
+    /// Open the split picker to pair the current session with another.
+    pub fn open_split_picker(&mut self) {
+        let mut sessions: Vec<(String, String)> = Vec::new();
+        for a in &self.interactive_agents {
+            sessions.push((a.name.clone(), "Interactive".to_string()));
+        }
+        for a in &self.terminal_agents {
+            sessions.push((a.name.clone(), "Terminal".to_string()));
+        }
+        if sessions.len() < 2 {
             return;
         }
+        self.split_picker_sessions = sessions;
+        self.split_picker_idx = 0;
+        self.split_picker_orientation = crate::domain::models::SplitOrientation::Horizontal;
+        self.split_picker_open = true;
+    }
 
-        let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
-        modal.refresh_preview(&self.interactive_agents[idx]);
-        self.context_transfer_modal = Some(modal);
-        self.focus = Focus::ContextTransfer;
+    /// Create a split group from the current session and the picker selection.
+    pub fn create_split(&mut self) {
+        let current_name = match self.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => self.interactive_agents[*idx].name.clone(),
+            Some(AgentEntry::Terminal(idx)) => self.terminal_agents[*idx].name.clone(),
+            _ => return,
+        };
+        let Some((other_name, _)) = self
+            .split_picker_sessions
+            .get(self.split_picker_idx)
+            .cloned()
+        else {
+            return;
+        };
+        if current_name == other_name {
+            return;
+        }
+        let id = format!("split-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let group = crate::domain::models::SplitGroup {
+            id: id.clone(),
+            orientation: self.split_picker_orientation,
+            session_a: current_name,
+            session_b: other_name,
+            created_at: Utc::now(),
+        };
+        let _ = self.db.insert_group(
+            &group.id,
+            group.orientation.as_str(),
+            &group.session_a,
+            &group.session_b,
+        );
+        self.active_split_id = Some(id);
+        self.split_groups.push(group);
+        self.split_picker_open = false;
+        // Immediately enter split view in agent focus
+        self.split_right_focused = false;
+        self.focus = Focus::Agent;
+    }
+
+    /// Dissolve the currently active split group.
+    pub fn dissolve_split(&mut self) {
+        if let Some(id) = self.active_split_id.take() {
+            let _ = self.db.delete_group(&id);
+            self.split_groups.retain(|g| g.id != id);
+        }
+        self.split_picker_open = false;
+    }
+
+    // ── Context Transfer ────────────────────────────────────────
+
+    /// Open the context transfer modal for the currently focused interactive or terminal agent.
+    pub fn open_context_transfer_modal(&mut self) {
+        match self.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                let idx = *idx;
+                if idx >= self.interactive_agents.len() {
+                    return;
+                }
+                let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
+                modal.refresh_preview(&self.interactive_agents[idx]);
+                self.context_transfer_modal = Some(modal);
+                self.focus = Focus::ContextTransfer;
+            }
+            Some(AgentEntry::Terminal(idx)) => {
+                let idx = *idx;
+                if idx >= self.terminal_agents.len() {
+                    return;
+                }
+                let mut modal =
+                    ContextTransferModal::new_terminal(idx, &self.context_transfer_config);
+                modal.refresh_preview(&self.terminal_agents[idx]);
+                self.context_transfer_modal = Some(modal);
+                self.focus = Focus::ContextTransfer;
+            }
+            _ => {}
+        }
+    }
+
+    /// Open context transfer for the focused split panel's session.
+    pub fn open_context_transfer_for_split(&mut self) {
+        let session_name = match &self.active_split_id {
+            Some(id) => self.split_groups.iter().find(|g| g.id == *id).map(|g| {
+                if self.split_right_focused {
+                    g.session_b.clone()
+                } else {
+                    g.session_a.clone()
+                }
+            }),
+            None => return,
+        };
+        let Some(name) = session_name else { return };
+
+        if let Some(idx) = self.interactive_agents.iter().position(|a| a.name == name) {
+            let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
+            modal.refresh_preview(&self.interactive_agents[idx]);
+            self.context_transfer_modal = Some(modal);
+            self.focus = Focus::ContextTransfer;
+        } else if let Some(idx) = self.terminal_agents.iter().position(|a| a.name == name) {
+            let mut modal = ContextTransferModal::new_terminal(idx, &self.context_transfer_config);
+            modal.refresh_preview(&self.terminal_agents[idx]);
+            self.context_transfer_modal = Some(modal);
+            self.focus = Focus::ContextTransfer;
+        }
     }
 
     /// Close the modal and return focus to the agent.
@@ -416,7 +560,13 @@ impl App {
         };
 
         let src_idx = modal.source_agent_idx;
-        if src_idx >= self.interactive_agents.len() {
+        let source_is_terminal = modal.source_is_terminal;
+
+        // Validate source index
+        if source_is_terminal && src_idx >= self.terminal_agents.len() {
+            return;
+        }
+        if !source_is_terminal && src_idx >= self.interactive_agents.len() {
             return;
         }
 
@@ -432,10 +582,17 @@ impl App {
             return;
         }
 
-        let payload = super::context_transfer::build_context_payload(
-            &self.interactive_agents[src_idx],
-            modal.n_prompts,
-        );
+        let payload = if source_is_terminal {
+            super::context_transfer::build_terminal_context_payload(
+                &self.terminal_agents[src_idx],
+                modal.n_prompts,
+            )
+        } else {
+            super::context_transfer::build_context_payload(
+                &self.interactive_agents[src_idx],
+                modal.n_prompts,
+            )
+        };
 
         // Always switch tab to destination so the user sees where the context is going
         if let Some(entry_pos) = self
@@ -567,6 +724,67 @@ impl App {
         }
 
         if !self.interactive_agents.is_empty() {
+            let _ = self.refresh_agents();
+        }
+    }
+
+    /// Auto-resume previously active terminal sessions.
+    ///
+    /// Terminal sessions are simpler than interactive — no CLI resume args needed,
+    /// just re-spawn a shell in the same working directory with the same name.
+    pub fn auto_resume_terminal_sessions(&mut self) {
+        let Ok(sessions) = self.db.get_active_terminal_sessions() else {
+            return;
+        };
+
+        if sessions.is_empty() {
+            tracing::info!("No active terminal sessions to resume");
+            return;
+        }
+
+        tracing::info!("Resuming {} terminal session(s)", sessions.len());
+        let _ = self.db.mark_orphaned_terminal_sessions();
+
+        let (cols, rows) = {
+            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+            (tw.saturating_sub(28), th.saturating_sub(4))
+        };
+
+        for session in &sessions {
+            let existing_refs: Vec<&str> = self
+                .terminal_agents
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect();
+
+            match super::agent::InteractiveAgent::spawn_terminal(
+                &session.shell,
+                &session.working_dir,
+                cols,
+                rows,
+                Some(&session.name),
+                &existing_refs,
+                ratatui::style::Color::Green,
+            ) {
+                Ok(agent) => {
+                    let _ = self.db.insert_terminal_session(
+                        &agent.id,
+                        &agent.name,
+                        &session.shell,
+                        &session.working_dir,
+                    );
+                    self.terminal_agents.push(agent);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to auto-resume terminal session '{}': {e}",
+                        session.name
+                    );
+                }
+            }
+        }
+
+        if !self.terminal_agents.is_empty() {
             let _ = self.refresh_agents();
         }
     }
