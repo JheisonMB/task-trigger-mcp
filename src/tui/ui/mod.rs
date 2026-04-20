@@ -36,16 +36,45 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
 
-    if app.sidebar_visible {
+    let panel_area = if app.sidebar_visible {
         let [sidebar, panel] =
             Layout::horizontal([Constraint::Length(29), Constraint::Min(0)]).areas(body);
         header::draw_header(frame, header_area, app);
         sidebar::draw_sidebar(frame, sidebar, app);
-        panel::draw_log_panel(frame, panel, app);
+        panel
     } else {
         header::draw_header(frame, header_area, app);
-        panel::draw_log_panel(frame, body, app);
+        body
+    };
+
+    // Split view: render two panels side-by-side (or stacked) when a split is active
+    if let Some(ref split_id) = app.active_split_id.clone() {
+        if let Some(group) = app.split_groups.iter().find(|g| g.id == *split_id) {
+            let session_a = group.session_a.clone();
+            let session_b = group.session_b.clone();
+            let orientation = group.orientation;
+            let areas = match orientation {
+                crate::domain::models::SplitOrientation::Horizontal => {
+                    Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(panel_area)
+                }
+                crate::domain::models::SplitOrientation::Vertical => {
+                    Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .areas(panel_area)
+                }
+            };
+            let [area_a, area_b]: [Rect; 2] = areas;
+            panel::draw_split_panel(frame, area_a, app, &session_a, !app.split_right_focused);
+            panel::draw_split_panel(frame, area_b, app, &session_b, app.split_right_focused);
+        } else {
+            // Group no longer exists — clear stale reference
+            app.active_split_id = None;
+            panel::draw_log_panel(frame, panel_area, app);
+        }
+    } else {
+        panel::draw_log_panel(frame, panel_area, app);
     }
+
     footer::draw_footer(frame, footer_area, app);
 
     if app.new_agent_dialog.is_some() {
@@ -66,6 +95,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.simple_prompt_dialog.is_some() {
         dialogs::draw_simple_prompt_dialog(frame, app);
+    }
+
+    if app.split_picker_open {
+        dialogs::draw_split_picker(frame, app);
     }
 
     // Top-level overlays rendered last so they appear above all content
