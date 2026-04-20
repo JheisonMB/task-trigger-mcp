@@ -55,6 +55,8 @@ pub fn run_tui() -> Result<()> {
 
     // Auto-resume previously active interactive sessions
     app.auto_resume_sessions();
+    // Auto-resume previously active terminal sessions
+    app.auto_resume_terminal_sessions();
 
     // Setup terminal
     enable_raw_mode()?;
