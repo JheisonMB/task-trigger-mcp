@@ -37,7 +37,9 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Agent => {
             let is_pty = matches!(
                 app.selected_agent(),
-                Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+                Some(AgentEntry::Interactive(_))
+                    | Some(AgentEntry::Terminal(_))
+                    | Some(AgentEntry::Group(_))
             );
             let in_split = app.active_split_id.is_some();
             if is_pty {
@@ -47,6 +49,9 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                     ("Ctrl+↑↓", "agents"),
                     ("Ctrl+T", "context"),
                 ];
+                if matches!(app.selected_agent(), Some(AgentEntry::Terminal(_))) {
+                    h.push(("Tab", "suggest"));
+                }
                 if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                     h.push(("Ctrl+B", "prompt"));
                 }
@@ -98,24 +103,61 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         spans.push(Span::styled(*desc, Style::default().fg(DIM)));
     }
 
+    // Show split session names when in split view
+    let split_label = if let Some(ref split_id) = app.active_split_id {
+        app.split_groups
+            .iter()
+            .find(|g| g.id == *split_id)
+            .map(|g| {
+                let left_marker = if app.split_right_focused { " " } else { "●" };
+                let right_marker = if app.split_right_focused { "●" } else { " " };
+                format!(
+                    " {left_marker} {} │ {} {right_marker} ",
+                    g.session_a, g.session_b
+                )
+            })
+    } else {
+        None
+    };
+
     let version = if app.daemon_version.is_empty() {
         String::new()
     } else {
         format!(" v{} ", app.daemon_version)
     };
-    let version_w = version.len() as u16;
 
     let hints_line = Line::from(spans);
     let hints_p = Paragraph::new(hints_line);
     frame.render_widget(hints_p, area);
 
-    if version_w > 0 && area.width > version_w {
-        let ver_area = Rect::new(area.x + area.width - version_w, area.y, version_w, 1);
-        let version_span = Span::styled(
-            &version,
-            Style::default().fg(DIM).add_modifier(Modifier::BOLD),
-        );
-        let ver_p = Paragraph::new(Line::from(version_span));
-        frame.render_widget(ver_p, ver_area);
+    // Render split label + version on the right side
+    let right_text = match (&split_label, version.is_empty()) {
+        (Some(sl), false) => format!("{sl}{version}"),
+        (Some(sl), true) => sl.clone(),
+        (None, false) => version.clone(),
+        (None, true) => String::new(),
+    };
+    let right_w = right_text.len() as u16;
+
+    if right_w > 0 && area.width > right_w {
+        let right_area = Rect::new(area.x + area.width - right_w, area.y, right_w, 1);
+
+        let mut right_spans = Vec::new();
+        if let Some(ref sl) = split_label {
+            right_spans.push(Span::styled(
+                sl.as_str(),
+                Style::default()
+                    .fg(super::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if !version.is_empty() {
+            right_spans.push(Span::styled(
+                &version,
+                Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+            ));
+        }
+        let right_p = Paragraph::new(Line::from(right_spans));
+        frame.render_widget(right_p, right_area);
     }
 }
