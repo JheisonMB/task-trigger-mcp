@@ -424,7 +424,7 @@ fn draw_groups_list(frame: &mut Frame, area: Rect, app: &mut App) {
             Color::Reset
         };
         let fg = if is_selected {
-            Color::White
+            ACCENT // Use green (ACCENT) for selected group, like terminals
         } else if is_active {
             Color::Green
         } else {
