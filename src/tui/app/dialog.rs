@@ -15,6 +15,7 @@ pub enum NewTaskType {
     Interactive,
     Scheduled,
     Watcher,
+    Terminal,
 }
 
 /// Launch mode for interactive agents.
@@ -32,8 +33,6 @@ pub struct NewAgentDialog {
     pub edit_id: Option<String>,
     pub task_type: NewTaskType,
     pub task_mode: NewTaskMode,
-    /// Optional user-provided name for interactive agents.
-    pub agent_name: String,
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
     pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
@@ -43,7 +42,9 @@ pub struct NewAgentDialog {
     pub cron_expr: String,
     pub watch_path: String,
     pub watch_events: Vec<String>,
-    /// Which field is focused: 0=type, 1=mode (interactive), 2=CLI, 3=dir, 4=model, 5=prompt, 6=cron/watch
+    /// Shell for terminal sessions (e.g. "zsh", "bash").
+    pub shell: String,
+    /// Which field is focused: 0=type, 1=mode (interactive), 2=CLI, 3=model, 4=dir, 5=yolo
     pub field: usize,
     pub dir_entries: Vec<String>,
     pub dir_selected: usize,
@@ -77,7 +78,6 @@ impl NewAgentDialog {
             edit_id: None,
             task_type: NewTaskType::Interactive,
             task_mode: NewTaskMode::Interactive,
-            agent_name: String::new(),
             cli_index: 0,
             available_clis: if available.is_empty() {
                 vec![Cli::new("opencode"), Cli::new("kiro"), Cli::new("qwen")]
@@ -95,6 +95,7 @@ impl NewAgentDialog {
             cron_expr: "0 9 * * *".to_string(),
             watch_path: cwd.clone(),
             watch_events: vec!["create".to_string(), "modify".to_string()],
+            shell: std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string()),
             field: 1,
             dir_entries: Vec::new(),
             dir_selected: 0,
@@ -471,7 +472,7 @@ impl App {
                 }
                 dialog.field = 2;
             }
-            AgentEntry::Interactive(_) => return, // editing interactive agents not supported
+            AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_) => return, // editing not supported
         }
 
         dialog.refresh_model_suggestions();
@@ -550,7 +551,10 @@ impl App {
             Some(dialog.model.clone())
         };
 
-        let was_interactive = matches!(dialog.task_type, NewTaskType::Interactive);
+        let was_interactive = matches!(
+            dialog.task_type,
+            NewTaskType::Interactive | NewTaskType::Terminal
+        );
         let prev_focus = dialog.prev_focus;
 
         if let Some(ref edit_id) = dialog.edit_id {
@@ -563,7 +567,7 @@ impl App {
                 NewTaskType::Watcher => {
                     self.update_watcher_edit(&dialog, model_ref, edit_id)?;
                 }
-                NewTaskType::Interactive => {}
+                NewTaskType::Interactive | NewTaskType::Terminal => {}
             }
             self.new_agent_dialog = None;
             self.refresh_agents()?;
@@ -581,6 +585,9 @@ impl App {
             }
             NewTaskType::Watcher => {
                 self.launch_watcher(&dialog, model)?;
+            }
+            NewTaskType::Terminal => {
+                self.launch_terminal(&dialog)?;
             }
         }
 
@@ -671,11 +678,6 @@ impl App {
         };
         let fallback = dialog.selected_fallback_args();
         let accent = dialog.selected_accent_color();
-        let name = if dialog.agent_name.trim().is_empty() {
-            None
-        } else {
-            Some(dialog.agent_name.trim().to_string())
-        };
         let model = if dialog.model.is_empty() {
             None
         } else {
@@ -707,7 +709,7 @@ impl App {
             args.as_deref(),
             fallback.as_deref(),
             accent,
-            name.as_deref(),
+            None,
             &existing_refs,
             model.as_deref(),
             model_flag.as_deref(),
@@ -796,6 +798,44 @@ impl App {
         self.db.insert_or_update_watcher(&watcher)?;
         Ok(())
     }
+
+    pub(super) fn launch_terminal(&mut self, dialog: &NewAgentDialog) -> Result<()> {
+        use super::super::agent::InteractiveAgent;
+
+        let shell = if dialog.shell.trim().is_empty() {
+            "bash"
+        } else {
+            dialog.shell.trim()
+        };
+        let dir = dialog.working_dir.clone();
+        let (cols, rows) = if self.last_panel_inner != (0, 0) {
+            self.last_panel_inner
+        } else {
+            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+            (tw.saturating_sub(28), th.saturating_sub(4))
+        };
+        let existing_refs: Vec<&str> = self
+            .terminal_agents
+            .iter()
+            .map(|a| a.name.as_str())
+            .collect();
+        let agent = InteractiveAgent::spawn_terminal(
+            shell,
+            &dir,
+            cols,
+            rows,
+            None,
+            &existing_refs,
+            ratatui::style::Color::Green,
+        )?;
+        let _ = self
+            .db
+            .insert_terminal_session(&agent.id, &agent.name, shell, &dir);
+        self.terminal_agents.push(agent);
+        self.whimsg
+            .notify_event(crate::tui::whimsg::WhimContext::AgentSpawned);
+        Ok(())
+    }
 }
 
 /// Parse the output of a CLI session list command into (id, label) pairs.
@@ -835,6 +875,14 @@ pub enum SectionPickerMode {
     },
     AddCustom {
         input: String,
+    },
+    /// Skills picker for the Tools section — entries are `(label, raw_name, prefix)`
+    SkillsPicker {
+        selected: usize,
+        /// `(display_label, raw_name, prefix)` — `prefix` is "skill" or "global"
+        entries: Vec<(String, String, String)>,
+        /// `None` → create a new tools section on confirm; `Some(id)` → replace content of that section
+        replace_id: Option<String>,
     },
 }
 
@@ -899,10 +947,14 @@ impl AtPicker {
     }
 
     /// Rebuild `entries` from `current_dir` filtered by `query`.
+    ///
+    /// Results are ordered: directories first, then files — all filtered by `query`.
     pub fn refresh(&mut self) {
         let q = self.query.to_lowercase();
         let mut dirs: Vec<AtEntry> = Vec::new();
         let mut files: Vec<AtEntry> = Vec::new();
+
+        // ── Regular filesystem entries ─────────────────────────────────────
         if let Ok(rd) = std::fs::read_dir(&self.current_dir) {
             for entry in rd.flatten() {
                 let path = entry.path();
@@ -974,6 +1026,7 @@ impl AtPicker {
         self.entries.get(self.selected).map(|e| e.path.clone())
     }
 
+    /// If the selected entry is a skill, return its instructions file path.
     /// Display title: `@` + current dir (relative inside workdir, absolute outside) + `/` + query.
     pub fn title(&self) -> String {
         let dir_label = if let Ok(rel) = self.current_dir.strip_prefix(&self.workdir) {
@@ -989,6 +1042,8 @@ impl AtPicker {
     }
 }
 
+/// Populate `out` with skill `AtEntry` items from `skills_dir`, filtered by `q`.
+///
 /// New simplified prompt template dialog with dynamic sections
 /// Now supports multiple instances of the same section type
 pub struct SimplePromptDialog {
@@ -1104,8 +1159,58 @@ impl SimplePromptDialog {
             ("resources", "Resources"),
             ("examples", "Examples"),
             ("constraints", "Constraints"),
-            ("output_format", "Output Format"),
+            ("tools", "Tools"),
         ]
+    }
+
+    /// Return true if this section ID represents the read-only "tools" section.
+    pub fn is_tools_section(section_id: &str) -> bool {
+        section_id == "tools" || section_id.starts_with("tools_")
+    }
+
+    /// Collect all available skills for the skills picker.
+    /// Returns `Vec<(display_label, raw_name, prefix)>`.
+    pub fn collect_skills_for_picker(workdir: &std::path::Path) -> Vec<(String, String, String)> {
+        let mut entries: Vec<(String, String, String)> = Vec::new();
+        let add_from =
+            |dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String, String)>| {
+                let Ok(rd) = std::fs::read_dir(dir) else {
+                    return;
+                };
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let Some(raw_name) = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(|s| s.to_string())
+                    else {
+                        continue;
+                    };
+                    if crate::skills::find_skill_instructions(&path).is_none() {
+                        continue;
+                    }
+                    let label = format!("[{prefix}]:{raw_name}");
+                    out.push((label, raw_name, prefix.to_string()));
+                }
+            };
+        let project = workdir.join(".agents").join("skills");
+        add_from(&project, "skill", &mut entries);
+        if let Some(global) = dirs::home_dir().map(|h| h.join(".agents").join("skills")) {
+            if global != project {
+                add_from(&global, "global", &mut entries);
+            }
+        }
+        entries
+    }
+
+    /// Set the content of a specific tools section to a single skill label.
+    /// Used by the SkillsPicker to replace the skill in an existing tools section.
+    pub fn set_tools_section_skill(&mut self, section_id: &str, label: &str) {
+        self.sections
+            .insert(section_id.to_string(), label.to_string());
     }
 
     /// Get section types available to add (can always add more instances)
@@ -1263,34 +1368,38 @@ impl SimplePromptDialog {
             result.push_str("</constraints>\n\n");
         }
 
-        // Add output format sections
-        let mut output_count = 0;
+        // Add tools sections
+        let mut tools_count = 0;
         for section_id in &self.enabled_sections {
-            if section_id == "output_format" || section_id.starts_with("output_format_") {
+            if section_id == "tools" || section_id.starts_with("tools_") {
                 if let Some(content) = self.sections.get(section_id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if output_count == 0 {
-                            result.push_str("# [OUTPUT FORMAT]: Response Contract\n");
-                            result.push_str("<output_spec>\n");
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            if tools_count == 0 {
+                                result.push_str("# [TOOLS]: Skills & Capabilities\n");
+                                result.push_str("<tools>\n");
+                            }
+                            tools_count += 1;
+                            result.push_str(&format!(
+                                "  <tool_{}>{}</tool_{}>\n\n",
+                                tools_count, trimmed, tools_count
+                            ));
                         }
-                        output_count += 1;
-                        result.push_str(&format!("  <spec_{}>\n", output_count));
-                        result.push_str(&format!("    {}\n", trimmed));
-                        result.push_str(&format!("  </spec_{}>\n\n", output_count));
                     }
                 }
             }
         }
-        if output_count > 0 {
-            result.push_str("</output_spec>\n\n");
+        if tools_count > 0 {
+            result.push_str("</tools>\n\n");
         }
 
         Ok(result)
     }
 
-    /// Replace the `@`-trigger with `@rel_path` in the section text, and add the full path
-    /// to a "resources" section (creating one if needed).
+    /// Replace the `@`-trigger with `@rel_path` in the section text and add the full path
+    /// to the resources section (creating one if needed).
+    /// Skills are treated as normal file resources — no special content injection.
     pub fn insert_at_completion(
         &mut self,
         section_id: &str,
@@ -1318,10 +1427,7 @@ impl SimplePromptDialog {
             .insert(section_id.to_string(), new_cursor);
         self.update_section_scroll(section_id, field_width);
 
-        // Preserve focused section — resource insertion must not steal focus.
-        let saved_focus = self.focused_section;
-
-        // Add or append to a "resources" section with the full path.
+        // Add as a resource (skills and files treated uniformly)
         let existing_resources = self
             .enabled_sections
             .iter()
@@ -1336,12 +1442,11 @@ impl SimplePromptDialog {
             };
             self.set_section_content(&res_id, new_res_content);
         } else {
-            // Create a new resources section with this full path
             self.add_section_with_content("resources", full_path.to_string());
         }
-
-        // Restore focus to the field the user was editing.
-        self.focused_section = saved_focus;
+        // NOTE: focused_section is intentionally NOT restored here.
+        // The caller (event handler) owns that responsibility and restores it
+        // explicitly after this function returns.
     }
 
     /// Colorize `@word` tokens in rendered section text with a custom accent color.
