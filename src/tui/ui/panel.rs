@@ -90,6 +90,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 if let Some(agent) = app.terminal_agents.get(*idx) {
                     if let Some(snap) = agent.screen_snapshot() {
                         render_vt_screen(frame, inner, &snap);
+                        render_command_chips(frame, inner, app, &agent.name);
                         return;
                     }
                 }
@@ -120,6 +121,23 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             Some(AgentEntry::Terminal(idx)) => {
                 let idx = *idx;
                 if let Some(agent) = app.terminal_agents.get(idx) {
+                    let warp = agent.warp_mode;
+                    if warp {
+                        // Split: PTY output above, warp input box below
+                        let input_h = 3u16;
+                        let pty_h = inner.height.saturating_sub(input_h);
+                        let pty_area = Rect::new(inner.x, inner.y, inner.width, pty_h);
+                        let input_area = Rect::new(inner.x, inner.y + pty_h, inner.width, input_h);
+
+                        if let Some(snap) = agent.screen_snapshot() {
+                            render_vt_screen(frame, pty_area, &snap);
+                            render_indicators(frame, pty_area, &snap, app);
+                        }
+
+                        draw_warp_input_box(frame, input_area, app, idx);
+                        return;
+                    }
+
                     if let Some(snap) = agent.screen_snapshot() {
                         render_vt_screen(frame, inner, &snap);
                         if !snap.scrolled {
@@ -220,7 +238,27 @@ pub(super) fn draw_split_panel(
         None => None,
     };
 
-    if let Some(snap) = snap {
+    // Check if this is a warp-mode terminal
+    let warp_terminal_idx = match &found {
+        Some(SessionRef::Terminal(idx)) if app.terminal_agents[*idx].warp_mode => Some(*idx),
+        _ => None,
+    };
+
+    if let Some(t_idx) = warp_terminal_idx {
+        let input_h = 3u16;
+        let pty_h = inner.height.saturating_sub(input_h);
+        let pty_area = Rect::new(inner.x, inner.y, inner.width, pty_h);
+        let input_area = Rect::new(inner.x, inner.y + pty_h, inner.width, input_h);
+
+        if let Some(snap) = snap {
+            render_vt_screen(frame, pty_area, &snap);
+            render_indicators(frame, pty_area, &snap, app);
+        }
+
+        if focused && matches!(app.focus, Focus::Agent) {
+            draw_warp_input_box(frame, input_area, app, t_idx);
+        }
+    } else if let Some(snap) = snap {
         render_vt_screen(frame, inner, &snap);
         if focused && !snap.scrolled && matches!(app.focus, Focus::Agent) {
             let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
@@ -699,5 +737,146 @@ fn draw_log_text(frame: &mut Frame, area: Rect, inner: Rect, app: &App) {
             area,
             &mut scrollbar_state,
         );
+    }
+}
+
+/// Render recent command chips at the bottom of the terminal panel (Preview mode).
+fn render_command_chips(frame: &mut Frame, area: Rect, app: &App, session_name: &str) {
+    let hist = match app.terminal_histories.get(session_name) {
+        Some(h) if !h.commands.is_empty() => h,
+        _ => return,
+    };
+
+    // Get last 5 unique commands, most recent first
+    let mut recent: Vec<&str> = Vec::new();
+    let mut sorted: Vec<&crate::tui::terminal_history::CommandEntry> =
+        hist.commands.iter().collect();
+    sorted.sort_by(|a, b| b.last_run.cmp(&a.last_run));
+    for entry in &sorted {
+        if !recent.contains(&entry.cmd.as_str()) {
+            recent.push(&entry.cmd);
+        }
+        if recent.len() >= 5 {
+            break;
+        }
+    }
+    if recent.is_empty() {
+        return;
+    }
+
+    // Build chip spans that fit in the available width
+    let bar_y = area.y + area.height.saturating_sub(1);
+    let max_w = area.width as usize;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used = 0;
+
+    for cmd in &recent {
+        let chip = format!(" ✓ {} ", cmd);
+        let chip_len = chip.chars().count() + 1; // +1 for gap
+        if used + chip_len > max_w {
+            break;
+        }
+        spans.push(Span::styled(
+            chip,
+            Style::default()
+                .fg(Color::Rgb(180, 220, 180))
+                .bg(Color::Rgb(20, 40, 20)),
+        ));
+        spans.push(Span::raw(" "));
+        used += chip_len;
+    }
+
+    if !spans.is_empty() {
+        let bar = Paragraph::new(Line::from(spans));
+        let bar_area = Rect::new(area.x, bar_y, area.width, 1);
+        frame.render_widget(bar, bar_area);
+    }
+}
+
+// ── Warp-like input box ─────────────────────────────────────────
+
+/// Draw the warp-style input box at the bottom of the terminal panel.
+fn draw_warp_input_box(frame: &mut Frame, area: Rect, app: &App, idx: usize) {
+    let Some(agent) = app.terminal_agents.get(idx) else {
+        return;
+    };
+
+    let cwd = compact_cwd(&agent.working_dir);
+    let input_text = agent
+        .input_buffer
+        .lock()
+        .map(|b| b.clone())
+        .unwrap_or_default();
+    let cursor_pos = agent.warp_cursor.min(input_text.len());
+
+    let accent = agent.accent_color;
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(accent));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 || inner.width < 4 {
+        return;
+    }
+
+    // Prompt indicator: compact cwd + chevron
+    let prompt = format!("{} ❯ ", cwd);
+    let prompt_len = prompt.chars().count() as u16;
+
+    // Build the line: [prompt] [input_text]
+    let mut spans = vec![Span::styled(
+        &prompt,
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+    )];
+
+    if input_text.is_empty() {
+        spans.push(Span::styled(
+            "type a command…",
+            Style::default().fg(Color::Rgb(80, 80, 100)),
+        ));
+    } else {
+        spans.push(Span::styled(&input_text, Style::default().fg(Color::White)));
+    }
+
+    let line = Line::from(spans);
+    let para = Paragraph::new(line);
+    frame.render_widget(para, inner);
+
+    // Position cursor inside the input box
+    let cursor_char_offset = input_text[..cursor_pos].chars().count() as u16;
+    let cx = inner.x + prompt_len + cursor_char_offset;
+    let cy = inner.y;
+    if cx < inner.x + inner.width {
+        frame.set_cursor_position((cx, cy));
+    }
+}
+
+/// Abbreviate a working directory for the prompt.
+/// - Replace $HOME with `~`
+/// - If path has more than 3 segments, collapse middle to `…`
+fn compact_cwd(cwd: &str) -> String {
+    let mut path = cwd.to_string();
+
+    // Replace home dir with ~
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        if let Some(rest) = path.strip_prefix(home_str.as_ref()) {
+            path = format!("~{rest}");
+        }
+    }
+
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() <= 3 {
+        return path;
+    }
+
+    // Show first + last segment with … in between
+    let first = parts[0];
+    let last = parts[parts.len() - 1];
+    if first.starts_with('~') {
+        format!("{first}/…/{last}")
+    } else {
+        format!("/{first}/…/{last}")
     }
 }
