@@ -12,12 +12,20 @@ const REGISTRY_LEGACY_URL: &str =
 /// How often to refresh the registry in the background (24 hours).
 const REGISTRY_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
-#[derive(Deserialize, Clone)]
+#[derive(Clone)]
 pub struct RegistryRaw {
     pub platforms: Vec<Platform>,
+    pub canonical_servers: CanonicalServers,
 }
 
-/// Lightweight index for the per-platform registry (v5+).
+/// Canonical MCP server definitions from `servers.toml`.
+#[derive(Deserialize, Clone, Default)]
+pub struct CanonicalServers {
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, serde_json::Value>,
+}
+
+/// Lightweight index for the per-platform registry (v6).
 #[derive(Deserialize)]
 struct RegistryIndex {
     #[allow(dead_code)]
@@ -31,6 +39,14 @@ struct IndexEntry {
     binary: String,
 }
 
+/// Legacy index (v5, JSON).
+#[derive(Deserialize)]
+struct LegacyRegistryIndex {
+    #[allow(dead_code)]
+    version: u32,
+    platforms: Vec<IndexEntry>,
+}
+
 #[derive(Deserialize, Clone)]
 pub struct Platform {
     pub name: String,
@@ -41,25 +57,41 @@ pub struct Platform {
     /// instead of the default `[section.key]` table format.
     #[serde(default)]
     pub toml_array_format: bool,
+    /// How `command` + `args` are represented:
+    /// - `"separate"` (default): `"command": "x", "args": [...]`
+    /// - `"merged"`: `"command": ["x", ...args]` (single array)
+    #[serde(default = "default_command_format")]
+    pub command_format: String,
     #[serde(alias = "servers_key")]
     pub mcp_servers_key: Vec<String>,
-    #[serde(default)]
-    pub canopy_entry_key: String,
-    pub canopy_entry: serde_json::Value,
     #[serde(default)]
     pub deprecated_keys: Vec<String>,
     /// Keys that this platform's MCP schema does not support.
     /// Used to sanitize configs when syncing across platforms.
     #[serde(default)]
-    #[allow(dead_code)]
     pub unsupported_keys: Vec<String>,
-    /// MCP servers that canopy always installs alongside its own entry.
-    /// Keys are server names, values are their config templates.
-    /// Supports `{filesystem_dir}` and `{home}` placeholders.
+    /// Translation map from Canopy's standard field names to this platform's names.
+    /// e.g. `{"env": "environment"}`.
     #[serde(default)]
-    pub recommended_servers: std::collections::HashMap<String, serde_json::Value>,
+    pub fields_mapping: std::collections::HashMap<String, String>,
+    /// Fields that are required by this platform, with their allowed values.
+    /// e.g. `{"type": ["http", "remote"]}`.
+    #[serde(default)]
+    pub required_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Per-server extra fields merged into the adapted config.
+    /// e.g. `server_extras.canopy = { tools = ["*"] }`.
+    #[serde(default)]
+    pub server_extras: std::collections::HashMap<String, serde_json::Value>,
+    /// Path to the platform's skills directory (relative to home).
+    /// e.g. `".kiro/skills"`.
+    #[serde(default)]
+    pub skills_dir: Option<String>,
     #[serde(default)]
     pub cli: Option<serde_json::Value>,
+}
+
+fn default_command_format() -> String {
+    "separate".to_string()
 }
 
 /// Platform with parsed CLI config (for saving to .canopy/)
@@ -308,11 +340,8 @@ pub fn run_setup() -> Result<()> {
     io::stdout().flush()?;
     let mut registry = fetch_registry()?;
 
-    for p in &mut registry.platforms {
-        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
-            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
-        }
-    }
+    // Legacy v5 compat: no longer needed with v6
+    let _ = &mut registry;
     println!("\x1b[32m✓\x1b[0m");
 
     let detected: Vec<&Platform> = registry
@@ -365,7 +394,7 @@ pub fn run_setup() -> Result<()> {
 
     // ── Step 3: Install MCP servers + show matrix ───────────────
     if !selected.is_empty() {
-        let sync_summary = run_sync_step(&mut wiz, &home, &selected)?;
+        let sync_summary = run_sync_step(&mut wiz, &home, &selected, &registry.canonical_servers)?;
         if let Some(s) = sync_summary {
             wiz.add(s);
         }
@@ -394,11 +423,16 @@ pub fn run_setup() -> Result<()> {
 
     // ── Step 5: MCP Manager (sync/add/remove) ───────────────────
     if !selected.is_empty() {
-        let sync_summary = run_sync_step(&mut wiz, &home, &selected)?;
+        let sync_summary = run_sync_step(&mut wiz, &home, &selected, &registry.canonical_servers)?;
         if let Some(s) = sync_summary {
             wiz.add(s);
         }
     }
+
+    // ── Step 5.5: Essential Skills ───────────────────────────────
+    wiz.render()?;
+    let skills_step = run_essential_skills_step(&home, &selected);
+    wiz.add(skills_step);
 
     // ── Step 6: Daemon + service ────────────────────────────────
     wiz.render()?;
@@ -433,49 +467,21 @@ pub fn run_setup() -> Result<()> {
     Ok(())
 }
 
-/// Fetch the per-platform registry (v5) or fall back to legacy monolithic file.
+/// Fetch the per-platform registry (v6 TOML, v5 JSON fallback).
 fn fetch_registry() -> Result<RegistryRaw> {
     let client = reqwest::blocking::Client::new();
 
-    // Try the v5 index first
-    if let Ok(response) = client
-        .get(format!("{REGISTRY_BASE_URL}index.json"))
-        .header("User-Agent", "canopy")
-        .send()
-    {
-        if response.status().is_success() {
-            if let Ok(index) = response.json::<RegistryIndex>() {
-                // Detect which binaries are available, fetch only those platform files
-                let needed: Vec<&IndexEntry> = index
-                    .platforms
-                    .iter()
-                    .filter(|e| is_binary_available(&e.binary))
-                    .collect();
-
-                let mut platforms = Vec::new();
-                for entry in &needed {
-                    let url = format!("{REGISTRY_BASE_URL}platforms/{}.json", entry.name);
-                    match client
-                        .get(&url)
-                        .header("User-Agent", "canopy")
-                        .send()
-                        .and_then(|r| r.json::<Platform>())
-                    {
-                        Ok(p) => platforms.push(p),
-                        Err(e) => {
-                            tracing::warn!("Failed to fetch platform '{}': {e}", entry.name);
-                        }
-                    }
-                }
-
-                if !platforms.is_empty() {
-                    return Ok(RegistryRaw { platforms });
-                }
-            }
-        }
+    // Try v6 (TOML) first
+    if let Some(reg) = try_fetch_v6(&client) {
+        return Ok(reg);
     }
 
-    // Fallback: legacy monolithic platforms.json
+    // Try v5 (JSON per-platform)
+    if let Some(reg) = try_fetch_v5(&client) {
+        return Ok(reg);
+    }
+
+    // Fallback: legacy monolithic platforms.json (v4)
     let response = client
         .get(REGISTRY_LEGACY_URL)
         .header("User-Agent", "canopy")
@@ -486,10 +492,132 @@ fn fetch_registry() -> Result<RegistryRaw> {
         anyhow::bail!("Registry returned HTTP {}", response.status());
     }
 
-    response.json().context("Invalid registry JSON")
+    #[derive(Deserialize)]
+    struct LegacyRaw {
+        platforms: Vec<Platform>,
+    }
+
+    let legacy: LegacyRaw = response.json().context("Invalid registry JSON")?;
+    Ok(RegistryRaw {
+        platforms: legacy.platforms,
+        canonical_servers: CanonicalServers::default(),
+    })
 }
 
-const BANNER: &str = r#"                                                     
+/// Try fetching registry v6 (TOML index + servers + platforms).
+fn try_fetch_v6(client: &reqwest::blocking::Client) -> Option<RegistryRaw> {
+    let index_resp = client
+        .get(format!("{REGISTRY_BASE_URL}index.toml"))
+        .header("User-Agent", "canopy")
+        .send()
+        .ok()?;
+
+    if !index_resp.status().is_success() {
+        return None;
+    }
+
+    let index_text = index_resp.text().ok()?;
+    let index: RegistryIndex = toml::from_str(&index_text).ok()?;
+
+    // Fetch canonical servers
+    let servers_resp = client
+        .get(format!("{REGISTRY_BASE_URL}servers.toml"))
+        .header("User-Agent", "canopy")
+        .send()
+        .ok()?;
+
+    let canonical_servers: CanonicalServers = if servers_resp.status().is_success() {
+        let text = servers_resp.text().ok()?;
+        toml::from_str(&text).unwrap_or_default()
+    } else {
+        CanonicalServers::default()
+    };
+
+    // Fetch platform files (only for installed binaries)
+    let needed: Vec<&IndexEntry> = index
+        .platforms
+        .iter()
+        .filter(|e| is_binary_available(&e.binary))
+        .collect();
+
+    let mut platforms = Vec::new();
+    for entry in &needed {
+        let url = format!("{REGISTRY_BASE_URL}platforms/{}.toml", entry.name);
+        match client
+            .get(&url)
+            .header("User-Agent", "canopy")
+            .send()
+            .and_then(|r| r.text())
+        {
+            Ok(text) => match toml::from_str::<Platform>(&text) {
+                Ok(p) => platforms.push(p),
+                Err(e) => {
+                    tracing::warn!("Failed to parse platform '{}': {e}", entry.name);
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to fetch platform '{}': {e}", entry.name);
+            }
+        }
+    }
+
+    if platforms.is_empty() {
+        return None;
+    }
+
+    Some(RegistryRaw {
+        platforms,
+        canonical_servers,
+    })
+}
+
+/// Try fetching registry v5 (JSON per-platform).
+fn try_fetch_v5(client: &reqwest::blocking::Client) -> Option<RegistryRaw> {
+    let resp = client
+        .get(format!("{REGISTRY_BASE_URL}index.json"))
+        .header("User-Agent", "canopy")
+        .send()
+        .ok()?;
+
+    if !resp.status().is_success() {
+        return None;
+    }
+
+    let index: LegacyRegistryIndex = resp.json().ok()?;
+
+    let needed: Vec<&IndexEntry> = index
+        .platforms
+        .iter()
+        .filter(|e| is_binary_available(&e.binary))
+        .collect();
+
+    let mut platforms = Vec::new();
+    for entry in &needed {
+        let url = format!("{REGISTRY_BASE_URL}platforms/{}.json", entry.name);
+        match client
+            .get(&url)
+            .header("User-Agent", "canopy")
+            .send()
+            .and_then(|r| r.json::<Platform>())
+        {
+            Ok(p) => platforms.push(p),
+            Err(e) => {
+                tracing::warn!("Failed to fetch platform '{}': {e}", entry.name);
+            }
+        }
+    }
+
+    if platforms.is_empty() {
+        return None;
+    }
+
+    Some(RegistryRaw {
+        platforms,
+        canonical_servers: CanonicalServers::default(),
+    })
+}
+
+pub(crate) const BANNER: &str = r#"                                                     
   ██████   ██████   ████████    ██████  ████████  █████ ████
  ███░░███ ░░░░░███ ░░███░░███  ███░░███░░███░░███░░███ ░███ 
 ░███ ░░░   ███████  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███ 
@@ -626,8 +754,11 @@ fn upsert_toml_key(
         String::new()
     };
 
-    // Remove existing section (if any) so we always write a fresh one
-    let base = remove_toml_key_section_str(&content, &table_header);
+    // Remove existing [section.entry_key] (if any) so we always write a fresh one
+    let mut base = remove_toml_key_section_str(&content, &table_header);
+
+    // Remove conflicting [[section]] array-of-tables entries (e.g. from old format)
+    base = remove_conflicting_toml_arrays(&base, section);
 
     // Build the TOML fragment from the JSON value
     let mut fragment = format!("\n{table_header}\n");
@@ -721,6 +852,9 @@ fn upsert_toml_array(
         base.push('\n');
     }
 
+    // Remove conflicting [section.xxx] key-table entries (left over from old format)
+    base = remove_conflicting_toml_tables(&base, section);
+
     // Remove stray [[section]] headers not followed by a name = "..." line
     base = remove_stray_toml_array_headers(&base, &array_header);
 
@@ -767,6 +901,10 @@ fn remove_toml_array_entry_str(content: &str, array_header: &str, name_line: &st
         let trimmed = line.trim();
 
         if trimmed == array_header {
+            // A new [[section]] header ends any previous target block
+            if in_target {
+                in_target = false;
+            }
             pending_header = Some(line.to_string());
             continue;
         }
@@ -827,6 +965,69 @@ fn remove_stray_toml_array_headers(content: &str, array_header: &str) -> String 
         }
         i += 1;
     }
+    out
+}
+
+/// Remove all `[section.xxx]` key-table entries that conflict with `[[section]]` format.
+/// This handles migration from the older `[mcp_servers.canopy]` format to `[[mcp_servers]]`.
+fn remove_conflicting_toml_tables(content: &str, section: &str) -> String {
+    let prefix = format!("[{section}.");
+    let mut out = String::with_capacity(content.len());
+    let mut in_conflict = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Detect a conflicting [section.xxx] header (single-bracket, not [[...]])
+        if trimmed.starts_with(&prefix)
+            && trimmed.ends_with(']')
+            && !trimmed.starts_with(&format!("[[{section}."))
+        {
+            in_conflict = true;
+            continue;
+        }
+
+        // Any new section header ends the conflicting block
+        if in_conflict && trimmed.starts_with('[') {
+            in_conflict = false;
+        }
+
+        if !in_conflict {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
+    out
+}
+
+/// Remove all `[[section]]` array-of-tables blocks for a given section.
+/// Counterpart to `remove_conflicting_toml_tables`: cleans up array entries
+/// when switching a platform to `[section.name]` key-table format.
+fn remove_conflicting_toml_arrays(content: &str, section: &str) -> String {
+    let header = format!("[[{section}]]");
+    let mut out = String::with_capacity(content.len());
+    let mut in_array = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed == header {
+            in_array = true;
+            continue;
+        }
+
+        // Any new section header ends the array block
+        if in_array && trimmed.starts_with('[') {
+            in_array = false;
+        }
+
+        if !in_array {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+
     out
 }
 
@@ -996,12 +1197,7 @@ pub fn run_setup_silent() -> Result<()> {
 
     ensure_mcp_dependencies_silent();
 
-    let mut registry = fetch_registry()?;
-    for p in &mut registry.platforms {
-        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
-            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
-        }
-    }
+    let registry = fetch_registry()?;
 
     let detected: Vec<&Platform> = registry
         .platforms
@@ -1009,7 +1205,7 @@ pub fn run_setup_silent() -> Result<()> {
         .filter(|p| is_platform_available(p))
         .collect();
 
-    run_install_our_servers(&home, &detected)?;
+    run_install_our_servers(&home, &detected, &registry.canonical_servers)?;
 
     // Save CLI config
     let platforms_with_cli: Vec<PlatformWithCli> = detected
@@ -1062,13 +1258,7 @@ pub fn maybe_refresh_registry() -> bool {
 }
 
 fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
-    let mut registry = fetch_registry()?;
-
-    for p in &mut registry.platforms {
-        if p.canopy_entry_key.is_empty() && p.mcp_servers_key.len() > 1 {
-            p.canopy_entry_key = p.mcp_servers_key.pop().unwrap();
-        }
-    }
+    let registry = fetch_registry()?;
 
     let detected: Vec<&Platform> = registry
         .platforms
@@ -1095,33 +1285,133 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
 // ── Recommended MCP servers ───────────────────────────────────────────────
 
 /// Replace `{filesystem_dir}` and `{home}` placeholders in a JSON value tree.
-fn substitute_placeholders(
-    value: &mut serde_json::Value,
-    home: &str,
-    fs_dir: &str,
-    memory_path: &str,
-) {
+fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &str) {
     match value {
         serde_json::Value::String(s) => {
-            if s.contains("{filesystem_dir}") || s.contains("{home}") || s.contains("{memory_path}")
-            {
+            if s.contains("{filesystem_dir}") || s.contains("{home}") {
                 *s = s
                     .replace("{filesystem_dir}", fs_dir)
-                    .replace("{home}", home)
-                    .replace("{memory_path}", memory_path);
+                    .replace("{home}", home);
             }
         }
         serde_json::Value::Array(arr) => {
             for item in arr {
-                substitute_placeholders(item, home, fs_dir, memory_path);
+                substitute_placeholders(item, home, fs_dir);
             }
         }
         serde_json::Value::Object(map) => {
             for val in map.values_mut() {
-                substitute_placeholders(val, home, fs_dir, memory_path);
+                substitute_placeholders(val, home, fs_dir);
             }
         }
         _ => {}
+    }
+}
+
+/// Translate a canonical server config to a target platform's format.
+///
+/// Applies in order:
+/// 1. `command_format` — merge `command` + `args` into single array if "merged"
+/// 2. `fields_mapping` — rename fields (e.g. `env` → `environment`)
+/// 3. `required_fields` — inject missing required fields with default values
+/// 4. `server_extras` — merge per-server platform-specific fields
+/// 5. `unsupported_keys` — strip fields the platform doesn't support
+pub fn adapt_config(
+    config: &serde_json::Value,
+    platform: &Platform,
+    server_name: &str,
+) -> serde_json::Value {
+    let Some(obj) = config.as_object() else {
+        return config.clone();
+    };
+
+    let mut adapted = serde_json::Map::new();
+
+    // Step 1: handle command_format
+    if platform.command_format == "merged" {
+        // Merge command + args into a single "command" array
+        let has_command = obj.get("command").and_then(|v| v.as_str()).is_some();
+        let has_args = obj.contains_key("args");
+
+        if has_command && has_args {
+            let cmd = obj["command"].as_str().unwrap();
+            let mut merged = vec![serde_json::Value::String(cmd.to_string())];
+            if let Some(args) = obj["args"].as_array() {
+                merged.extend(args.iter().cloned());
+            }
+            adapted.insert("command".to_string(), serde_json::Value::Array(merged));
+
+            // Copy all other fields except command and args
+            for (k, v) in obj {
+                if k != "command" && k != "args" {
+                    adapted.insert(k.clone(), v.clone());
+                }
+            }
+        } else {
+            // No merge needed — copy all fields
+            for (k, v) in obj {
+                adapted.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        // "separate" (default) — copy fields as-is
+        for (k, v) in obj {
+            adapted.insert(k.clone(), v.clone());
+        }
+    }
+
+    // Step 2: apply field rename mapping
+    let mut renamed = serde_json::Map::new();
+    for (k, v) in adapted {
+        let target_key = platform.fields_mapping.get(&k).cloned().unwrap_or(k);
+        renamed.insert(target_key, v);
+    }
+    adapted = renamed;
+
+    // Step 3: inject required fields using index convention
+    // required_fields values: [0] = url-based value, [1] = command-based value
+    let type_idx = infer_server_type_index(&adapted);
+    for (field, allowed) in &platform.required_fields {
+        if let Some(idx) = type_idx {
+            if let Some(value) = allowed.get(idx) {
+                // Always set — overwrite stale values from cross-platform sync
+                adapted.insert(field.clone(), serde_json::Value::String(value.clone()));
+            }
+            // Index out of bounds (e.g. Gemini only has [0]) → skip injection
+        } else if !adapted.contains_key(field) {
+            // No inference possible — use first value as default
+            if let Some(value) = allowed.first() {
+                adapted.insert(field.clone(), serde_json::Value::String(value.clone()));
+            }
+        }
+    }
+
+    // Step 4: merge server_extras for this server
+    if let Some(extras) = platform.server_extras.get(server_name) {
+        if let Some(extras_obj) = extras.as_object() {
+            for (k, v) in extras_obj {
+                adapted.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // Step 5: strip unsupported keys
+    for key in &platform.unsupported_keys {
+        adapted.remove(key);
+    }
+
+    serde_json::Value::Object(adapted)
+}
+
+/// Infer server type index from canonical fields.
+/// Returns `0` for url-based (http/remote) or `1` for command-based (stdio/local).
+fn infer_server_type_index(config: &serde_json::Map<String, serde_json::Value>) -> Option<usize> {
+    if config.contains_key("url") {
+        Some(0)
+    } else if config.contains_key("command") {
+        Some(1)
+    } else {
+        None
     }
 }
 
@@ -1140,7 +1430,10 @@ fn browse_directory(start_dir: &str) -> String {
         };
         let mut dirs: Vec<String> = entries
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter(|e| {
+                e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                    || e.file_type().map(|t| t.is_symlink()).unwrap_or(false) && e.path().is_dir()
+            })
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') {
@@ -1161,52 +1454,75 @@ fn browse_directory(start_dir: &str) -> String {
 
     let mut cursor: usize = 0;
     let visible: usize = 10;
-    let mut prev_rows: usize = 0;
+    // Fixed row count: header + hint + visible slots + status line
+    let total_rows = 2 + visible + 1;
 
     let _ = enable_raw_mode();
 
+    // Reserve lines for the drawing area
+    for _ in 0..total_rows {
+        print!("\r\n");
+    }
+
     loop {
         let subdirs = list_subdirs(&current);
-        let list_rows = if subdirs.is_empty() {
-            1
-        } else {
-            subdirs.len().min(visible)
-        };
-        let total_rows = 4 + list_rows; // blank + path + blank + hint + entries
-
-        // Erase previous draw
-        if prev_rows > 0 {
-            for _ in 0..prev_rows {
-                print!("\x1b[1A\x1b[2K");
-            }
-        }
-        prev_rows = total_rows;
 
         // Clamp cursor
         if !subdirs.is_empty() && cursor >= subdirs.len() {
             cursor = subdirs.len().saturating_sub(1);
         }
 
-        // Draw path header
-        print!("\r\n\x1b[2K  \x1b[36m»\x1b[0m  {}\r\n", current.display());
-        print!("\x1b[2K  \x1b[90m↑↓ navigate  → enter dir  ← go up  Enter select  Esc cancel\x1b[0m\r\n");
-
-        // Draw directory list
-        if subdirs.is_empty() {
-            print!("\x1b[2K  \x1b[90m(no subdirectories)\x1b[0m\r\n");
+        let scroll = if cursor >= visible {
+            cursor - visible + 1
         } else {
-            let scroll = if cursor >= visible {
-                cursor - visible + 1
-            } else {
-                0
-            };
+            0
+        };
+        let has_above = scroll > 0;
+        let has_below = !subdirs.is_empty() && scroll + visible < subdirs.len();
+
+        // Move up to start of our drawing area
+        print!("\x1b[{total_rows}A");
+
+        // Path header
+        print!("\r\x1b[2K  \x1b[36m»\x1b[0m  {}\r\n", current.display());
+        // Hint bar
+        print!(
+            "\r\x1b[2K  \x1b[90m↑↓ navigate  → enter  ← back  Enter confirm  Esc cancel\x1b[0m\r\n"
+        );
+
+        // Directory list (always render exactly `visible` rows)
+        if subdirs.is_empty() {
+            print!("\r\x1b[2K  \x1b[90m(empty — Enter to confirm, ← to go up)\x1b[0m\r\n");
+            for _ in 1..visible {
+                print!("\r\x1b[2K\r\n");
+            }
+        } else {
+            let mut drawn = 0usize;
             for (i, name) in subdirs.iter().enumerate().skip(scroll).take(visible) {
                 if i == cursor {
-                    print!("\x1b[2K  \x1b[1;32m▶\x1b[0m \x1b[7m {name} \x1b[0m\r\n");
+                    print!("\r\x1b[2K  \x1b[1;32m▶\x1b[0m \x1b[7m {name} \x1b[0m\r\n");
                 } else {
-                    print!("\x1b[2K    {name}\r\n");
+                    print!("\r\x1b[2K    {name}\r\n");
                 }
+                drawn += 1;
             }
+            // Fill remaining visible slots with blank lines
+            for _ in drawn..visible {
+                print!("\r\x1b[2K\r\n");
+            }
+        }
+
+        // Status line: scroll indicators + item count
+        if subdirs.is_empty() {
+            print!("\r\x1b[2K  \x1b[90m0 items\x1b[0m\r\n");
+        } else {
+            let up = if has_above { "↑ " } else { "  " };
+            let dn = if has_below { " ↓" } else { "  " };
+            print!(
+                "\r\x1b[2K  \x1b[90m{up}{}/{}{dn}\x1b[0m\r\n",
+                cursor + 1,
+                subdirs.len()
+            );
         }
 
         let _ = io::stdout().flush();
@@ -1215,12 +1531,14 @@ fn browse_directory(start_dir: &str) -> String {
             Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
                 KeyCode::Enter => {
                     let _ = disable_raw_mode();
-                    println!("\r");
+                    print!("\r\n");
+                    let _ = io::stdout().flush();
                     return current.to_string_lossy().to_string();
                 }
                 KeyCode::Esc => {
                     let _ = disable_raw_mode();
-                    println!("\r");
+                    print!("\r\n");
+                    let _ = io::stdout().flush();
                     return start_dir.to_string();
                 }
                 KeyCode::Up => {
@@ -1231,13 +1549,13 @@ fn browse_directory(start_dir: &str) -> String {
                         cursor += 1;
                     }
                 }
-                KeyCode::Right => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     if let Some(name) = subdirs.get(cursor) {
                         current = current.join(name);
                         cursor = 0;
                     }
                 }
-                KeyCode::Left => {
+                KeyCode::Left | KeyCode::Char('h') => {
                     if let Some(parent) = current.parent() {
                         current = parent.to_path_buf();
                         cursor = 0;
@@ -1294,7 +1612,7 @@ fn print_mcp_matrix(all_configs: &[crate::config::PlatformMcpConfig]) {
         .flat_map(|c| c.servers.iter().map(|s| s.name.clone()))
         .collect();
     // Always show our 4 core servers in the matrix
-    for s in &["canopy", "fetch", "filesystem", "memory"] {
+    for s in &["canopy", "fetch", "filesystem"] {
         all_servers.insert(s.to_string());
     }
 
@@ -1358,7 +1676,11 @@ fn apply_upsert_to_platform(
         } else {
             upsert_toml_key(
                 config_path,
-                &platform.mcp_servers_key[0],
+                platform
+                    .mcp_servers_key
+                    .first()
+                    .map(|s| s.as_str())
+                    .unwrap_or("mcpServers"),
                 server_name,
                 config,
             )
@@ -1374,42 +1696,16 @@ fn apply_upsert_to_platform(
     }
 }
 
-fn find_existing_memory_path(all_configs: &[crate::config::PlatformMcpConfig]) -> Option<String> {
-    for config in all_configs {
-        for server in &config.servers {
-            if server.name == "memory" {
-                // Check in env.MEMORY_FILE_PATH
-                if let Some(env) = server.config.get("env") {
-                    if let Some(path) = env.get("MEMORY_FILE_PATH").and_then(|v| v.as_str()) {
-                        return Some(path.to_string());
-                    }
-                }
-                // Check in args
-                if let Some(args) = server.config.get("args").and_then(|a| a.as_array()) {
-                    for arg in args {
-                        if let Some(s) = arg.as_str() {
-                            if s.ends_with(".jsonl") {
-                                return Some(s.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
 /// Install/update canopy + recommended MCP servers on all selected platforms.
-/// Applies registry entries directly — no sanitization, just placeholder substitution.
-fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
-    let all_configs = extract_all_mcp_configs(home, selected);
+/// Translates canonical server definitions using each platform's rules.
+fn run_install_our_servers(
+    home: &Path,
+    selected: &[&Platform],
+    canonical: &CanonicalServers,
+) -> Result<()> {
+    let has_filesystem = canonical.servers.contains_key("filesystem");
 
-    let needs_fs = selected
-        .iter()
-        .any(|p| p.recommended_servers.contains_key("filesystem"));
-
-    let fs_dir = if needs_fs {
+    let fs_dir = if has_filesystem {
         let current_fs = load_mcp_fs_root(home);
         println!();
         println!("  \x1b[36mFilesystem MCP root directory\x1b[0m");
@@ -1423,48 +1719,6 @@ fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
     } else {
         load_mcp_fs_root(home)
     };
-
-    let recommended_memory = home
-        .join(".canopy/memory/memory.jsonl")
-        .to_string_lossy()
-        .to_string();
-    let mut memory_path = recommended_memory.clone();
-
-    if let Some(existing) = find_existing_memory_path(&all_configs) {
-        if existing != recommended_memory && Path::new(&existing).exists() {
-            println!();
-            println!("  \x1b[36mMemory MCP detected\x1b[0m");
-            println!("  Canopy provides shared access to your memory graph across all agents.");
-            println!(
-                "  Existing memory file found at: \x1b[33m{}\x1b[0m",
-                existing
-            );
-            println!(
-                "  Recommended Canopy path:       \x1b[32m{}\x1b[0m",
-                recommended_memory
-            );
-            println!();
-            print!("  Would you like to move it to the recommended path? [Y/n] ");
-            let _ = io::stdout().flush();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).ok();
-
-            if input.trim().to_lowercase() != "n" {
-                let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
-                if std::fs::rename(&existing, &recommended_memory).is_ok() {
-                    println!("  \x1b[32m✓\x1b[0m Memory file moved successfully.");
-                    memory_path = recommended_memory;
-                } else {
-                    println!("  \x1b[31m✗\x1b[0m Could not move file. Using existing path.");
-                    memory_path = existing;
-                }
-            } else {
-                memory_path = existing;
-            }
-        } else {
-            memory_path = existing;
-        }
-    }
 
     let home_str = home.to_string_lossy().to_string();
 
@@ -1480,40 +1734,113 @@ fn run_install_our_servers(home: &Path, selected: &[&Platform]) -> Result<()> {
             let initial = if is_toml {
                 String::new()
             } else {
-                format!("{{\"{}\": {{}}}}\n", &p.mcp_servers_key[0])
+                format!(
+                    "{{\"{}\": {{}}}}\n",
+                    p.mcp_servers_key
+                        .first()
+                        .map(|s| s.as_str())
+                        .unwrap_or("mcpServers")
+                )
             };
             let _ = std::fs::write(&config_path, &initial);
         }
 
         // Remove deprecated JSON keys (cleanup only, don't touch other entries)
         if !is_toml {
-            let servers_parent = &p.mcp_servers_key[0];
+            let servers_parent = p
+                .mcp_servers_key
+                .first()
+                .map(|s| s.as_str())
+                .unwrap_or("mcpServers");
             for old_key in &p.deprecated_keys {
                 let _ = remove_json_key(&config_path, servers_parent, old_key);
             }
         }
 
-        // Write canopy entry directly from registry
-        let _ = apply_upsert_to_platform(
-            p,
-            &config_path,
-            &p.canopy_entry_key.clone(),
-            &p.canopy_entry.clone(),
-        );
-
-        // Write recommended servers with placeholder substitution
-        for (server_name, template) in &p.recommended_servers {
+        // Translate and write each canonical server for this platform
+        for (server_name, template) in &canonical.servers {
             let mut config = template.clone();
-            substitute_placeholders(&mut config, &home_str, &fs_dir, &memory_path);
-            let _ = apply_upsert_to_platform(p, &config_path, server_name, &config);
-        }
-
-        if p.recommended_servers.contains_key("memory") {
-            let _ = std::fs::create_dir_all(home.join(".canopy/memory"));
+            substitute_placeholders(&mut config, &home_str, &fs_dir);
+            let adapted = adapt_config(&config, p, server_name);
+            if let Err(e) = apply_upsert_to_platform(p, &config_path, server_name, &adapted) {
+                eprintln!(
+                    "  \x1b[33m⚠\x1b[0m  Failed to write {server_name} for {}: {e}",
+                    p.name
+                );
+            }
         }
     }
 
     Ok(())
+}
+
+// ── Public thin wrappers for mcp_wizard ────────────────────────────────────
+
+/// Public wrapper for [`upsert_json_key`].
+pub fn upsert_json_key_pub(path: &Path, keys: &[&str], value: &serde_json::Value) -> Result<bool> {
+    upsert_json_key(path, keys, value)
+}
+
+/// Public wrapper for [`upsert_toml_key`].
+pub fn upsert_toml_key_pub(
+    path: &Path,
+    section: &str,
+    entry_key: &str,
+    value: &serde_json::Value,
+) -> Result<bool> {
+    upsert_toml_key(path, section, entry_key, value)
+}
+
+/// Public wrapper for [`upsert_toml_array`].
+pub fn upsert_toml_array_pub(
+    path: &Path,
+    section: &str,
+    entry_key: &str,
+    value: &serde_json::Value,
+) -> Result<bool> {
+    upsert_toml_array(path, section, entry_key, value)
+}
+
+/// Public wrapper for [`remove_json_key`].
+pub fn remove_json_key_pub(path: &Path, parent_key: &str, key: &str) -> Result<bool> {
+    remove_json_key(path, parent_key, key)
+}
+
+/// Remove a server entry from a TOML platform config, handling both key-table
+/// and array-of-tables formats.
+pub fn remove_toml_server_pub(platform: &Platform, path: &Path, server_name: &str) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(path)?;
+
+    let updated = if platform.toml_array_format {
+        let section = platform.mcp_servers_key.join(".");
+        let array_header = format!("[[{section}]]");
+        let name_line = format!("name = \"{server_name}\"");
+        if !content.contains(&name_line) {
+            return Ok(false);
+        }
+        remove_toml_array_entry_str(&content, &array_header, &name_line)
+    } else {
+        let section = platform
+            .mcp_servers_key
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "mcpServers".to_string());
+        let table_header = format!("[{section}.{server_name}]");
+        if !content.contains(&table_header) {
+            return Ok(false);
+        }
+        remove_toml_key_section_str(&content, &table_header)
+    };
+
+    if updated == content {
+        return Ok(false);
+    }
+
+    std::fs::write(path, updated)?;
+    Ok(true)
 }
 
 /// Run the interactive MCP setup/management step.
@@ -1521,6 +1848,7 @@ fn run_sync_step(
     wiz: &mut WizardState,
     home: &Path,
     selected: &[&Platform],
+    canonical: &CanonicalServers,
 ) -> Result<Option<String>> {
     if selected.is_empty() {
         return Ok(None);
@@ -1531,7 +1859,7 @@ fn run_sync_step(
     println!("  ─────────────────────────────────────────────");
     println!();
 
-    run_install_our_servers(home, selected)?;
+    run_install_our_servers(home, selected, canonical)?;
 
     let all_configs = extract_all_mcp_configs(home, selected);
     if !all_configs.is_empty() {
@@ -1539,4 +1867,59 @@ fn run_sync_step(
     }
 
     Ok(Some("\x1b[32m✓\x1b[0m MCP servers updated".to_string()))
+}
+
+/// Download the UniverLab Essential Skills pack and create platform symlinks.
+///
+/// Runs silently on failure so a network error never blocks setup completion.
+fn run_essential_skills_step(home: &Path, selected: &[&Platform]) -> String {
+    // Ensure global skills directory exists
+    if crate::skills::ensure_global_skills_dir().is_err() {
+        return "\x1b[33m⚠\x1b[0m Skills: could not create ~/.agents/skills/".to_string();
+    }
+
+    // Download Essential Pack from GitHub (best-effort)
+    let downloaded = match crate::skills::download_essential_pack() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!("Essential skills download failed: {e}");
+            0
+        }
+    };
+
+    // Create platform symlinks for all selected platforms that have skills_dir
+    let symlinks = match crate::skills::create_platform_symlinks(home, selected) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("Skills symlink creation failed: {e}");
+            vec![]
+        }
+    };
+
+    if downloaded == 0 && symlinks.is_empty() {
+        // Check if we actually have any skills installed
+        let global_dir = dirs::home_dir()
+            .map(|h| h.join(".agents/skills"))
+            .unwrap_or_default();
+        let has_skills = global_dir.exists()
+            && std::fs::read_dir(&global_dir)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false);
+        if has_skills {
+            "\x1b[32m✓\x1b[0m Skills: up to date".to_string()
+        } else {
+            "\x1b[33m⚠\x1b[0m Skills: no packs available (repo not found)".to_string()
+        }
+    } else if downloaded > 0 {
+        format!(
+            "\x1b[32m✓\x1b[0m Skills: {} pack(s) downloaded, {} symlink(s) created",
+            downloaded,
+            symlinks.len()
+        )
+    } else {
+        format!(
+            "\x1b[32m✓\x1b[0m Skills: {} symlink(s) created",
+            symlinks.len()
+        )
+    }
 }
