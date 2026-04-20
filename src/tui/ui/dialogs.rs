@@ -42,15 +42,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let is_edit = dialog.is_edit_mode();
 
-    // In edit mode: height is the same as the task type's base (no session row)
-    // Base heights: fields + 2 borders (no browser rows).
-    // Interactive:    11 content rows → base 13
-    // Scheduled/Watcher: 13 content rows (extra Prompt + Cron/Path) → base 15
+    let is_interactive = matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
+    let is_terminal = matches!(dialog.task_type, crate::tui::app::NewTaskType::Terminal);
+
+    // Base heights: Interactive=15, Scheduled/Watcher=13, Terminal=10
     let base_height: u16 = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => 17 + dir_rows,
+        crate::tui::app::NewTaskType::Interactive => 15 + dir_rows,
         crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher => {
-            15 + dir_rows
+            13 + dir_rows
         }
+        crate::tui::app::NewTaskType::Terminal => 10 + dir_rows,
     };
     let height = base_height + picker_rows as u16;
     let area = centered_rect(65, height, frame.area());
@@ -61,6 +62,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             crate::tui::app::NewTaskType::Scheduled => " Edit Task ",
             crate::tui::app::NewTaskType::Watcher => " Edit Watcher ",
             crate::tui::app::NewTaskType::Interactive => " Edit Agent ",
+            crate::tui::app::NewTaskType::Terminal => " Edit Terminal ",
         }
     } else {
         " New Agent "
@@ -75,11 +77,12 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let type_names = ["Interactive", "Scheduled", "Watcher"];
+    let type_names = ["Interactive", "Scheduled", "Watcher", "Terminal"];
     let type_idx = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => 0,
         crate::tui::app::NewTaskType::Scheduled => 1,
         crate::tui::app::NewTaskType::Watcher => 2,
+        crate::tui::app::NewTaskType::Terminal => 3,
     };
 
     let is_focused = |field: usize| dialog.field == field;
@@ -104,9 +107,11 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     };
     let mode_field = 1;
 
-    let is_interactive = matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
-    let name_field = 2usize; // interactive only
-    let cli_field = if is_interactive { 3 } else { 1 };
+    // After removing the Name field, field indices for Interactive shift down by 1:
+    // Interactive: 0=type, 1=mode, 2=CLI, 3=model, 4=dir, 5=yolo
+    // Scheduled/Watcher: 0=type, 1=CLI, 2=model, 3=prompt, 4=cron/watch, 5=dir
+    // Terminal: 0=type, 1=dir, 2=shell
+    let cli_field = if is_interactive { 2 } else { 1 };
 
     let mut lines = vec![
         Line::from(""),
@@ -163,20 +168,81 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Name row — only for interactive, hidden in edit mode
-    if is_interactive && !is_edit {
+    // For Terminal type, show only Dir + Shell fields (no CLI, no model, etc.)
+    if is_terminal {
+        let term_dir_field = 1usize;
+        let term_shell_field = 2usize;
+
         lines.push(Line::from(vec![
-            Span::styled("  Name:  ", Style::default().fg(DIM)),
+            Span::styled("  Dir:   ", Style::default().fg(DIM)),
             Span::styled(
-                if dialog.agent_name.is_empty() {
-                    " (optional — random if empty)".to_string()
-                } else {
-                    format!(" {}▏", dialog.agent_name)
-                },
-                focus_style(name_field),
+                truncate_str(&dialog.working_dir, 50),
+                focus_style(term_dir_field),
             ),
         ]));
         lines.push(Line::from(""));
+
+        // Directory browser for terminal (field 1 = dir)
+        if !dialog.dir_entries.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  Directories  (↑↓ navigate  → enter  ← go up):",
+                if dialog.field == term_dir_field {
+                    Style::default().fg(accent)
+                } else {
+                    Style::default().fg(DIM)
+                },
+            )));
+
+            let visible_rows = 4;
+            let scroll = dialog.dir_selected.saturating_sub(visible_rows - 1);
+
+            let has_more_below = scroll + visible_rows < dialog.dir_entries.len();
+            for (i, entry) in dialog.dir_entries.iter().enumerate().skip(scroll) {
+                if i >= scroll + visible_rows {
+                    break;
+                }
+                let is_selected = i == dialog.dir_selected;
+                let entry_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("    {entry}"),
+                    entry_style,
+                )));
+            }
+            if has_more_below {
+                lines.push(Line::from(Span::styled(
+                    "    ▼ more…",
+                    Style::default().fg(DIM),
+                )));
+            }
+            lines.push(Line::from(""));
+        }
+
+        lines.push(Line::from(vec![
+            Span::styled("  Shell: ", Style::default().fg(DIM)),
+            Span::styled(
+                if dialog.shell.is_empty() {
+                    " bash".to_string()
+                } else {
+                    format!(" {}▏", dialog.shell)
+                },
+                focus_style(term_shell_field),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(Span::styled(
+            "  ↑↓: fields  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel",
+            Style::default().fg(DIM),
+        )));
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
     }
 
     lines.push(Line::from(vec![
@@ -192,12 +258,12 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     ]));
     lines.push(Line::from(""));
 
-    let model_field = if is_interactive { 4 } else { 2 };
-    let prompt_field = 3usize; // non-interactive only (field 3)
-    let extra_field = 4usize; // non-interactive only (field 4)
-    let dir_field = if is_interactive {
-        5
-    } else if dialog.task_type == crate::tui::app::NewTaskType::Watcher {
+    // Interactive: 0=type 1=mode 2=CLI 3=model 4=dir 5=yolo
+    // Scheduled/Watcher: 0=type 1=CLI 2=model 3=prompt 4=cron/watch 5=dir
+    let model_field = if is_interactive { 3 } else { 2 };
+    let prompt_field = 3usize;
+    let extra_field = 4usize;
+    let dir_field = if is_interactive || dialog.task_type == crate::tui::app::NewTaskType::Watcher {
         4
     } else {
         5
@@ -372,7 +438,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     if is_interactive {
         let has_yolo = dialog.selected_yolo_flag().is_some();
         let checkbox = if dialog.yolo_mode { "◉" } else { "○" };
-        let yolo_field = 6usize;
+        let yolo_field = 5usize;
         let checkbox_style = if dialog.field == yolo_field {
             Style::default()
                 .fg(Color::Black)
@@ -476,10 +542,99 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         crate::tui::app::NewTaskType::Watcher => {
             "  ↑↓: fields · ←→: type/CLI · Space: select · Enter: create · Esc: cancel"
         }
+        crate::tui::app::NewTaskType::Terminal => {
+            "  ↑↓: fields  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
+        }
     };
 
     lines.push(Line::from(Span::styled(
         help_text,
+        Style::default().fg(DIM),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Draw the split picker overlay for pairing two sessions.
+pub(super) fn draw_split_picker(frame: &mut Frame, app: &App) {
+    if !app.split_picker_open {
+        return;
+    }
+
+    let sessions = &app.split_picker_sessions;
+    let current_name = match app.selected_agent() {
+        Some(crate::tui::app::AgentEntry::Interactive(idx)) => {
+            app.interactive_agents[*idx].name.clone()
+        }
+        Some(crate::tui::app::AgentEntry::Terminal(idx)) => app.terminal_agents[*idx].name.clone(),
+        _ => String::new(),
+    };
+
+    let visible = sessions.len().min(6) as u16;
+    let height = 9 + visible;
+    let area = centered_rect(60, height, frame.area());
+    frame.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(" Split con... ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Green))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Current: ", Style::default().fg(DIM)),
+            Span::styled(
+                &current_name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Selecciona:", Style::default().fg(DIM))),
+    ];
+
+    for (i, (name, type_label)) in sessions.iter().enumerate() {
+        if name == &current_name {
+            continue;
+        }
+        let selected = i == app.split_picker_idx;
+        let style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if selected { "  > " } else { "    " };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}{}", prefix, name), style),
+            Span::styled(format!("  [{}]", type_label), Style::default().fg(DIM)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    let orient_label = match app.split_picker_orientation {
+        crate::domain::models::SplitOrientation::Horizontal => "● Horizontal  ○ Vertical",
+        crate::domain::models::SplitOrientation::Vertical => "○ Horizontal  ● Vertical",
+    };
+    lines.push(Line::from(vec![
+        Span::styled("  Orientación:  ", Style::default().fg(DIM)),
+        Span::styled(orient_label, Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "                Tab para alternar",
+        Style::default().fg(DIM),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc cancelar               Enter crear",
         Style::default().fg(DIM),
     )));
 
@@ -505,11 +660,11 @@ pub(super) fn draw_quit_confirm(frame: &mut Frame) {
 }
 
 pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
-    let area = centered_rect(32, 12, frame.area());
+    let area = centered_rect(42, 22, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Color Legend ")
+        .title(" Shortcuts & Legend ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow))
         .style(Style::default().bg(Color::Rgb(15, 25, 15)));
@@ -523,7 +678,19 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
         STATUS_WAIT_OFF
     };
 
+    let key_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(DIM);
+
     let lines = vec![
+        Line::from(Span::styled(
+            "Status colors",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
         Line::from(vec![
             Span::styled("▌ ", Style::default().fg(STATUS_RUNNING)),
             Span::styled(
@@ -532,7 +699,7 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Agent is executing", Style::default().fg(DIM)),
+            Span::styled("Agent is executing", desc_style),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -543,7 +710,7 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Agent ready / last run OK", Style::default().fg(DIM)),
+            Span::styled("Agent ready / last run OK", desc_style),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -554,7 +721,7 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Last run failed / error exit", Style::default().fg(DIM)),
+            Span::styled("Last run failed / error exit", desc_style),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -565,7 +732,7 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Waiting for user input", Style::default().fg(DIM)),
+            Span::styled("Waiting for user input", desc_style),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -576,7 +743,35 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Agent is paused", Style::default().fg(DIM)),
+            Span::styled("Agent is paused", desc_style),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Shortcuts",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Ctrl+S  ", key_style),
+            Span::styled("split with another session", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+X  ", key_style),
+            Span::styled("dissolve current split", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+←→ ", key_style),
+            Span::styled("switch split panel", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+T  ", key_style),
+            Span::styled("context transfer to agent", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("F4      ", key_style),
+            Span::styled("terminate session (or split group)", desc_style),
         ]),
     ];
 
@@ -607,11 +802,28 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
     let area = centered_rect(70, height, frame.area());
     frame.render_widget(Clear, area);
 
-    let (src_id, accent) = app
-        .interactive_agents
-        .get(modal.source_agent_idx)
-        .map(|a| (a.name.as_str(), a.accent_color))
-        .unwrap_or(("?", ACCENT));
+    let (src_id, accent) = if modal.source_is_terminal {
+        app.terminal_agents
+            .get(modal.source_agent_idx)
+            .map(|a| (a.name.as_str(), a.accent_color))
+            .unwrap_or(("?", ACCENT))
+    } else {
+        app.interactive_agents
+            .get(modal.source_agent_idx)
+            .map(|a| (a.name.as_str(), a.accent_color))
+            .unwrap_or(("?", ACCENT))
+    };
+
+    let src_type = if modal.source_is_terminal {
+        "terminal"
+    } else {
+        "agent"
+    };
+    let n_label = if modal.source_is_terminal {
+        "pages (×50 lines)"
+    } else {
+        "prompts"
+    };
 
     let block = Block::default()
         .title(format!(" Context Transfer — from: {src_id} "))
@@ -630,10 +842,10 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  From prompt: ", Style::default().fg(DIM)),
+            Span::styled(format!("  From {src_type}: "), Style::default().fg(DIM)),
             Span::styled(format!(" ◀ {} ▶ ", modal.n_prompts), active_style),
             Span::styled(
-                "  (most recent N prompts + responses)",
+                format!("  (most recent {n_label})"),
                 Style::default().fg(DIM),
             ),
         ]),
@@ -955,6 +1167,83 @@ fn draw_section_picker_modal(
                 height: 1,
             };
             frame.render_widget(Paragraph::new(hint), hint_area);
+        }
+        SectionPickerMode::SkillsPicker {
+            selected, entries, ..
+        } => {
+            let height = (entries.len() as u16 + 5).min(16);
+            let area = centered_rect(55, height, frame.area());
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Tools — Pick a Skill ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(10, 20, 30)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            if entries.is_empty() {
+                let msg = Line::from(vec![Span::styled(
+                    "  No skills found",
+                    Style::default().fg(Color::DarkGray),
+                )]);
+                frame.render_widget(
+                    Paragraph::new(msg),
+                    ratatui::layout::Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            } else {
+                let mut y_pos = inner.y;
+                for (i, (label, _, _)) in entries.iter().enumerate() {
+                    if y_pos >= inner.y + inner.height.saturating_sub(1) {
+                        break;
+                    }
+                    let is_selected = i == *selected;
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let line = Line::from(vec![Span::styled(format!("  {label} "), style)]);
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        ratatui::layout::Rect {
+                            x: inner.x,
+                            y: y_pos,
+                            width: inner.width,
+                            height: 1,
+                        },
+                    );
+                    y_pos += 1;
+                }
+            }
+
+            let hint = Line::from(vec![
+                Span::styled("↑↓ ", Style::default().fg(DIM)),
+                Span::styled("select  ", Style::default().fg(Color::White)),
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("add  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(hint),
+                ratatui::layout::Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height.saturating_sub(1),
+                    width: inner.width,
+                    height: 1,
+                },
+            );
         }
         SectionPickerMode::None => {}
     }
@@ -1351,7 +1640,7 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
         let section_type = {
             let known = [
-                "output_format",
+                "tools",
                 "instruction",
                 "context",
                 "resources",
@@ -1372,7 +1661,12 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             .unwrap_or(section_type);
 
         let suffix = section_name.strip_prefix(section_type).unwrap_or("");
-        let display_label = if suffix.is_empty() {
+        let is_tools = section_type == "tools";
+        let display_label = if is_tools && suffix.is_empty() {
+            "Tools".to_string()
+        } else if is_tools {
+            format!("Tools {}", suffix.trim_start_matches('_'))
+        } else if suffix.is_empty() {
             label.to_string()
         } else {
             format!("{} {}", label, suffix.trim_start_matches('_'))
@@ -1406,7 +1700,15 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             .map(|s| s.as_str())
             .unwrap_or("");
 
-        let (render_text, content_height, scroll_offset) = if is_focused {
+        let (render_text, content_height, scroll_offset) = if is_tools {
+            // Tools section: read-only, always 1 line — shows skill label or placeholder
+            let display = if content_raw.trim().is_empty() {
+                "  (empty — Ctrl+A to pick a skill)".to_string()
+            } else {
+                content_raw.trim().to_string()
+            };
+            (display, 1u16, 0u16)
+        } else if is_focused {
             let cursor_idx = dialog.cursor(section_name).min(content_raw.chars().count());
             let before: String = content_raw.chars().take(cursor_idx).collect();
             let after: String = content_raw.chars().skip(cursor_idx).collect();
