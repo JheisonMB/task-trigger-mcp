@@ -19,7 +19,12 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         .agents
         .iter()
         .enumerate()
-        .filter(|(_, a)| !matches!(a, AgentEntry::Interactive(_)))
+        .filter(|(_, a)| {
+            !matches!(
+                a,
+                AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_)
+            )
+        })
         .map(|(i, _)| i)
         .collect();
     let ix_indices: Vec<usize> = app
@@ -29,11 +34,20 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
         .map(|(i, _)| i)
         .collect();
+    let term_indices: Vec<usize> = app
+        .agents
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a, AgentEntry::Terminal(_)))
+        .map(|(i, _)| i)
+        .collect();
 
     let has_bg = !bg_indices.is_empty();
     let has_ix = !ix_indices.is_empty();
+    let has_term = !term_indices.is_empty();
+    let has_groups = !app.split_groups.is_empty();
 
-    if !has_bg && !has_ix {
+    if !has_bg && !has_ix && !has_term && !has_groups {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(DIM));
@@ -45,27 +59,103 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let border_color = DIM;
-    let row_h = 4u16; // 3 lines + 1 spacer
+    let row_h = 4u16;
+    let grp_row_h = 2u16; // groups section: 1 line per group + spacer
 
-    let (bg_area, ix_area) = if has_bg && has_ix {
-        let bg_needed = bg_indices.len() as u16 * row_h + 2;
-        let ix_needed = ix_indices.len() as u16 * row_h + 2;
-        let total = bg_needed + ix_needed;
-        if total <= area.height {
-            let [top, bottom] =
-                Layout::vertical([Constraint::Length(bg_needed), Constraint::Min(ix_needed)])
-                    .areas(area);
-            (Some(top), Some(bottom))
-        } else {
-            let [top, bottom] =
-                Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .areas(area);
-            (Some(top), Some(bottom))
-        }
-    } else if has_bg {
-        (Some(area), None)
+    // Compute section areas dynamically
+    let bg_needed = if has_bg {
+        bg_indices.len() as u16 * row_h + 2
     } else {
-        (None, Some(area))
+        0
+    };
+    let ix_needed = if has_ix {
+        ix_indices.len() as u16 * row_h + 2
+    } else {
+        0
+    };
+    let term_needed = if has_term {
+        term_indices.len() as u16 * row_h + 2
+    } else {
+        0
+    };
+    let grp_needed = if has_groups {
+        app.split_groups.len() as u16 * grp_row_h + 2
+    } else {
+        0
+    };
+    let total_needed = bg_needed + ix_needed + term_needed + grp_needed;
+
+    let section_count = has_bg as u16 + has_ix as u16 + has_term as u16 + has_groups as u16;
+
+    let (bg_area, ix_area, term_area, grp_area) = if total_needed <= area.height
+        || section_count == 1
+    {
+        let mut remaining = area;
+        let bg_a = if has_bg {
+            let [top, rest] = Layout::vertical([Constraint::Length(bg_needed), Constraint::Min(0)])
+                .areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let ix_a = if has_ix {
+            let [top, rest] = Layout::vertical([Constraint::Length(ix_needed), Constraint::Min(0)])
+                .areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let term_a = if has_term {
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(term_needed), Constraint::Min(0)])
+                    .areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let grp_a = if has_groups && remaining.height > 0 {
+            Some(remaining)
+        } else {
+            None
+        };
+        (bg_a, ix_a, term_a, grp_a)
+    } else {
+        // Distribute evenly
+        let per = area.height / section_count;
+        let mut remaining = area;
+        let bg_a = if has_bg {
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let ix_a = if has_ix {
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let term_a = if has_term {
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
+            remaining = rest;
+            Some(top)
+        } else {
+            None
+        };
+        let grp_a = if has_groups && remaining.height > 0 {
+            Some(remaining)
+        } else {
+            None
+        };
+        (bg_a, ix_a, term_a, grp_a)
     };
 
     if let Some(bg_area) = bg_area {
@@ -92,6 +182,32 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         let inner = block.inner(ix_area);
         frame.render_widget(block, ix_area);
         draw_agent_list(frame, inner, &ix_indices, app, INTERACTIVE_COLOR);
+    }
+
+    if let Some(term_area) = term_area {
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" terminal ({}) ", term_indices.len()),
+                Style::default().fg(DIM),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(term_area);
+        frame.render_widget(block, term_area);
+        draw_agent_list(frame, inner, &term_indices, app, Color::Green);
+    }
+
+    if let Some(grp_area) = grp_area {
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" groups ({}) ", app.split_groups.len()),
+                Style::default().fg(DIM),
+            ))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let inner = block.inner(grp_area);
+        frame.render_widget(block, grp_area);
+        draw_groups_list(frame, inner, app);
     }
 }
 
@@ -129,6 +245,7 @@ fn draw_sidebar_card(
 
     let accent = match agent {
         AgentEntry::Interactive(idx) => app.interactive_agents[*idx].accent_color,
+        AgentEntry::Terminal(idx) => app.terminal_agents[*idx].accent_color,
         _ => ACCENT,
     };
 
@@ -168,13 +285,22 @@ fn draw_sidebar_card(
             };
             (color, "pty", a.cli.as_str())
         }
+        AgentEntry::Terminal(idx) => {
+            let a = &app.terminal_agents[*idx];
+            let color = match &a.status {
+                AgentStatus::Running => STATUS_RUNNING,
+                AgentStatus::Exited(0) => STATUS_OK,
+                AgentStatus::Exited(_) => STATUS_FAIL,
+            };
+            (color, "term", a.shell.as_str())
+        }
+        AgentEntry::Group(_) => (STATUS_OK, "group", ""),
     };
 
-    // Detect if waiting for input - primary detection via PTY heuristics
-    let mut is_waiting = if let AgentEntry::Interactive(idx) = agent {
-        app.interactive_agents[*idx].is_waiting_for_input()
-    } else {
-        false
+    let mut is_waiting = match agent {
+        AgentEntry::Interactive(idx) => app.interactive_agents[*idx].is_waiting_for_input(),
+        AgentEntry::Terminal(idx) => app.terminal_agents[*idx].is_waiting_for_input(),
+        _ => false,
     };
 
     // If the user has selected this agent and focused the agent/preview panel,
@@ -196,16 +322,28 @@ fn draw_sidebar_card(
         };
     }
 
-    // Line 1: accent bar + id
+    // Line 1: accent bar + id + [▣] if in a group
     if area.height >= 1 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
-        let id_text = Span::styled(
-            agent.id(app),
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(if selected { accent } else { Color::White }),
-        );
-        let line = Line::from(vec![accent_bar, Span::raw(" "), id_text]);
+        let name = agent.id(app);
+        let in_group = app
+            .split_groups
+            .iter()
+            .any(|g| g.session_a == name || g.session_b == name);
+        let mut spans = vec![
+            accent_bar,
+            Span::raw(" "),
+            Span::styled(
+                name,
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(if selected { accent } else { Color::White }),
+            ),
+        ];
+        if in_group {
+            spans.push(Span::styled(" [▣]", Style::default().fg(DIM)));
+        }
+        let line = Line::from(spans);
         let r = Rect::new(area.x, area.y, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
     }
@@ -236,6 +374,8 @@ fn draw_sidebar_card(
             AgentEntry::BackgroundAgent(t) => t.working_dir.as_deref(),
             AgentEntry::Watcher(w) => Some(w.path.as_str()),
             AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
+            AgentEntry::Terminal(idx) => Some(app.terminal_agents[*idx].working_dir.as_str()),
+            AgentEntry::Group(_) => None,
         };
         let dir_text = work_dir
             .filter(|d| !d.is_empty())
@@ -249,5 +389,76 @@ fn draw_sidebar_card(
         let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);
         let r = Rect::new(area.x, area.y + 2, area.width, 1);
         frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
+    }
+}
+
+fn draw_groups_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Collect the agent-list indices for Group entries
+    let group_agent_indices: Vec<usize> = app
+        .agents
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| matches!(a, AgentEntry::Group(_)))
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut y = area.y;
+    for (pos, (&agent_idx, group)) in group_agent_indices
+        .iter()
+        .zip(app.split_groups.iter())
+        .enumerate()
+    {
+        if y >= area.y + area.height {
+            break;
+        }
+        let is_selected = agent_idx == app.selected;
+        let is_active = app
+            .active_split_id
+            .as_deref()
+            .is_some_and(|id| id == group.id);
+
+        let label = format!("{} · {}", group.session_a, group.session_b);
+        let bg = if is_selected {
+            BG_SELECTED
+        } else {
+            Color::Reset
+        };
+        let fg = if is_selected {
+            Color::White
+        } else if is_active {
+            Color::Green
+        } else {
+            Color::White
+        };
+        let modifier = if is_active || is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+
+        let prefix_color = if is_active { Color::Green } else { DIM };
+        let active_tag = if is_active { " ●" } else { "" };
+
+        let prefix = Span::styled("▌ ", Style::default().fg(prefix_color).bg(bg));
+        let line = Line::from(vec![
+            prefix,
+            Span::styled(
+                format!(
+                    "{}{}",
+                    truncate_str(&label, area.width.saturating_sub(6) as usize),
+                    active_tag
+                ),
+                Style::default().fg(fg).bg(bg).add_modifier(modifier),
+            ),
+        ]);
+        let r = Rect::new(area.x, y, area.width, 1);
+        frame.render_widget(Paragraph::new(line), r);
+        app.sidebar_click_map.push((agent_idx, y, y + 1));
+
+        if pos < group_agent_indices.len() - 1 {
+            y += 2; // spacer between groups
+        } else {
+            y += 1;
+        }
     }
 }
