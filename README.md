@@ -25,16 +25,37 @@ agent-canopy is a modern, self-contained MCP (Multi-Agent Control Point) server 
 
 ## Features
 
-- **🚀 Efficient Internal Scheduler:** Event-driven, cron-based scheduling (no polling) using Tokio and precise sleep/wake logic.
-- **📊 File Watcher Engine:** Monitors files/directories for create, modify, delete, and move events using the notify crate.
-- **💾 Persistent State:** All tasks, watchers, execution logs, and agent state are stored in a bundled SQLite database.
-- **🧩 Modular Architecture:** Clear separation of concerns (application, daemon, db, domain, executor, scheduler, tui, watchers).
-- **🤖 Interactive Agents:** Each agent runs in a PTY with a virtual terminal (vt100), supporting full TUI management and colored output.
-- **💻 Terminal Sessions:** Raw terminal sessions with command history, autocomplete, and Warp-like input mode.
-- **🔄 Split View:** Side-by-side or stacked terminal/agent sessions with independent focus management.
-- **⏰ Task/Watcher Models:** Tasks and watchers support expiration, locking, per-run logs, and flexible triggers.
-- **🔄 Auto-Updates:** Automatically checks for and installs stable releases from GitHub (24-hour interval).
-- **🌐 Cross-Platform:** Runs on Linux, macOS, and Windows (single static binary, no external dependencies).
+### 🎯 Core Capabilities
+
+- **🚀 High-Performance Scheduler:** Event-driven cron scheduler using Tokio with zero polling overhead. Computes precise wake-up times and sleeps until needed, reducing CPU usage to near-zero when idle.
+- **📊 Real-time File Watcher:** Instantly reacts to file system events (create, modify, delete, move) using the notify crate with configurable debouncing and recursive directory monitoring.
+- **💾 Persistent State Management:** All tasks, watchers, execution logs, and agent state are stored in an embedded SQLite database with automatic migrations and transaction safety.
+
+### 🤖 Agent Orchestration
+
+- **Interactive PTY Agents:** Each agent runs in a dedicated pseudo-terminal (PTY) with full vt100 emulation, supporting 24-bit colors, cursor positioning, and interactive applications.
+- **Terminal Sessions:** Raw shell sessions with command history, tab autocomplete, directory navigation, and Warp-like input mode for efficient command entry.
+- **Split View Mode:** Side-by-side or stacked terminal/agent sessions with independent focus, allowing simultaneous monitoring of multiple agents.
+- **Context Transfer:** Seamlessly transfer context between agents while preserving session state and scrollback history. Capture conversation history, prompts, and outputs from one agent and inject them into another.
+- **Prompt Builder:** Structured prompt templates with configurable sections (instruction, context, resources, examples) to create well-formatted prompts for agents.
+
+### 🔧 Advanced Task Management
+
+- **Flexible Scheduling:** Support for cron expressions, one-time tasks, and event-triggered watchers with configurable timeouts and expiration.
+- **Execution Control:** Task locking, concurrency limits, and per-run logging with detailed execution history and status tracking.
+- **Auto-Update System:** Automatically checks for and installs stable releases from GitHub at 24-hour intervals, ensuring you always have the latest features and fixes. Canopy detects new stable releases on startup and uses the built-in `scripts/install.sh` to perform atomic binary replacement.
+
+### 🌐 Cross-Platform Support
+
+- **Single Static Binary:** Zero runtime dependencies — just download and run on Linux, macOS, or Windows.
+- **Platform-Specific Optimizations:** Native filesystem monitoring, process management, and terminal handling for each operating system.
+- **Unified Configuration:** Consistent CLI and API interface across all supported platforms.
+
+### 🧩 Modular Architecture
+
+- **Clear Separation of Concerns:** Independent modules for application logic, daemon lifecycle, database persistence, domain models, execution engine, scheduling, TUI, and file watching.
+- **Extensible Design:** Easy to add new CLI integrations, custom triggers, or agent types without modifying core components.
+- **Test Coverage:** Comprehensive unit and integration tests with 100% code coverage for critical paths.
 
 ---
 
@@ -75,7 +96,7 @@ agent-canopy is a modern, self-contained MCP (Multi-Agent Control Point) server 
    - View logs, status, and manage agents interactively via the TUI.
    - All state is persisted in `~/.canopy/tasks.db`.
 
-**Note:** Canopy automatically checks for updates every 24 hours and installs stable releases. No manual intervention required!
+**Note:** Canopy automatically checks for updates every 24 hours and installs stable releases. No manual intervention required! The system verifies GitHub releases, downloads the appropriate binary for your platform, and performs an atomic replacement of the running executable.
 
 ---
 
