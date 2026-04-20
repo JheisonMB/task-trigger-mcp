@@ -30,6 +30,8 @@ agent-canopy is a modern, self-contained MCP (Multi-Agent Control Point) server 
 - **💾 Persistent State:** All tasks, watchers, execution logs, and agent state are stored in a bundled SQLite database.
 - **🧩 Modular Architecture:** Clear separation of concerns (application, daemon, db, domain, executor, scheduler, tui, watchers).
 - **🤖 Interactive Agents:** Each agent runs in a PTY with a virtual terminal (vt100), supporting full TUI management and colored output.
+- **💻 Terminal Sessions:** Raw terminal sessions with command history, autocomplete, and Warp-like input mode.
+- **🔄 Split View:** Side-by-side or stacked terminal/agent sessions with independent focus management.
 - **⏰ Task/Watcher Models:** Tasks and watchers support expiration, locking, per-run logs, and flexible triggers.
 - **🌐 Cross-Platform:** Runs on Linux, macOS, and Windows (single static binary, no external dependencies).
 
