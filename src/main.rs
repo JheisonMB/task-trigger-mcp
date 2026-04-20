@@ -14,9 +14,11 @@ mod daemon;
 mod db;
 mod domain;
 mod executor;
+mod mcp_wizard;
 mod scheduler;
 pub(crate) mod service_install;
 mod setup;
+mod skills;
 mod tui;
 mod watchers;
 
@@ -58,6 +60,8 @@ enum Commands {
     Stdio,
     /// Run the setup wizard (configure MCP, start daemon, install service).
     Setup,
+    /// Interactive MCP management wizard (sync, add, remove across all platforms).
+    Mcp,
     /// Start the MCP server in foreground (used internally by daemon start).
     #[command(hide = true)]
     Serve,
@@ -91,17 +95,23 @@ async fn main() -> Result<()> {
         Some(Commands::Stdio) => handle_stdio().await,
         Some(Commands::Serve) => handle_http_server(cli.port).await,
         Some(Commands::Setup) => {
-            setup::run_setup()?;
+            tokio::task::block_in_place(setup::run_setup)?;
+            Ok(())
+        }
+        Some(Commands::Mcp) => {
+            tokio::task::block_in_place(mcp_wizard::run_mcp_wizard)?;
             Ok(())
         }
         None => {
-            // First-run: launch interactive setup wizard
-            if setup::needs_setup() {
-                setup::run_setup()?;
-            }
-            // Background daily registry refresh
-            setup::maybe_refresh_registry();
-            tui::run_tui()?;
+            tokio::task::block_in_place(|| {
+                // First-run: launch interactive setup wizard
+                if setup::needs_setup() {
+                    setup::run_setup()?;
+                }
+                // Background daily registry refresh
+                setup::maybe_refresh_registry();
+                tui::run_tui()
+            })?;
             Ok(())
         }
     }
