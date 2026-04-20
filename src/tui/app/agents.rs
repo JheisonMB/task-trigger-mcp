@@ -71,72 +71,87 @@ impl App {
     }
 
     pub fn next_interactive(&mut self) {
-        let interactive_indices: Vec<usize> = self
+        let focusable: Vec<usize> = self
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_)))
+            .filter(|(_, a)| {
+                matches!(
+                    a,
+                    AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_)
+                )
+            })
             .map(|(i, _)| i)
             .collect();
 
-        if interactive_indices.is_empty() {
+        if focusable.is_empty() {
             return;
         }
 
-        let current_pos = interactive_indices
+        let current_pos = focusable
             .iter()
             .position(|&i| i == self.selected)
             .unwrap_or(0);
 
-        let next_pos = (current_pos + 1) % interactive_indices.len();
-        self.selected = interactive_indices[next_pos];
+        let next_pos = (current_pos + 1) % focusable.len();
+        self.selected = focusable[next_pos];
         self.focus = Focus::Agent;
-
-        match &self.agents[self.selected] {
-            AgentEntry::Interactive(idx) => {
-                self.interactive_agents[*idx].mark_viewed();
-            }
-            AgentEntry::Terminal(idx) => {
-                self.terminal_agents[*idx].mark_viewed();
-            }
-            _ => {}
-        }
+        self.activate_selected_entry();
     }
 
     pub fn prev_interactive(&mut self) {
-        let interactive_indices: Vec<usize> = self
+        let focusable: Vec<usize> = self
             .agents
             .iter()
             .enumerate()
-            .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_)))
+            .filter(|(_, a)| {
+                matches!(
+                    a,
+                    AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_)
+                )
+            })
             .map(|(i, _)| i)
             .collect();
 
-        if interactive_indices.is_empty() {
+        if focusable.is_empty() {
             return;
         }
 
-        let current_pos = interactive_indices
+        let current_pos = focusable
             .iter()
             .position(|&i| i == self.selected)
             .unwrap_or(0);
 
         let prev_pos = if current_pos == 0 {
-            interactive_indices.len() - 1
+            focusable.len() - 1
         } else {
             current_pos - 1
         };
-        self.selected = interactive_indices[prev_pos];
+        self.selected = focusable[prev_pos];
         self.focus = Focus::Agent;
+        self.activate_selected_entry();
+    }
 
+    /// Activate split or clear it based on the currently selected entry.
+    fn activate_selected_entry(&mut self) {
         match &self.agents[self.selected] {
+            AgentEntry::Group(idx) => {
+                if let Some(group) = self.split_groups.get(*idx) {
+                    self.active_split_id = Some(group.id.clone());
+                    self.split_right_focused = false;
+                }
+            }
             AgentEntry::Interactive(idx) => {
+                self.active_split_id = None;
                 self.interactive_agents[*idx].mark_viewed();
             }
             AgentEntry::Terminal(idx) => {
+                self.active_split_id = None;
                 self.terminal_agents[*idx].mark_viewed();
             }
-            _ => {}
+            _ => {
+                self.active_split_id = None;
+            }
         }
     }
 
@@ -174,8 +189,14 @@ impl App {
             if dominated {
                 continue;
             }
-            if agent.last_pty_cols != cols || agent.last_pty_rows != rows {
-                agent.resize(cols, rows);
+            // Warp-mode terminals lose 3 rows for the input box
+            let effective_rows = if agent.warp_mode {
+                rows.saturating_sub(3)
+            } else {
+                rows
+            };
+            if agent.last_pty_cols != cols || agent.last_pty_rows != effective_rows {
+                agent.resize(cols, effective_rows);
             }
         }
     }
@@ -439,14 +460,15 @@ impl App {
     /// - Active split group: kill both sessions and dissolve the group.
     pub fn terminate_focused_session(&mut self) {
         if let Some(ref split_id) = self.active_split_id.clone() {
-            // Split mode — kill both sessions in the group
+            // Split mode — kill the focused panel's session, dissolve the group
             let group = self.split_groups.iter().find(|g| g.id == *split_id);
             let Some(group) = group else { return };
-            let names = [group.session_a.clone(), group.session_b.clone()];
-
-            for name in &names {
-                self.kill_session_by_name(name);
-            }
+            let target = if self.split_right_focused {
+                group.session_b.clone()
+            } else {
+                group.session_a.clone()
+            };
+            self.kill_session_by_name(&target);
 
             // Dissolve the group
             let _ = self.db.delete_group(split_id);
