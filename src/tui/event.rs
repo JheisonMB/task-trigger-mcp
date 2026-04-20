@@ -32,7 +32,12 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             | Focus::NewAgentDialog
             | Focus::ContextTransfer
             | Focus::PromptTemplateDialog => Duration::from_millis(50),
-            Focus::Preview if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) => {
+            Focus::Preview
+                if matches!(
+                    app.selected_agent(),
+                    Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+                ) =>
+            {
                 Duration::from_millis(100)
             }
             Focus::Home if app.brain.as_ref().is_some_and(|b| !b.active) => {
@@ -122,8 +127,20 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                     let addable = dialog.get_addable_sections();
                     if *selected < addable.len() {
                         if let Some((name, _)) = addable.get(*selected) {
-                            dialog.add_section(name);
-                            dialog.picker_mode = SectionPickerMode::None;
+                            if *name == "tools" {
+                                // Chain directly to SkillsPicker — no extra Ctrl+A needed
+                                use crate::tui::app::dialog::SimplePromptDialog;
+                                let entries =
+                                    SimplePromptDialog::collect_skills_for_picker(&workdir);
+                                dialog.picker_mode = SectionPickerMode::SkillsPicker {
+                                    selected: 0,
+                                    entries,
+                                    replace_id: None,
+                                };
+                            } else {
+                                dialog.add_section(name);
+                                dialog.picker_mode = SectionPickerMode::None;
+                            }
                         }
                     }
                 }
@@ -198,6 +215,56 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
             }
             return Ok(());
         }
+        SectionPickerMode::SkillsPicker {
+            selected, entries, ..
+        } => {
+            let selected = *selected;
+            let count = entries.len();
+            match code {
+                KeyCode::Esc => {
+                    dialog.picker_mode = SectionPickerMode::None;
+                }
+                KeyCode::Up => {
+                    if selected > 0 {
+                        if let SectionPickerMode::SkillsPicker {
+                            selected: ref mut s,
+                            ..
+                        } = dialog.picker_mode
+                        {
+                            *s = selected - 1;
+                        }
+                    }
+                }
+                KeyCode::Down => {
+                    if selected + 1 < count {
+                        if let SectionPickerMode::SkillsPicker {
+                            selected: ref mut s,
+                            ..
+                        } = dialog.picker_mode
+                        {
+                            *s = selected + 1;
+                        }
+                    }
+                }
+                KeyCode::Enter | KeyCode::Tab => {
+                    if let SectionPickerMode::SkillsPicker {
+                        entries,
+                        selected,
+                        replace_id,
+                    } = std::mem::replace(&mut dialog.picker_mode, SectionPickerMode::None)
+                    {
+                        if let Some((label, _, _)) = entries.get(selected) {
+                            match replace_id {
+                                Some(ref id) => dialog.set_tools_section_skill(id, label),
+                                None => dialog.add_section_with_content("tools", label.clone()),
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         SectionPickerMode::None => {}
     }
 
@@ -249,36 +316,24 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 }
             }
             KeyCode::Enter | KeyCode::Tab => {
-                let is_dir = dialog
+                // Enter/Tab always selects the highlighted entry — file OR directory.
+                // Use → (Right arrow) to navigate inside a directory without selecting it.
+                let rel = dialog
                     .at_picker
                     .as_ref()
-                    .and_then(|p| p.entries.get(p.selected))
-                    .map(|e| e.is_dir)
-                    .unwrap_or(false);
-                if is_dir {
-                    if let Some(p) = &mut dialog.at_picker {
-                        p.enter_dir();
-                    }
-                } else {
-                    let rel = dialog
-                        .at_picker
-                        .as_ref()
-                        .and_then(|p| p.relative_path_of_selected());
-                    let full = dialog
-                        .at_picker
-                        .as_ref()
-                        .and_then(|p| p.full_path_of_selected());
-                    if let (Some(rel_path), Some(full_path)) = (rel, full) {
-                        let full_str = full_path.to_string_lossy().to_string();
-                        dialog.insert_at_completion(
-                            &section_name,
-                            &rel_path,
-                            &full_str,
-                            field_width,
-                        );
-                    }
-                    dialog.at_picker = None;
+                    .and_then(|p| p.relative_path_of_selected());
+                let full = dialog
+                    .at_picker
+                    .as_ref()
+                    .and_then(|p| p.full_path_of_selected());
+                if let (Some(rel_path), Some(full_path)) = (rel, full) {
+                    let full_str = full_path.to_string_lossy().to_string();
+                    let orig_focus = dialog.focused_section;
+                    dialog.insert_at_completion(&section_name, &rel_path, &full_str, field_width);
+                    // Explicitly restore focus so the section where @ was typed stays active.
+                    dialog.focused_section = orig_focus;
                 }
+                dialog.at_picker = None;
             }
             KeyCode::Backspace => {
                 let query_empty = dialog
@@ -388,11 +443,21 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 dialog.focused_section += 1;
             }
         }
-        // Ctrl+A → open add-section picker
+        // Ctrl+A → if on tools section: open SkillsPicker to replace; else: open add-section picker
         KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-            let addable = dialog.get_addable_sections();
-            if !addable.is_empty() {
-                dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
+            use crate::tui::app::dialog::SimplePromptDialog;
+            if SimplePromptDialog::is_tools_section(&section_name) {
+                let entries = SimplePromptDialog::collect_skills_for_picker(&workdir);
+                dialog.picker_mode = SectionPickerMode::SkillsPicker {
+                    selected: 0,
+                    entries,
+                    replace_id: Some(section_name.clone()),
+                };
+            } else {
+                let addable = dialog.get_addable_sections();
+                if !addable.is_empty() {
+                    dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
+                }
             }
         }
         // Ctrl+X → open remove-section picker
@@ -403,6 +468,11 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
             }
         }
         KeyCode::Char(c) => {
+            use crate::tui::app::dialog::SimplePromptDialog;
+            // Tools sections are read-only — no direct text input.
+            if SimplePromptDialog::is_tools_section(&section_name) {
+                return Ok(());
+            }
             // Insert first so cursor advances, then check for `@` trigger.
             dialog.insert_char_at_cursor(&section_name, c, field_width);
             if c == '@' && dialog.at_picker.is_none() {
@@ -412,6 +482,11 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
             }
         }
         KeyCode::Backspace => {
+            use crate::tui::app::dialog::SimplePromptDialog;
+            // Tools sections are read-only — backspace is a no-op.
+            if SimplePromptDialog::is_tools_section(&section_name) {
+                return Ok(());
+            }
             dialog.backspace_at_cursor(&section_name, field_width);
         }
         _ => {}
@@ -580,7 +655,12 @@ fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Re
             }
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
-        _ => {}
+        _ => {
+            // Any unbound key resets the brain animation back to the banner
+            if app.brain.as_ref().is_some_and(|b| b.active) {
+                app.dismiss_brain();
+            }
+        }
     }
     Ok(())
 }
@@ -593,6 +673,15 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
             app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {
+            // For Group entries: Enter activates the split
+            if let Some(AgentEntry::Group(idx)) = app.selected_agent() {
+                let idx = *idx;
+                if let Some(group) = app.split_groups.get(idx) {
+                    let id = group.id.clone();
+                    app.active_split_id = Some(id);
+                }
+                return Ok(());
+            }
             app.log_scroll = 0;
             app.focus = Focus::Agent;
         }
@@ -627,8 +716,47 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
 // ── Focus: PTY interaction or log scroll ────────────────────────────
 
 fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+    // Split picker intercepts ALL keys when open
+    if app.split_picker_open {
+        match code {
+            KeyCode::Down => {
+                let len = app.split_picker_sessions.len();
+                if len > 0 {
+                    app.split_picker_idx = (app.split_picker_idx + 1) % len;
+                }
+            }
+            KeyCode::Up => {
+                let len = app.split_picker_sessions.len();
+                if len > 0 {
+                    app.split_picker_idx = app.split_picker_idx.checked_sub(1).unwrap_or(len - 1);
+                }
+            }
+            KeyCode::Tab => {
+                app.split_picker_orientation = match app.split_picker_orientation {
+                    crate::domain::models::SplitOrientation::Horizontal => {
+                        crate::domain::models::SplitOrientation::Vertical
+                    }
+                    crate::domain::models::SplitOrientation::Vertical => {
+                        crate::domain::models::SplitOrientation::Horizontal
+                    }
+                };
+            }
+            KeyCode::Enter => {
+                app.create_split();
+            }
+            KeyCode::Esc => {
+                app.split_picker_open = false;
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Background agents: simple log-scrolling, single Esc → Preview
-    if !matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
+    if !matches!(
+        app.selected_agent(),
+        Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+    ) {
         match code {
             KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Preview,
             KeyCode::Down | KeyCode::Char('j') => app.scroll_log_down(),
@@ -640,15 +768,56 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Ctrl+T: open context transfer modal
+    // Ctrl+T: open context transfer modal (Interactive and Terminal)
     if code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
-        app.open_context_transfer_modal();
+        if app.active_split_id.is_some() {
+            // In split mode, open context transfer for the focused panel's session
+            app.open_context_transfer_for_split();
+        } else if matches!(
+            app.selected_agent(),
+            Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+        ) {
+            app.open_context_transfer_modal();
+        }
         return Ok(());
+    }
+
+    // Ctrl+S: open split picker
+    if code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.open_split_picker();
+        return Ok(());
+    }
+
+    // Ctrl+X: dissolve current split
+    if code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.dissolve_split();
+        return Ok(());
+    }
+
+    // Ctrl+Left/Right: switch panel focus in split view
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        match code {
+            KeyCode::Left => {
+                app.split_right_focused = false;
+                return Ok(());
+            }
+            KeyCode::Right => {
+                app.split_right_focused = true;
+                return Ok(());
+            }
+            _ => {}
+        }
     }
 
     // F10 = switch to Preview mode (replaces double-Esc)
     if code == KeyCode::F(10) {
         app.focus = Focus::Preview;
+        return Ok(());
+    }
+
+    // F4 = terminate current session (or all sessions in a split group)
+    if code == KeyCode::F(4) {
+        app.terminate_focused_session();
         return Ok(());
     }
 
@@ -673,30 +842,92 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         }
     }
 
-    let Some(AgentEntry::Interactive(idx)) = app.selected_agent() else {
-        app.focus = Focus::Home;
-        return Ok(());
+    // In split mode, direct input to the focused split panel's session
+    let (agent_vec, idx) = if let Some(ref split_id) = app.active_split_id {
+        let session_name = app
+            .split_groups
+            .iter()
+            .find(|g| g.id == *split_id)
+            .map(|g| {
+                if app.split_right_focused {
+                    g.session_b.clone()
+                } else {
+                    g.session_a.clone()
+                }
+            });
+        match session_name {
+            Some(name) => resolve_session(app, &name),
+            None => {
+                app.focus = Focus::Preview;
+                return Ok(());
+            }
+        }
+    } else {
+        // Normal (non-split) mode: use the selected agent
+        match app.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => {
+                let idx = *idx;
+                if idx >= app.interactive_agents.len() {
+                    app.focus = Focus::Preview;
+                    return Ok(());
+                }
+                ("interactive", idx)
+            }
+            Some(AgentEntry::Terminal(idx)) => {
+                let idx = *idx;
+                if idx >= app.terminal_agents.len() {
+                    app.focus = Focus::Preview;
+                    return Ok(());
+                }
+                ("terminal", idx)
+            }
+            _ => {
+                app.focus = Focus::Home;
+                return Ok(());
+            }
+        }
     };
-    let idx = *idx;
 
-    // Bounds check — agent may have been removed between ticks
-    if idx >= app.interactive_agents.len() {
+    // Bounds check — if the resolved index is out-of-range, bail to Preview
+    let in_bounds = if agent_vec == "interactive" {
+        idx < app.interactive_agents.len()
+    } else {
+        idx < app.terminal_agents.len()
+    };
+    if !in_bounds {
         app.focus = Focus::Preview;
         return Ok(());
+    }
+
+    macro_rules! agent_ref {
+        () => {
+            if agent_vec == "interactive" {
+                &app.interactive_agents[idx]
+            } else {
+                &app.terminal_agents[idx]
+            }
+        };
+    }
+    macro_rules! agent_mut {
+        () => {
+            if agent_vec == "interactive" {
+                &mut app.interactive_agents[idx]
+            } else {
+                &mut app.terminal_agents[idx]
+            }
+        };
     }
 
     // Shift+Up/Down = always scroll (even when not already scrolled)
     if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
             KeyCode::Up => {
-                let max = app.interactive_agents[idx].max_scroll();
-                app.interactive_agents[idx].scroll_offset =
-                    (app.interactive_agents[idx].scroll_offset + 3).min(max);
+                let max = agent_ref!().max_scroll();
+                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max);
                 return Ok(());
             }
             KeyCode::Down => {
-                app.interactive_agents[idx].scroll_offset =
-                    app.interactive_agents[idx].scroll_offset.saturating_sub(3);
+                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
                 return Ok(());
             }
             _ => {}
@@ -704,71 +935,67 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     // Up/Down = scroll PTY history when scrolled up, otherwise pass to PTY.
-    // PageUp/PageDown always scroll regardless of position.
-    let max_scroll = app.interactive_agents[idx].max_scroll();
-    let scrolled = app.interactive_agents[idx].scroll_offset > 0;
+    let max_scroll = agent_ref!().max_scroll();
+    let scrolled = agent_ref!().scroll_offset > 0;
     match code {
         KeyCode::Up if scrolled => {
-            app.interactive_agents[idx].scroll_offset =
-                (app.interactive_agents[idx].scroll_offset + 3).min(max_scroll);
+            agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max_scroll);
             return Ok(());
         }
         KeyCode::Down if scrolled => {
-            let agent = &mut app.interactive_agents[idx];
-            agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+            agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
             return Ok(());
         }
         KeyCode::PageUp => {
-            app.interactive_agents[idx].scroll_offset =
-                (app.interactive_agents[idx].scroll_offset + 15).min(max_scroll);
+            agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 15).min(max_scroll);
             return Ok(());
         }
         KeyCode::PageDown => {
-            let agent = &mut app.interactive_agents[idx];
-            agent.scroll_offset = agent.scroll_offset.saturating_sub(15);
+            agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(15);
             return Ok(());
         }
         _ => {}
     }
 
-    // Typing resets scroll to live view — but only for printable characters
-    // and Backspace/Enter so that arrow keys can still navigate agent history
-    if app.interactive_agents[idx].scroll_offset > 0 {
+    // Typing resets scroll to live view
+    if agent_ref!().scroll_offset > 0 {
         let resets_scroll = matches!(
             code,
             KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Tab
         );
         if resets_scroll {
-            app.interactive_agents[idx].scroll_offset = 0;
+            agent_mut!().scroll_offset = 0;
         }
     }
 
-    // Record the prompt when the user presses Enter
-    if code == KeyCode::Enter {
-        if let Ok(input) = app.interactive_agents[idx].input_buffer.lock() {
-            let captured = input.trim().to_string();
-            if !captured.is_empty() {
-                app.interactive_agents[idx].record_prompt(&captured);
+    // Record the prompt when the user presses Enter (interactive only)
+    if agent_vec == "interactive" {
+        if code == KeyCode::Enter {
+            if let Ok(input) = app.interactive_agents[idx].input_buffer.lock() {
+                let captured = input.trim().to_string();
+                if !captured.is_empty() {
+                    app.interactive_agents[idx].record_prompt(&captured);
+                }
             }
-        }
-        if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-            input.clear();
-        }
-    } else if let KeyCode::Char(c) = code {
-        if !modifiers.contains(KeyModifiers::CONTROL) {
             if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-                input.push(c);
+                input.clear();
             }
-        }
-    } else if code == KeyCode::Backspace {
-        if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-            input.pop();
+        } else if let KeyCode::Char(c) = code {
+            if !modifiers.contains(KeyModifiers::CONTROL) {
+                if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
+                    input.push(c);
+                }
+            }
+        } else if code == KeyCode::Backspace {
+            if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
+                input.pop();
+            }
         }
     }
 
     let bytes = key_to_bytes(code, modifiers);
     if !bytes.is_empty() {
-        let _ = app.interactive_agents[idx].write_to_pty(&bytes);
+        let _ = agent_mut!().write_to_pty(&bytes);
     }
 
     Ok(())
@@ -843,23 +1070,25 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             };
 
             let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
-            let name_field: usize = 2; // interactive only
-            let cli_field: usize = if is_interactive { 3 } else { 1 };
-            let model_field: usize = if is_interactive { 4 } else { 2 };
-            // Non-interactive only fields (prompt=3, extra=4 are before dir)
+            let is_terminal = matches!(dialog.task_type, super::app::NewTaskType::Terminal);
+            // Interactive: 0=type, 1=mode, 2=CLI, 3=model, 4=dir, 5=yolo
+            // Scheduled/Watcher: 0=type, 1=CLI, 2=model, 3=prompt, 4=cron/watch, 5=dir
+            // Terminal: 0=type, 1=dir, 2=shell
+            let cli_field: usize = if is_interactive { 2 } else { 1 };
+            let model_field: usize = if is_interactive { 3 } else { 2 };
             let prompt_field: usize = 3;
             let extra_field: usize = 4;
             let dir_field: usize = if is_interactive {
-                5
+                4
+            } else if is_terminal {
+                1
             } else if dialog.task_type == super::app::NewTaskType::Watcher {
-                // Watcher reuses the extra_field (4) as the browser field so there is
-                // no separate Dir field for Watchers.
                 4
             } else {
                 5
             };
-            let yolo_field: usize = 6; // interactive only
-            let _ = (prompt_field, extra_field, name_field); // used in specific branches below
+            let yolo_field: usize = 5; // interactive only
+            let _ = (prompt_field, extra_field); // used in specific branches below
 
             match dialog.field {
                 // BackgroundAgent type selector
@@ -867,12 +1096,13 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Left => {
                         dialog.task_type = match dialog.task_type {
                             super::app::NewTaskType::Interactive => {
-                                super::app::NewTaskType::Watcher
+                                super::app::NewTaskType::Terminal
                             }
                             super::app::NewTaskType::Scheduled => {
                                 super::app::NewTaskType::Interactive
                             }
                             super::app::NewTaskType::Watcher => super::app::NewTaskType::Scheduled,
+                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Watcher,
                         };
                         dialog.refresh_dir_entries();
                     }
@@ -882,7 +1112,8 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                                 super::app::NewTaskType::Scheduled
                             }
                             super::app::NewTaskType::Scheduled => super::app::NewTaskType::Watcher,
-                            super::app::NewTaskType::Watcher => {
+                            super::app::NewTaskType::Watcher => super::app::NewTaskType::Terminal,
+                            super::app::NewTaskType::Terminal => {
                                 super::app::NewTaskType::Interactive
                             }
                         };
@@ -912,22 +1143,12 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     {
                         dialog.clear_selected_session();
                     }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = name_field,
+                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
                     KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
                     _ => {}
                 },
-                // Name field (Interactive only — field 2)
-                2 if is_interactive => match code {
-                    KeyCode::Char(c) => dialog.agent_name.push(c),
-                    KeyCode::Backspace => {
-                        dialog.agent_name.pop();
-                    }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = 1,
-                    _ => {}
-                },
                 // CLI selector
-                n if n == cli_field => match code {
+                n if n == cli_field && !is_terminal => match code {
                     KeyCode::Left => {
                         dialog.prev_cli();
                         dialog.refresh_model_suggestions();
@@ -944,7 +1165,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => dialog.field = model_field,
                     KeyCode::Up => {
-                        dialog.field = if is_interactive { name_field } else { 0 };
+                        dialog.field = if is_interactive { 1 } else { 0 };
                     }
                     _ => {}
                 },
@@ -1030,12 +1251,15 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
                 // For Watcher, dir_field == 4 (same as extra_field), so this arm also handles
                 // the watch-path browser. The Scheduled arm above is guarded to avoid shadowing.
+                // For Terminal, dir_field == 1.
                 n if n == dir_field => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
                         } else if is_interactive {
                             dialog.field = yolo_field; // yolo is above dir for interactive
+                        } else if is_terminal {
+                            dialog.field = 0; // type selector
                         } else if dialog.task_type == super::app::NewTaskType::Watcher {
                             dialog.field = 3; // prompt (watcher has no separate cron field)
                         } else {
@@ -1045,6 +1269,8 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Down => {
                         if dialog.dir_selected + 1 < dialog.dir_entries.len() {
                             dialog.dir_selected += 1;
+                        } else if is_terminal {
+                            dialog.field = 2; // shell field for terminal
                         }
                     }
                     KeyCode::Right | KeyCode::Char(' ') => {
@@ -1055,7 +1281,16 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     _ => {}
                 },
-                // Yolo toggle (interactive only — field 6), sits between model and dir
+                // Shell field (Terminal only — field 2)
+                2 if is_terminal => match code {
+                    KeyCode::Char(c) => dialog.shell.push(c),
+                    KeyCode::Backspace => {
+                        dialog.shell.pop();
+                    }
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
+                    _ => {}
+                },
+                // Yolo toggle (interactive only — field 5), sits between model and dir
                 n if n == yolo_field && is_interactive => match code {
                     KeyCode::Char(' ') => {
                         if dialog.selected_yolo_flag().is_some() {
@@ -1084,17 +1319,22 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 /// Rebuild the payload_preview string from the current source agent state.
 fn ctx_rebuild_preview(app: &mut App) {
-    let src_idx = app
+    let src_info = app
         .context_transfer_modal
         .as_ref()
-        .map(|m| m.source_agent_idx);
-    if let Some(idx) = src_idx {
-        if idx < app.interactive_agents.len() {
-            let n_prompts = app
-                .context_transfer_modal
-                .as_ref()
-                .map(|m| m.n_prompts)
-                .unwrap_or(1);
+        .map(|m| (m.source_agent_idx, m.source_is_terminal, m.n_prompts));
+    if let Some((idx, is_terminal, n_prompts)) = src_info {
+        if is_terminal {
+            if idx < app.terminal_agents.len() {
+                let preview = super::context_transfer::build_terminal_context_payload(
+                    &app.terminal_agents[idx],
+                    n_prompts,
+                );
+                if let Some(modal) = app.context_transfer_modal.as_mut() {
+                    modal.payload_preview = preview;
+                }
+            }
+        } else if idx < app.interactive_agents.len() {
             let preview = super::context_transfer::build_context_payload(
                 &app.interactive_agents[idx],
                 n_prompts,
@@ -1123,14 +1363,23 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                 app.context_transfer_to_picker();
             }
             KeyCode::Right | KeyCode::Up | KeyCode::Char('+') => {
-                // Determine the max allowed by actual history length before incrementing.
-                let history_len = app
+                // Determine the max allowed before incrementing.
+                // For interactive: cap by actual prompt history length.
+                // For terminal: cap at 20 "pages" (each = 50 lines).
+                let history_len = if app
                     .context_transfer_modal
                     .as_ref()
-                    .and_then(|m| app.interactive_agents.get(m.source_agent_idx))
-                    .and_then(|a| a.prompt_history.lock().ok().map(|h| h.len()))
-                    .unwrap_or(0)
-                    .max(1);
+                    .is_some_and(|m| m.source_is_terminal)
+                {
+                    20
+                } else {
+                    app.context_transfer_modal
+                        .as_ref()
+                        .and_then(|m| app.interactive_agents.get(m.source_agent_idx))
+                        .and_then(|a| a.prompt_history.lock().ok().map(|h| h.len()))
+                        .unwrap_or(0)
+                        .max(1)
+                };
                 if let Some(modal) = app.context_transfer_modal.as_mut() {
                     modal.n_prompts = (modal.n_prompts + 1).min(history_len);
                 }
@@ -1178,4 +1427,15 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
         },
     }
     Ok(())
+}
+
+/// Resolve a session name to (vec_tag, index) for PTY input routing.
+fn resolve_session(app: &App, name: &str) -> (&'static str, usize) {
+    if let Some(idx) = app.interactive_agents.iter().position(|a| a.name == name) {
+        return ("interactive", idx);
+    }
+    if let Some(idx) = app.terminal_agents.iter().position(|a| a.name == name) {
+        return ("terminal", idx);
+    }
+    ("interactive", usize::MAX)
 }
