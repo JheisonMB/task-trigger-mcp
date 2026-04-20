@@ -1121,6 +1121,7 @@ fn handle_terminal_warp_key(
                 input.clear();
             }
             app.terminal_agents[idx].warp_cursor = 0;
+            app.terminal_agents[idx].history_index = None;
         }
         KeyCode::Tab => {
             let empty = app.terminal_agents[idx]
@@ -1149,6 +1150,7 @@ fn handle_terminal_warp_key(
                 buf.insert(pos, c);
             }
             app.terminal_agents[idx].warp_cursor = cursor + c.len_utf8();
+            app.terminal_agents[idx].history_index = None;
         }
         KeyCode::Backspace => {
             let cursor = app.terminal_agents[idx].warp_cursor;
@@ -1226,15 +1228,84 @@ fn handle_terminal_warp_key(
             app.terminal_agents[idx].warp_cursor = len;
         }
         KeyCode::Up => {
-            // Scroll up through terminal scrollback
-            let max = app.terminal_agents[idx].max_scroll();
-            app.terminal_agents[idx].scroll_offset =
-                (app.terminal_agents[idx].scroll_offset + 3).min(max);
+            let input_empty = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|b| b.trim().is_empty())
+                .unwrap_or(true);
+            if input_empty {
+                // Browse session history
+                let session_name = app.terminal_agents[idx].name.clone();
+                let hist = app.terminal_histories.get(&session_name);
+                let hist_len = hist.map(|h| h.commands.len()).unwrap_or(0);
+                if hist_len > 0 {
+                    let new_idx = match app.terminal_agents[idx].history_index {
+                        None => hist_len - 1,
+                        Some(i) => i.saturating_sub(1),
+                    };
+                    app.terminal_agents[idx].history_index = Some(new_idx);
+                    if let Some(entry) = app
+                        .terminal_histories
+                        .get(&session_name)
+                        .and_then(|h| h.commands.get(new_idx))
+                    {
+                        let cmd = entry.cmd.clone();
+                        if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                            buf.clear();
+                            buf.push_str(&cmd);
+                        }
+                        app.terminal_agents[idx].warp_cursor = cmd.len();
+                    }
+                }
+            } else {
+                // Scroll up through terminal scrollback
+                let max = app.terminal_agents[idx].max_scroll();
+                app.terminal_agents[idx].scroll_offset =
+                    (app.terminal_agents[idx].scroll_offset + 3).min(max);
+            }
         }
         KeyCode::Down => {
-            // Scroll down (towards live view)
-            app.terminal_agents[idx].scroll_offset =
-                app.terminal_agents[idx].scroll_offset.saturating_sub(3);
+            let input_empty = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|b| b.trim().is_empty())
+                .unwrap_or(true);
+            if input_empty && app.terminal_agents[idx].history_index.is_some() {
+                // Browse session history forward
+                let session_name = app.terminal_agents[idx].name.clone();
+                let hist_len = app
+                    .terminal_histories
+                    .get(&session_name)
+                    .map(|h| h.commands.len())
+                    .unwrap_or(0);
+                let cur = app.terminal_agents[idx].history_index.unwrap_or(0);
+                if cur + 1 < hist_len {
+                    app.terminal_agents[idx].history_index = Some(cur + 1);
+                    if let Some(entry) = app
+                        .terminal_histories
+                        .get(&session_name)
+                        .and_then(|h| h.commands.get(cur + 1))
+                    {
+                        let cmd = entry.cmd.clone();
+                        if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                            buf.clear();
+                            buf.push_str(&cmd);
+                        }
+                        app.terminal_agents[idx].warp_cursor = cmd.len();
+                    }
+                } else {
+                    // Past the end — clear input and reset history browsing
+                    app.terminal_agents[idx].history_index = None;
+                    if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                        buf.clear();
+                    }
+                    app.terminal_agents[idx].warp_cursor = 0;
+                }
+            } else {
+                // Scroll down (towards live view)
+                app.terminal_agents[idx].scroll_offset =
+                    app.terminal_agents[idx].scroll_offset.saturating_sub(3);
+            }
         }
         KeyCode::PageUp => {
             let max = app.terminal_agents[idx].max_scroll();
@@ -1256,6 +1327,7 @@ fn handle_terminal_warp_key(
                 buf.clear();
             }
             app.terminal_agents[idx].warp_cursor = 0;
+            app.terminal_agents[idx].history_index = None;
         }
         // Ctrl+D — send EOF
         KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
