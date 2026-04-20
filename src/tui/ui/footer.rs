@@ -14,7 +14,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Home => vec![
             ("↑↓", "select"),
             ("n", "new"),
-            ("q", "quit"),
+            ("F4", "quit"),
             ("F1", "legend"),
         ],
         Focus::Preview => vec![

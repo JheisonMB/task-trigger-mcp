@@ -624,7 +624,7 @@ fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Re
     }
 
     match code {
-        KeyCode::Char('q') => app.running = false,
+        KeyCode::F(4) => app.running = false,
         KeyCode::Esc => {
             app.quit_confirm = true;
         }
