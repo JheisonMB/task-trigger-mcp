@@ -42,8 +42,10 @@ pub struct NewAgentDialog {
     pub cron_expr: String,
     pub watch_path: String,
     pub watch_events: Vec<String>,
-    /// Shell for terminal sessions (e.g. "zsh", "bash").
-    pub shell: String,
+    /// Detected shells available on the system.
+    pub available_shells: Vec<String>,
+    /// Index into `available_shells` for the selected shell.
+    pub shell_index: usize,
     /// Which field is focused: 0=type, 1=mode (interactive), 2=CLI, 3=model, 4=dir, 5=yolo
     pub field: usize,
     pub dir_entries: Vec<String>,
@@ -95,7 +97,8 @@ impl NewAgentDialog {
             cron_expr: "0 9 * * *".to_string(),
             watch_path: cwd.clone(),
             watch_events: vec!["create".to_string(), "modify".to_string()],
-            shell: std::env::var("SHELL").unwrap_or_else(|_| "bash".to_string()),
+            available_shells: detect_available_shells(),
+            shell_index: 0,
             field: 1,
             dir_entries: Vec::new(),
             dir_selected: 0,
@@ -115,6 +118,14 @@ impl NewAgentDialog {
         dialog.refresh_dir_entries();
         dialog.refresh_model_suggestions();
         dialog
+    }
+
+    /// Get the selected shell path.
+    pub fn selected_shell(&self) -> &str {
+        self.available_shells
+            .get(self.shell_index)
+            .map(|s| s.as_str())
+            .unwrap_or("bash")
     }
 
     fn load_available_clis() -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
@@ -802,11 +813,7 @@ impl App {
     pub(super) fn launch_terminal(&mut self, dialog: &NewAgentDialog) -> Result<()> {
         use super::super::agent::InteractiveAgent;
 
-        let shell = if dialog.shell.trim().is_empty() {
-            "bash"
-        } else {
-            dialog.shell.trim()
-        };
+        let shell = dialog.selected_shell();
         let dir = dialog.working_dir.clone();
         let (cols, rows) = if self.last_panel_inner != (0, 0) {
             self.last_panel_inner
@@ -826,11 +833,14 @@ impl App {
             rows,
             None,
             &existing_refs,
-            ratatui::style::Color::Green,
+            crate::tui::ui::ACCENT,
         )?;
         let _ = self
             .db
             .insert_terminal_session(&agent.id, &agent.name, shell, &dir);
+        // Load command history into cache
+        let hist = crate::tui::terminal_history::load_history(&self.data_dir, &agent.name);
+        self.terminal_histories.insert(agent.name.clone(), hist);
         self.terminal_agents.push(agent);
         self.whimsg
             .notify_event(crate::tui::whimsg::WhimContext::AgentSpawned);
@@ -1382,7 +1392,7 @@ impl SimplePromptDialog {
                             }
                             tools_count += 1;
                             result.push_str(&format!(
-                                "  <tool_{}>{}</tool_{}>\n\n",
+                                "  <skill_{}>{}</skill_{}>\n\n",
                                 tools_count, trimmed, tools_count
                             ));
                         }
@@ -1623,4 +1633,40 @@ impl SimplePromptDialog {
         self.section_cursors.insert(section_id.to_string(), cur + 1);
         self.update_section_scroll(section_id, field_width);
     }
+}
+
+/// Detect installed shells on the system, ordered with the platform default first.
+fn detect_available_shells() -> Vec<String> {
+    let candidates = ["bash", "zsh", "fish", "sh"];
+
+    let mut found: Vec<String> = candidates
+        .iter()
+        .filter(|name| {
+            std::process::Command::new("which")
+                .arg(name)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        })
+        .map(|s| s.to_string())
+        .collect();
+
+    if found.is_empty() {
+        found.push("bash".to_string());
+    }
+
+    // On macOS prefer zsh as default; on Linux prefer bash
+    let preferred = if cfg!(target_os = "macos") {
+        "zsh"
+    } else {
+        "bash"
+    };
+
+    if let Some(pos) = found.iter().position(|s| s == preferred) {
+        found.swap(0, pos);
+    }
+
+    found
 }
