@@ -100,6 +100,24 @@ impl Database {
                 exited_at TEXT,
                 exit_code INTEGER,
                 status TEXT NOT NULL DEFAULT 'active'
+            );
+
+            CREATE TABLE IF NOT EXISTS terminal_sessions (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                shell TEXT NOT NULL,
+                working_dir TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_active TEXT,
+                status TEXT NOT NULL DEFAULT 'idle'
+            );
+
+            CREATE TABLE IF NOT EXISTS groups (
+                id TEXT PRIMARY KEY,
+                orientation TEXT NOT NULL DEFAULT 'horizontal',
+                session_a TEXT NOT NULL,
+                session_b TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );",
         )?;
 
@@ -200,6 +218,15 @@ pub struct InteractiveSession {
     pub status: String, // active, completed, error
 }
 
+#[allow(dead_code)]
+pub struct TerminalSession {
+    pub id: String,
+    pub name: String,
+    pub shell: String,
+    pub working_dir: String,
+    pub created_at: String,
+}
+
 impl Database {
     /// Insert a new interactive session as active.
     pub fn insert_interactive_session(
@@ -260,6 +287,94 @@ impl Database {
             "UPDATE interactive_sessions SET status = 'orphaned' WHERE status = 'active'",
             [],
         )?;
+        Ok(())
+    }
+
+    /// Insert a terminal session record.
+    pub fn insert_terminal_session(
+        &self,
+        id: &str,
+        name: &str,
+        shell: &str,
+        working_dir: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO terminal_sessions (id, name, shell, working_dir, created_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'idle')",
+            params![id, name, shell, working_dir, Utc::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Mark a terminal session as finished.
+    pub fn finish_terminal_session(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "UPDATE terminal_sessions SET status = 'finished', last_active = ?1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
+        )?;
+        Ok(())
+    }
+
+    /// Get all terminal sessions that are still active (idle = was active when canopy last ran).
+    pub fn get_active_terminal_sessions(&self) -> Result<Vec<TerminalSession>> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, shell, working_dir, created_at
+             FROM terminal_sessions WHERE status = 'idle' ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(TerminalSession {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    shell: row.get(2)?,
+                    working_dir: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Mark all active terminal sessions as orphaned (called on startup cleanup).
+    pub fn mark_orphaned_terminal_sessions(&self) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "UPDATE terminal_sessions SET status = 'orphaned' WHERE status = 'idle'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Persist a split group to the database.
+    pub fn insert_group(
+        &self,
+        id: &str,
+        orientation: &str,
+        session_a: &str,
+        session_b: &str,
+    ) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO groups (id, orientation, session_a, session_b, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                id,
+                orientation,
+                session_a,
+                session_b,
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Remove a split group from the database.
+    pub fn delete_group(&self, id: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute("DELETE FROM groups WHERE id = ?1", params![id])?;
         Ok(())
     }
 }
