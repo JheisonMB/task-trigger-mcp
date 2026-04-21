@@ -14,7 +14,10 @@ use crate::db::Database;
 use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
 
 use super::agent::InteractiveAgent;
-use super::context_transfer::{ContextTransferConfig, ContextTransferModal, ContextTransferStep};
+use super::context_transfer::{
+    build_context_payload_for, ContextSourceKind, ContextTransferConfig, ContextTransferModal,
+    ContextTransferStep,
+};
 use crate::tui::prompt_templates::PromptTemplates;
 use dialog::SimplePromptDialog;
 
@@ -54,6 +57,12 @@ pub enum Focus {
     Agent,
     ContextTransfer,
     PromptTemplateDialog,
+}
+
+#[derive(Clone, Copy)]
+enum ContextTransferSource {
+    Interactive(usize),
+    Terminal(usize),
 }
 
 // ── App struct ──────────────────────────────────────────────────
@@ -173,7 +182,7 @@ impl TerminalSearch {
     }
 
     /// Search the agent's output for the query and populate match_rows.
-    pub fn search(&mut self, agent: &super::agent::InteractiveAgent) {
+    pub fn search(&mut self, agent: &InteractiveAgent) {
         self.match_rows.clear();
         if self.query.is_empty() {
             return;
@@ -191,7 +200,7 @@ impl TerminalSearch {
     }
 
     /// Jump to the current match by setting the agent's scroll_offset.
-    pub fn jump_to_match(&self, agent: &mut super::agent::InteractiveAgent) {
+    pub fn jump_to_match(&self, agent: &mut InteractiveAgent) {
         if let Some(&row) = self.match_rows.get(self.current_match) {
             let total = agent.total_depth();
             let (_, screen_rows) = agent
@@ -590,57 +599,16 @@ impl App {
 
     /// Open the context transfer modal for the currently focused interactive or terminal agent.
     pub fn open_context_transfer_modal(&mut self) {
-        match self.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => {
-                let idx = *idx;
-                if idx >= self.interactive_agents.len() {
-                    return;
-                }
-                let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
-                modal.refresh_preview(&self.interactive_agents[idx]);
-                self.context_transfer_modal = Some(modal);
-                self.focus = Focus::ContextTransfer;
-            }
-            Some(AgentEntry::Terminal(idx)) => {
-                let idx = *idx;
-                if idx >= self.terminal_agents.len() {
-                    return;
-                }
-                let mut modal =
-                    ContextTransferModal::new_terminal(idx, &self.context_transfer_config);
-                modal.refresh_preview(&self.terminal_agents[idx]);
-                self.context_transfer_modal = Some(modal);
-                self.focus = Focus::ContextTransfer;
-            }
-            _ => {}
-        }
+        let source = self.selected_context_transfer_source();
+        self.open_context_transfer_from_source(source);
     }
 
     /// Open context transfer for the focused split panel's session.
     pub fn open_context_transfer_for_split(&mut self) {
-        let session_name = match &self.active_split_id {
-            Some(id) => self.split_groups.iter().find(|g| g.id == *id).map(|g| {
-                if self.split_right_focused {
-                    g.session_b.clone()
-                } else {
-                    g.session_a.clone()
-                }
-            }),
-            None => return,
-        };
-        let Some(name) = session_name else { return };
-
-        if let Some(idx) = self.interactive_agents.iter().position(|a| a.name == name) {
-            let mut modal = ContextTransferModal::new(idx, &self.context_transfer_config);
-            modal.refresh_preview(&self.interactive_agents[idx]);
-            self.context_transfer_modal = Some(modal);
-            self.focus = Focus::ContextTransfer;
-        } else if let Some(idx) = self.terminal_agents.iter().position(|a| a.name == name) {
-            let mut modal = ContextTransferModal::new_terminal(idx, &self.context_transfer_config);
-            modal.refresh_preview(&self.terminal_agents[idx]);
-            self.context_transfer_modal = Some(modal);
-            self.focus = Focus::ContextTransfer;
-        }
+        let source = self
+            .active_split_session_name()
+            .and_then(|name| self.context_transfer_source_by_name(&name));
+        self.open_context_transfer_from_source(source);
     }
 
     /// Close the modal and return focus to the agent.
@@ -669,17 +637,6 @@ impl App {
             return;
         };
 
-        let src_idx = modal.source_agent_idx;
-        let source_is_terminal = modal.source_is_terminal;
-
-        // Validate source index
-        if source_is_terminal && src_idx >= self.terminal_agents.len() {
-            return;
-        }
-        if !source_is_terminal && src_idx >= self.interactive_agents.len() {
-            return;
-        }
-
         let dest_agent_idx = {
             let picker_entries = self.picker_interactive_entries();
             picker_entries.get(dest_entry_idx).copied()
@@ -692,16 +649,8 @@ impl App {
             return;
         }
 
-        let payload = if source_is_terminal {
-            super::context_transfer::build_terminal_context_payload(
-                &self.terminal_agents[src_idx],
-                modal.n_prompts,
-            )
-        } else {
-            super::context_transfer::build_context_payload(
-                &self.interactive_agents[src_idx],
-                modal.n_prompts,
-            )
+        let Some(payload) = self.build_context_transfer_payload(&modal) else {
+            return;
         };
 
         // Always switch tab to destination so the user sees where the context is going
@@ -721,6 +670,143 @@ impl App {
 
         // Open the prompt template dialog with the pre-filled context
         self.open_simple_prompt_dialog(Some(initial_content));
+    }
+
+    pub(crate) fn refresh_context_transfer_preview(&mut self) {
+        let Some((source, n_prompts)) = self
+            .context_transfer_modal
+            .as_ref()
+            .and_then(|modal| self.modal_source(modal).map(|source| (source, modal.n_prompts)))
+        else {
+            return;
+        };
+
+        let Some(preview) = self.build_context_transfer_payload_from_source(source, n_prompts) else {
+            return;
+        };
+
+        if let Some(modal) = self.context_transfer_modal.as_mut() {
+            modal.payload_preview = preview;
+        }
+    }
+
+    pub(crate) fn context_transfer_max_units(&self) -> Option<usize> {
+        let modal = self.context_transfer_modal.as_ref()?;
+        let max_units = match self.modal_source(modal)? {
+            ContextTransferSource::Interactive(idx) => self
+                .interactive_agents
+                .get(idx)
+                .and_then(|agent| agent.prompt_history.lock().ok().map(|history| history.len()))
+                .unwrap_or(0)
+                .max(1),
+            ContextTransferSource::Terminal(_) => 20,
+        };
+        Some(max_units)
+    }
+
+    fn selected_context_transfer_source(&self) -> Option<ContextTransferSource> {
+        match self.selected_agent()? {
+            AgentEntry::Interactive(idx) => self
+                .interactive_agents
+                .get(*idx)
+                .map(|_| ContextTransferSource::Interactive(*idx)),
+            AgentEntry::Terminal(idx) => self
+                .terminal_agents
+                .get(*idx)
+                .map(|_| ContextTransferSource::Terminal(*idx)),
+            _ => None,
+        }
+    }
+
+    fn active_split_session_name(&self) -> Option<String> {
+        let split_id = self.active_split_id.as_ref()?;
+        let group = self.split_groups.iter().find(|group| group.id == *split_id)?;
+        Some(if self.split_right_focused {
+            group.session_b.clone()
+        } else {
+            group.session_a.clone()
+        })
+    }
+
+    fn context_transfer_source_by_name(&self, name: &str) -> Option<ContextTransferSource> {
+        if let Some(idx) = self.interactive_agents.iter().position(|agent| agent.name == name) {
+            return Some(ContextTransferSource::Interactive(idx));
+        }
+        self.terminal_agents
+            .iter()
+            .position(|agent| agent.name == name)
+            .map(ContextTransferSource::Terminal)
+    }
+
+    fn open_context_transfer_from_source(&mut self, source: Option<ContextTransferSource>) {
+        let Some(source) = source else {
+            return;
+        };
+
+        let Some(mut modal) = self.modal_for_context_transfer_source(source) else {
+            return;
+        };
+
+        if let Some(preview) = self.build_context_transfer_payload(&modal) {
+            modal.payload_preview = preview;
+        }
+
+        self.context_transfer_modal = Some(modal);
+        self.focus = Focus::ContextTransfer;
+    }
+
+    fn modal_for_context_transfer_source(
+        &self,
+        source: ContextTransferSource,
+    ) -> Option<ContextTransferModal> {
+        match source {
+            ContextTransferSource::Interactive(idx) => self
+                .interactive_agents
+                .get(idx)
+                .map(|_| ContextTransferModal::new(idx, &self.context_transfer_config)),
+            ContextTransferSource::Terminal(idx) => self
+                .terminal_agents
+                .get(idx)
+                .map(|_| ContextTransferModal::new_terminal(idx, &self.context_transfer_config)),
+        }
+    }
+
+    fn modal_source(&self, modal: &ContextTransferModal) -> Option<ContextTransferSource> {
+        match modal.source_kind() {
+            ContextSourceKind::Interactive => self
+                .interactive_agents
+                .get(modal.source_agent_idx)
+                .map(|_| ContextTransferSource::Interactive(modal.source_agent_idx)),
+            ContextSourceKind::Terminal => self
+                .terminal_agents
+                .get(modal.source_agent_idx)
+                .map(|_| ContextTransferSource::Terminal(modal.source_agent_idx)),
+        }
+    }
+
+    fn build_context_transfer_payload(&self, modal: &ContextTransferModal) -> Option<String> {
+        self.build_context_transfer_payload_from_source(self.modal_source(modal)?, modal.n_prompts)
+    }
+
+    fn build_context_transfer_payload_from_source(
+        &self,
+        source: ContextTransferSource,
+        n_prompts: usize,
+    ) -> Option<String> {
+        match source {
+            ContextTransferSource::Interactive(idx) => self
+                .interactive_agents
+                .get(idx)
+                .map(|agent| {
+                    build_context_payload_for(agent, n_prompts, ContextSourceKind::Interactive)
+                }),
+            ContextTransferSource::Terminal(idx) => self
+                .terminal_agents
+                .get(idx)
+                .map(|agent| {
+                    build_context_payload_for(agent, n_prompts, ContextSourceKind::Terminal)
+                }),
+        }
     }
 
     /// Collect interactive agent indices for use in the picker list.
@@ -804,7 +890,7 @@ impl App {
                 .map(|a| a.name.as_str())
                 .collect();
 
-            match super::agent::InteractiveAgent::spawn(
+            match InteractiveAgent::spawn(
                 cli.clone(),
                 &session.working_dir,
                 cols,
@@ -867,7 +953,7 @@ impl App {
                 .map(|a| a.name.as_str())
                 .collect();
 
-            match super::agent::InteractiveAgent::spawn_terminal(
+            match InteractiveAgent::spawn_terminal(
                 &session.shell,
                 &session.working_dir,
                 cols,

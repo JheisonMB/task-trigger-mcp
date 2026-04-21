@@ -60,7 +60,8 @@ impl SessionHistory {
     /// LRU eviction: keep the most recently used entries up to MAX_ENTRIES.
     fn enforce_limit(&mut self) {
         if self.commands.len() > MAX_ENTRIES {
-            self.commands.sort_by(|a, b| b.last_run.cmp(&a.last_run));
+            self.commands
+                .sort_by_key(|entry| std::cmp::Reverse(entry.last_run));
             self.commands.truncate(MAX_ENTRIES);
         }
     }
@@ -84,7 +85,7 @@ impl SessionHistory {
             *dirs.entry(&entry.cwd).or_default() += entry.count;
         }
         let mut sorted: Vec<(&str, u32)> = dirs.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         sorted.into_iter().map(|(d, _)| d.to_string()).collect()
     }
 }

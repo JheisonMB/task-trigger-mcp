@@ -492,9 +492,8 @@ impl BriansBrain {
                 }
             }
         }
-        if count > 0 {
+        if let Some(avg) = sum.checked_div(count).map(|value| value as i16) {
             // Small random drift ±5 to create gradual color variation
-            let avg = (sum / count) as i16;
             let drift = (rand::random::<i16>() % 11) - 5;
             (avg + drift).clamp(100, 255) as u8
         } else {

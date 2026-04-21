@@ -441,7 +441,7 @@ async fn handle_daemon_action(action: DaemonAction, port_override: Option<u16>) 
     Ok(())
 }
 
-async fn handle_doctor() -> anyhow::Result<()> {
+async fn handle_doctor() -> Result<()> {
     use anyhow::Context;
 
     const DOCTOR_BANNER: &str = r#"
@@ -483,7 +483,7 @@ async fn handle_doctor() -> anyhow::Result<()> {
 
     if db_path.exists() {
         println!("  \x1b[32m✓\x1b[0m Database: {}", db_path.display());
-        if let Ok(db) = crate::db::Database::new(&db_path) {
+        if let Ok(db) = Database::new(&db_path) {
             if let Ok(background_agents) = db.list_background_agents() {
                 println!("    Tasks: {}", background_agents.len());
             }
@@ -500,7 +500,7 @@ async fn handle_doctor() -> anyhow::Result<()> {
             "  \x1b[32m✓\x1b[0m CLI config: {}",
             cli_config_path.display()
         );
-        if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&cli_config_path) {
+        if let Some(registry) = domain::cli_config::CliRegistry::load(&cli_config_path) {
             println!("    Available CLIs: {}", registry.names().join(", "));
         }
     } else {
@@ -528,7 +528,7 @@ async fn handle_doctor() -> anyhow::Result<()> {
         issues.push("Run 'canopy setup'");
     }
 
-    let available_clis = crate::domain::models::Cli::detect_available();
+    let available_clis = domain::models::Cli::detect_available();
     if !available_clis.is_empty() {
         println!(
             "  \x1b[32m✓\x1b[0m CLIs in PATH: {}",

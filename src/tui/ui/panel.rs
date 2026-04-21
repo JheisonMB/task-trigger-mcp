@@ -751,7 +751,7 @@ fn render_command_chips(frame: &mut Frame, area: Rect, app: &App, session_name: 
     let mut recent: Vec<&str> = Vec::new();
     let mut sorted: Vec<&crate::tui::terminal_history::CommandEntry> =
         hist.commands.iter().collect();
-    sorted.sort_by(|a, b| b.last_run.cmp(&a.last_run));
+    sorted.sort_by_key(|entry| std::cmp::Reverse(entry.last_run));
     for entry in &sorted {
         if !recent.contains(&entry.cmd.as_str()) {
             recent.push(&entry.cmd);
@@ -802,11 +802,17 @@ fn draw_warp_input_box(frame: &mut Frame, area: Rect, app: &App, idx: usize) {
     };
 
     let cwd = compact_cwd(&agent.working_dir);
-    let input_text = agent
+    let raw_input_text = agent
         .input_buffer
         .lock()
         .map(|b| b.clone())
         .unwrap_or_default();
+    let sensitive_input = agent.is_sensitive_input_active();
+    let input_text = if sensitive_input {
+        String::new()
+    } else {
+        raw_input_text
+    };
     let cursor_pos = agent.warp_cursor.min(input_text.len());
 
     let accent = agent.accent_color;
@@ -830,7 +836,12 @@ fn draw_warp_input_box(frame: &mut Frame, area: Rect, app: &App, idx: usize) {
         Style::default().fg(accent).add_modifier(Modifier::BOLD),
     )];
 
-    if input_text.is_empty() {
+    if sensitive_input {
+        spans.push(Span::styled(
+            "[hidden input]",
+            Style::default().fg(Color::Rgb(180, 180, 120)),
+        ));
+    } else if input_text.is_empty() {
         spans.push(Span::styled(
             "type a command…",
             Style::default().fg(Color::Rgb(80, 80, 100)),

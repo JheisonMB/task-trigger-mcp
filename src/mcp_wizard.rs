@@ -429,14 +429,14 @@ fn apply_server_to_platform(
     let is_toml = platform.config_format.as_deref() == Some("toml");
     if is_toml {
         if platform.toml_array_format {
-            crate::setup::upsert_toml_array_pub(
+            setup::upsert_toml_array_pub(
                 config_path,
                 &platform.mcp_servers_key.join("."),
                 server_name,
                 config,
             )
         } else {
-            crate::setup::upsert_toml_key_pub(
+            setup::upsert_toml_key_pub(
                 config_path,
                 platform
                     .mcp_servers_key
@@ -454,7 +454,7 @@ fn apply_server_to_platform(
             .map(|s| s.as_str())
             .collect();
         key_refs.push(server_name);
-        crate::setup::upsert_json_key_pub(config_path, &key_refs, config)
+        setup::upsert_json_key_pub(config_path, &key_refs, config)
     }
 }
 
@@ -470,21 +470,21 @@ fn remove_server_from_platform(
 
     let is_toml = platform.config_format.as_deref() == Some("toml");
     if is_toml {
-        crate::setup::remove_toml_server_pub(platform, config_path, server_name)
+        setup::remove_toml_server_pub(platform, config_path, server_name)
     } else {
         let parent_key = platform
             .mcp_servers_key
             .first()
             .cloned()
             .unwrap_or_else(|| "mcpServers".to_string());
-        crate::setup::remove_json_key_pub(config_path, &parent_key, server_name)
+        setup::remove_json_key_pub(config_path, &parent_key, server_name)
     }
 }
 
 // ── Banner ─────────────────────────────────────────────────────────────────
 
 fn print_mcp_banner() {
-    println!("\x1b[32m{}\x1b[0m", crate::setup::BANNER);
+    println!("\x1b[32m{}\x1b[0m", setup::BANNER);
     println!("  \x1b[1mAgent Hub — MCP Manager\x1b[0m");
     println!("  ─────────────────────────────────────────────");
     println!();

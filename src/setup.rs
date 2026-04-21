@@ -1257,7 +1257,7 @@ pub fn maybe_refresh_registry() -> bool {
     true
 }
 
-fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
+fn refresh_registry_inner(home: &Path) -> Result<()> {
     let registry = fetch_registry()?;
 
     let detected: Vec<&Platform> = registry
@@ -1287,13 +1287,14 @@ fn refresh_registry_inner(home: &std::path::Path) -> Result<()> {
 /// Replace `{filesystem_dir}` and `{home}` placeholders in a JSON value tree.
 fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &str) {
     match value {
-        serde_json::Value::String(s) => {
-            if s.contains("{filesystem_dir}") || s.contains("{home}") {
-                *s = s
-                    .replace("{filesystem_dir}", fs_dir)
-                    .replace("{home}", home);
-            }
+        serde_json::Value::String(s)
+            if s.contains("{filesystem_dir}") || s.contains("{home}") =>
+        {
+            *s = s
+                .replace("{filesystem_dir}", fs_dir)
+                .replace("{home}", home);
         }
+        serde_json::Value::String(_) => {}
         serde_json::Value::Array(arr) => {
             for item in arr {
                 substitute_placeholders(item, home, fs_dir);
@@ -1544,11 +1545,10 @@ fn browse_directory(start_dir: &str) -> String {
                 KeyCode::Up => {
                     cursor = cursor.saturating_sub(1);
                 }
-                KeyCode::Down => {
-                    if !subdirs.is_empty() && cursor + 1 < subdirs.len() {
-                        cursor += 1;
-                    }
+                KeyCode::Down if !subdirs.is_empty() && cursor + 1 < subdirs.len() => {
+                    cursor += 1;
                 }
+                KeyCode::Down => {}
                 KeyCode::Right | KeyCode::Char('l') => {
                     if let Some(name) = subdirs.get(cursor) {
                         current = current.join(name);
@@ -1879,22 +1879,16 @@ fn run_essential_skills_step(home: &Path, selected: &[&Platform]) -> String {
     }
 
     // Download Essential Pack from GitHub (best-effort)
-    let downloaded = match crate::skills::download_essential_pack() {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::warn!("Essential skills download failed: {e}");
-            0
-        }
-    };
+    let downloaded = crate::skills::download_essential_pack().unwrap_or_else(|e| {
+        tracing::warn!("Essential skills download failed: {e}");
+        0
+    });
 
     // Create platform symlinks for all selected platforms that have skills_dir
-    let symlinks = match crate::skills::create_platform_symlinks(home, selected) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("Skills symlink creation failed: {e}");
-            vec![]
-        }
-    };
+    let symlinks = crate::skills::create_platform_symlinks(home, selected).unwrap_or_else(|e| {
+        tracing::warn!("Skills symlink creation failed: {e}");
+        vec![]
+    });
 
     if downloaded == 0 && symlinks.is_empty() {
         // Check if we actually have any skills installed

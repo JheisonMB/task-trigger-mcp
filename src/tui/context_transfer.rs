@@ -26,51 +26,41 @@ impl Default for ContextTransferConfig {
 
 // ── Context builder ──────────────────────────────────────────────
 
-/// Build the formatted context block from a source agent.
-///
-/// Includes everything from the Nth-to-last prompt through the current
-/// scrollback position — prompt inputs, their responses, and all output
-/// after the last prompt.
-pub fn build_context_payload(agent: &InteractiveAgent, n_prompts: usize) -> String {
-    let n_prompts = n_prompts.max(1);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextSourceKind {
+    Interactive,
+    Terminal,
+}
 
-    let mut out = String::new();
-
-    out.push_str(&format!(
-        "--- context from: {} | workdir: {} ---\n",
-        agent.name, agent.working_dir
-    ));
-
-    let prompts = collect_last_prompts(
-        &agent
-            .prompt_history
-            .lock()
-            .ok()
-            .as_deref()
-            .cloned()
-            .unwrap_or_default(),
-        n_prompts,
-    );
-
-    if !prompts.is_empty() {
-        for (idx, entry) in prompts.iter().enumerate() {
-            out.push_str(&format!("> {}\n", entry.input));
-
-            let is_last_prompt = idx == prompts.len() - 1;
-            let resp_end = if !is_last_prompt && entry.output_range.1 > entry.output_range.0 {
-                entry.output_range.1
-            } else {
-                agent.total_depth()
-            };
-
-            if resp_end > entry.output_range.0 {
-                let response = agent.lines_at_scrollback_range(entry.output_range.0, resp_end);
-                if !response.is_empty() {
-                    out.push_str(&response);
-                    out.push('\n');
-                }
+impl ContextSourceKind {
+    fn header(self, agent: &InteractiveAgent) -> String {
+        match self {
+            Self::Interactive => {
+                format!(
+                    "--- context from: {} | workdir: {} ---\n",
+                    agent.name, agent.working_dir
+                )
+            }
+            Self::Terminal => {
+                format!(
+                    "--- context from terminal: {} | workdir: {} ---\n",
+                    agent.name, agent.working_dir
+                )
             }
         }
+    }
+}
+
+pub fn build_context_payload_for(
+    agent: &InteractiveAgent,
+    n_prompts: usize,
+    source_kind: ContextSourceKind,
+) -> String {
+    let mut out = source_kind.header(agent);
+
+    match source_kind {
+        ContextSourceKind::Interactive => append_interactive_context(&mut out, agent, n_prompts),
+        ContextSourceKind::Terminal => append_terminal_context(&mut out, agent, n_prompts),
     }
 
     out.push_str("--- end context ---\n");
@@ -150,39 +140,65 @@ fn is_status_noise(line: &str) -> bool {
     false
 }
 
-/// Build a context payload from a terminal session's PTY scrollback.
-///
-/// Each "unit" is 50 lines of scrollback. `n_units` controls how many
-/// 50-line blocks (from the bottom) are included.
-pub fn build_terminal_context_payload(agent: &InteractiveAgent, n_units: usize) -> String {
-    let n_lines = (n_units * 50).max(50);
-    let scrollback = agent.last_lines(n_lines);
-
-    let mut out = String::new();
-    out.push_str(&format!(
-        "--- context from terminal: {} | workdir: {} ---\n",
-        agent.name, agent.working_dir
-    ));
-    if !scrollback.is_empty() {
-        out.push_str(&scrollback);
-        if !scrollback.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    out.push_str("--- end context ---\n");
-    clean_context_output(&out)
-}
-
 fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<PromptEntry> {
+    let keep = n.max(1);
     history
         .iter()
-        .rev()
-        .take(n)
+        .skip(history.len().saturating_sub(keep))
         .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
         .collect()
+}
+
+fn append_interactive_context(out: &mut String, agent: &InteractiveAgent, n_prompts: usize) {
+    let prompt_history = agent
+        .prompt_history
+        .lock()
+        .ok()
+        .as_deref()
+        .cloned()
+        .unwrap_or_default();
+    let prompts = collect_last_prompts(&prompt_history, n_prompts);
+    if prompts.is_empty() {
+        return;
+    }
+
+    let total_depth = agent.total_depth();
+    for (idx, entry) in prompts.iter().enumerate() {
+        out.push_str(&format!("> {}\n", entry.input));
+
+        let is_last_prompt = idx + 1 == prompts.len();
+        let response_end = response_end_line(entry, is_last_prompt, total_depth);
+        if response_end <= entry.output_range.0 {
+            continue;
+        }
+
+        let response = agent.lines_at_scrollback_range(entry.output_range.0, response_end);
+        if response.is_empty() {
+            continue;
+        }
+
+        out.push_str(&response);
+        out.push('\n');
+    }
+}
+
+fn append_terminal_context(out: &mut String, agent: &InteractiveAgent, n_units: usize) {
+    let scrollback = agent.last_lines((n_units.max(1)) * 50);
+    if scrollback.is_empty() {
+        return;
+    }
+
+    out.push_str(&scrollback);
+    if !scrollback.ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+fn response_end_line(entry: &PromptEntry, is_last_prompt: bool, total_depth: usize) -> usize {
+    if !is_last_prompt && entry.output_range.1 > entry.output_range.0 {
+        return entry.output_range.1;
+    }
+    total_depth
 }
 
 // ── Persistence ──────────────────────────────────────────────────
@@ -214,38 +230,94 @@ pub struct ContextTransferModal {
 }
 
 impl ContextTransferModal {
-    pub fn new(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
+    fn new_with_kind(
+        source_agent_idx: usize,
+        source_kind: ContextSourceKind,
+        config: &ContextTransferConfig,
+    ) -> Self {
         Self {
             step: ContextTransferStep::Preview,
             source_agent_idx,
-            source_is_terminal: false,
+            source_is_terminal: source_kind == ContextSourceKind::Terminal,
             n_prompts: config.default_prompt_history,
             picker_selected: 0,
             payload_preview: String::new(),
         }
+    }
+
+    pub fn new(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
+        Self::new_with_kind(source_agent_idx, ContextSourceKind::Interactive, config)
     }
 
     pub fn new_terminal(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
-        Self {
-            step: ContextTransferStep::Preview,
-            source_agent_idx,
-            source_is_terminal: true,
-            n_prompts: config.default_prompt_history,
-            picker_selected: 0,
-            payload_preview: String::new(),
-        }
-    }
-
-    /// Rebuild the payload preview from the source agent's current state.
-    pub fn refresh_preview(&mut self, agent: &InteractiveAgent) {
-        if self.source_is_terminal {
-            self.payload_preview = build_terminal_context_payload(agent, self.n_prompts);
-        } else {
-            self.payload_preview = build_context_payload(agent, self.n_prompts);
-        }
+        Self::new_with_kind(source_agent_idx, ContextSourceKind::Terminal, config)
     }
 
     pub fn decrement_field(&mut self) {
         self.n_prompts = self.n_prompts.saturating_sub(1).max(1);
+    }
+
+    pub fn increment_field(&mut self, max_value: usize) {
+        self.n_prompts = (self.n_prompts + 1).min(max_value.max(1));
+    }
+
+    pub fn source_kind(&self) -> ContextSourceKind {
+        if self.source_is_terminal {
+            ContextSourceKind::Terminal
+        } else {
+            ContextSourceKind::Interactive
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clean_context_output, collect_last_prompts, ContextSourceKind};
+    use crate::tui::agent::PromptEntry;
+    use chrono::Utc;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn collect_last_prompts_keeps_tail_in_order() {
+        let history = VecDeque::from(vec![
+            PromptEntry {
+                input: "one".to_string(),
+                output_range: (0, 1),
+                timestamp: Utc::now(),
+            },
+            PromptEntry {
+                input: "two".to_string(),
+                output_range: (1, 2),
+                timestamp: Utc::now(),
+            },
+            PromptEntry {
+                input: "three".to_string(),
+                output_range: (2, 3),
+                timestamp: Utc::now(),
+            },
+        ]);
+
+        let prompts = collect_last_prompts(&history, 2);
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0].input, "two");
+        assert_eq!(prompts[1].input, "three");
+    }
+
+    #[test]
+    fn clean_context_output_drops_noise_and_collapses_blanks() {
+        let raw = "--- context from: demo | workdir: /tmp ---\n\nContext\n\nhello\n\n\nremaining 12\n--- end context ---\n";
+        let cleaned = clean_context_output(raw);
+        assert!(cleaned.contains("hello"));
+        assert!(!cleaned.contains("remaining 12"));
+        assert!(cleaned.contains("hello\n\n--- end context ---"));
+    }
+
+    #[test]
+    fn modal_source_kind_reflects_session_type() {
+        let config = super::ContextTransferConfig::default();
+        let interactive = super::ContextTransferModal::new(1, &config);
+        let terminal = super::ContextTransferModal::new_terminal(2, &config);
+        assert_eq!(interactive.source_kind(), ContextSourceKind::Interactive);
+        assert_eq!(terminal.source_kind(), ContextSourceKind::Terminal);
     }
 }

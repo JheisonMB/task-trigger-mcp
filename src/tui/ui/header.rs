@@ -57,7 +57,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         spans.push(Span::styled(
             visible.to_string(),
             Style::default()
-                .fg(Color::Black)
+                .fg(Color::White)
                 .bg(Color::Rgb(102, 187, 106))
                 .add_modifier(Modifier::BOLD),
         ));
@@ -74,7 +74,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         spans.push(Span::styled(
             format!("{} ", wf.kaomoji),
             Style::default()
-                .fg(Color::Black)
+                .fg(Color::White)
                 .bg(Color::Rgb(102, 187, 106)),
         ));
     } else if !wf.kaomoji.is_empty() {
@@ -83,7 +83,7 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         spans.push(Span::styled(
             wf.kaomoji.to_string(),
             Style::default()
-                .fg(Color::Black)
+                .fg(Color::White)
                 .bg(Color::Rgb(102, 187, 106)),
         ));
         // Single trailing green space after kaomoji, then raw separator

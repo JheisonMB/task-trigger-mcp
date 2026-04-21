@@ -8,9 +8,12 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+#[cfg(unix)]
+use std::io;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ratatui::style::Color;
 
@@ -36,6 +39,16 @@ pub struct PromptEntry {
 
 /// Maximum number of prompt entries to keep in the ring buffer.
 const MAX_PROMPT_HISTORY: usize = 20;
+const TERMINAL_SHELL_PROMPTS: [&str; 5] = ["$ ", "# ", "> ", "% ", "❯ "];
+const SENSITIVE_PROMPT_HINTS: [&str; 7] = [
+    "passphrase",
+    "password",
+    "passcode",
+    "pin",
+    "otp",
+    "token",
+    "verification code",
+];
 
 /// Sanitize a line of terminal output: strip ANSI escape sequences and
 /// control characters, but preserve printable text.
@@ -61,6 +74,27 @@ fn sanitize_line(line: &str) -> String {
     }
 
     out
+}
+
+fn line_looks_sensitive_prompt(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    SENSITIVE_PROMPT_HINTS.iter().any(|hint| lower.contains(hint))
+        && (trimmed.ends_with(':') || trimmed.ends_with('?'))
+}
+
+fn strip_shell_prompt_prefix(line: &str) -> String {
+    let trimmed = line.trim_start();
+    for prefix in TERMINAL_SHELL_PROMPTS {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return rest.to_string();
+        }
+    }
+    trimmed.to_string()
 }
 
 /// Returns true if `c` is a box-drawing or block-element character
@@ -451,6 +485,9 @@ pub struct InteractiveAgent {
     pub warp_cursor: usize,
     /// Index into session history for Up/Down browsing (None = not browsing).
     pub history_index: Option<usize>,
+    /// True once the current shell line has been materialized in the PTY
+    /// and warp input should stay synchronized from PTY edits.
+    pub warp_passthrough: bool,
 }
 
 impl InteractiveAgent {
@@ -577,6 +614,7 @@ impl InteractiveAgent {
             warp_mode: false,
             warp_cursor: 0,
             history_index: None,
+            warp_passthrough: false,
         })
     }
 
@@ -673,6 +711,7 @@ impl InteractiveAgent {
             warp_mode: true,
             warp_cursor: 0,
             history_index: None,
+            warp_passthrough: false,
         })
     }
 
@@ -942,6 +981,8 @@ impl InteractiveAgent {
     /// Kill the agent process.
     pub fn kill(&mut self) {
         if let Ok(mut child) = self.child.lock() {
+            #[cfg(unix)]
+            terminate_process_group(child.as_mut());
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -995,6 +1036,43 @@ impl InteractiveAgent {
         } else {
             0
         }
+    }
+
+    fn current_visible_line_text(&self) -> Option<String> {
+        let vt = self.vt.lock().ok()?;
+        let screen = vt.screen();
+        let (rows, cols) = screen.size();
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+
+        let row = screen.cursor_position().0.min(rows.saturating_sub(1));
+        let mut line = String::new();
+        for col in 0..cols {
+            if let Some(cell) = screen.cell(row, col) {
+                line.push_str(cell.contents());
+            }
+        }
+
+        Some(sanitize_line(&line).trim_end().to_string())
+    }
+
+    pub fn is_sensitive_input_active(&self) -> bool {
+        self.current_visible_line_text()
+            .is_some_and(|line| line_looks_sensitive_prompt(&line))
+    }
+
+    pub fn should_bypass_warp_input(&self) -> bool {
+        self.in_alternate_screen() || self.is_sensitive_input_active()
+    }
+
+    pub fn sync_warp_input_from_pty(&self, wait: Duration) -> Option<String> {
+        if wait > Duration::ZERO {
+            std::thread::sleep(wait);
+        }
+
+        self.current_visible_line_text()
+            .map(|line| strip_shell_prompt_prefix(&line))
     }
 
     /// Whether the child process is using alternate screen mode.
@@ -1053,6 +1131,49 @@ impl InteractiveAgent {
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut dyn portable_pty::Child) {
+    let Some(pid) = child.process_id().map(|pid| pid as i32) else {
+        return;
+    };
+
+    for signal in [libc::SIGHUP, libc::SIGTERM, libc::SIGKILL] {
+        let _ = send_signal_to_group(pid, signal);
+        if wait_for_child_exit(child, 6, Duration::from_millis(50)) {
+            return;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn send_signal_to_group(pid: i32, signal: i32) -> io::Result<()> {
+    let result = unsafe { libc::killpg(pid, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err)
+}
+
+fn wait_for_child_exit(
+    child: &mut dyn portable_pty::Child,
+    attempts: usize,
+    delay: Duration,
+) -> bool {
+    for _ in 0..attempts {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => std::thread::sleep(delay),
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 /// A snapshot of the virtual terminal screen.
@@ -1143,5 +1264,24 @@ pub fn key_to_bytes(
         KeyCode::PageUp => b"\x1b[5~".to_vec(),
         KeyCode::PageDown => b"\x1b[6~".to_vec(),
         _ => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{line_looks_sensitive_prompt, strip_shell_prompt_prefix};
+
+    #[test]
+    fn detects_sensitive_prompts() {
+        assert!(line_looks_sensitive_prompt("Enter passphrase for key '/tmp/id_rsa':"));
+        assert!(line_looks_sensitive_prompt("Password for https://example.com?"));
+        assert!(!line_looks_sensitive_prompt("$ git push"));
+    }
+
+    #[test]
+    fn strips_common_shell_prompts() {
+        assert_eq!(strip_shell_prompt_prefix("$ git status"), "git status");
+        assert_eq!(strip_shell_prompt_prefix("# cargo test"), "cargo test");
+        assert_eq!(strip_shell_prompt_prefix("plain text"), "plain text");
     }
 }

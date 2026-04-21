@@ -1093,8 +1093,7 @@ fn draw_section_picker_modal(
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
-            let mut y_pos = inner.y;
-            for (i, (_, label)) in addable.iter().enumerate() {
+            for (y_pos, (i, (_, label))) in (inner.y..).zip(addable.iter().enumerate()) {
                 let is_selected = i == *selected;
                 let style = if is_selected {
                     Style::default()
@@ -1112,7 +1111,6 @@ fn draw_section_picker_modal(
                     height: 1,
                 };
                 frame.render_widget(Paragraph::new(line), line_area);
-                y_pos += 1;
             }
 
             let hint = Line::from(vec![
@@ -1200,8 +1198,7 @@ fn draw_section_picker_modal(
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
-            let mut y_pos = inner.y;
-            for (i, (_, display_label)) in removable.iter().enumerate() {
+            for (y_pos, (i, (_, display_label))) in (inner.y..).zip(removable.iter().enumerate()) {
                 let is_selected = i == *selected;
 
                 let style = if is_selected {
@@ -1220,7 +1217,6 @@ fn draw_section_picker_modal(
                     height: 1,
                 };
                 frame.render_widget(Paragraph::new(line), line_area);
-                y_pos += 1;
             }
 
             let hint = Line::from(vec![
@@ -1270,8 +1266,9 @@ fn draw_section_picker_modal(
                     },
                 );
             } else {
-                let mut y_pos = inner.y;
-                for (i, (_label, raw_name, prefix)) in entries.iter().enumerate() {
+                for (y_pos, (i, (_label, raw_name, prefix))) in
+                    (inner.y..).zip(entries.iter().enumerate())
+                {
                     if y_pos >= inner.y + inner.height.saturating_sub(1) {
                         break;
                     }
@@ -1296,7 +1293,6 @@ fn draw_section_picker_modal(
                             height: 1,
                         },
                     );
-                    y_pos += 1;
                 }
             }
 

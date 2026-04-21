@@ -51,10 +51,8 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
         if event::poll(tick)? {
             match event::read()? {
-                Event::Key(key) => {
-                    if key.kind == KeyEventKind::Press {
-                        handle_key(app, key.code, key.modifiers)?;
-                    }
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(app, key.code, key.modifiers)?;
                 }
                 Event::Mouse(mouse) => {
                     handle_mouse(app, mouse.kind, mouse.modifiers)?;
@@ -111,12 +109,10 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 KeyCode::Esc => {
                     dialog.picker_mode = SectionPickerMode::None;
                 }
-                KeyCode::Up => {
-                    if *selected > 0 {
-                        dialog.picker_mode = SectionPickerMode::AddSection {
-                            selected: selected - 1,
-                        };
-                    }
+                KeyCode::Up if *selected > 0 => {
+                    dialog.picker_mode = SectionPickerMode::AddSection {
+                        selected: selected - 1,
+                    };
                 }
                 KeyCode::Down => {
                     let addable = dialog.get_addable_sections();
@@ -162,11 +158,11 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 KeyCode::Esc => {
                     dialog.picker_mode = SectionPickerMode::None;
                 }
-                KeyCode::Enter => {
-                    if !input_copy.is_empty() && !dialog.enabled_sections.contains(&input_copy) {
-                        dialog.add_section(&input_copy);
-                        dialog.picker_mode = SectionPickerMode::None;
-                    }
+                KeyCode::Enter
+                    if !input_copy.is_empty() && !dialog.enabled_sections.contains(&input_copy) =>
+                {
+                    dialog.add_section(&input_copy);
+                    dialog.picker_mode = SectionPickerMode::None;
                 }
                 KeyCode::Char(c) => {
                     dialog.picker_mode = SectionPickerMode::AddCustom {
@@ -190,12 +186,10 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 KeyCode::Esc => {
                     dialog.picker_mode = SectionPickerMode::None;
                 }
-                KeyCode::Up => {
-                    if *selected > 0 {
-                        dialog.picker_mode = SectionPickerMode::RemoveSection {
-                            selected: selected - 1,
-                        };
-                    }
+                KeyCode::Up if *selected > 0 => {
+                    dialog.picker_mode = SectionPickerMode::RemoveSection {
+                        selected: selected - 1,
+                    };
                 }
                 KeyCode::Down => {
                     let removable = dialog.get_removable_sections();
@@ -227,26 +221,22 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 KeyCode::Esc => {
                     dialog.picker_mode = SectionPickerMode::None;
                 }
-                KeyCode::Up => {
-                    if selected > 0 {
-                        if let SectionPickerMode::SkillsPicker {
-                            selected: ref mut s,
-                            ..
-                        } = dialog.picker_mode
-                        {
-                            *s = selected - 1;
-                        }
+                KeyCode::Up if selected > 0 => {
+                    if let SectionPickerMode::SkillsPicker {
+                        selected: ref mut s,
+                        ..
+                    } = dialog.picker_mode
+                    {
+                        *s = selected - 1;
                     }
                 }
-                KeyCode::Down => {
-                    if selected + 1 < count {
-                        if let SectionPickerMode::SkillsPicker {
-                            selected: ref mut s,
-                            ..
-                        } = dialog.picker_mode
-                        {
-                            *s = selected + 1;
-                        }
+                KeyCode::Down if selected + 1 < count => {
+                    if let SectionPickerMode::SkillsPicker {
+                        selected: ref mut s,
+                        ..
+                    } = dialog.picker_mode
+                    {
+                        *s = selected + 1;
                     }
                 }
                 KeyCode::Enter | KeyCode::Tab => {
@@ -412,15 +402,12 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                 }
             }
         }
-        KeyCode::Tab => {
-            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
-                dialog.focused_section += 1;
-            }
+        KeyCode::Tab if dialog.focused_section + 1 < dialog.enabled_sections.len() => {
+            dialog.focused_section += 1;
         }
-        KeyCode::BackTab => {
-            if dialog.focused_section > 0 {
-                dialog.focused_section -= 1;
-            }
+        KeyCode::Tab => {}
+        KeyCode::BackTab if dialog.focused_section > 0 => {
+            dialog.focused_section -= 1;
         }
         // Shift+Arrow → move cursor within the focused section
         KeyCode::Left if is_shift => {
@@ -436,15 +423,11 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
             dialog.move_cursor_down(&section_name, field_width);
         }
         // Plain arrows → navigate between sections
-        KeyCode::Up => {
-            if dialog.focused_section > 0 {
-                dialog.focused_section -= 1;
-            }
+        KeyCode::Up if dialog.focused_section > 0 => {
+            dialog.focused_section -= 1;
         }
-        KeyCode::Down => {
-            if dialog.focused_section + 1 < dialog.enabled_sections.len() {
-                dialog.focused_section += 1;
-            }
+        KeyCode::Down if dialog.focused_section + 1 < dialog.enabled_sections.len() => {
+            dialog.focused_section += 1;
         }
         // Ctrl+A → if on tools section: open SkillsPicker to replace; else: open add-section picker
         KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -732,7 +715,7 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
             let _ = app.delete_selected();
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
-        KeyCode::Char('q') => app.running = false,
+        KeyCode::F(4) => app.running = false,
         KeyCode::F(1) => {
             app.show_legend = true;
         }
@@ -935,6 +918,12 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
+    let pty_owns_navigation = if agent_vec == "interactive" {
+        app.interactive_agents[idx].in_alternate_screen()
+    } else {
+        app.terminal_agents[idx].in_alternate_screen()
+    };
+
     macro_rules! agent_ref {
         () => {
             if agent_vec == "interactive" {
@@ -955,7 +944,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     // Shift+Up/Down = always scroll (even when not already scrolled)
-    if modifiers.contains(KeyModifiers::SHIFT) {
+    if modifiers.contains(KeyModifiers::SHIFT) && !pty_owns_navigation {
         match code {
             KeyCode::Up => {
                 let max = agent_ref!().max_scroll();
@@ -973,24 +962,26 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     // Up/Down = scroll PTY history when scrolled up, otherwise pass to PTY.
     let max_scroll = agent_ref!().max_scroll();
     let scrolled = agent_ref!().scroll_offset > 0;
-    match code {
-        KeyCode::Up if scrolled => {
-            agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max_scroll);
-            return Ok(());
+    if !pty_owns_navigation {
+        match code {
+            KeyCode::Up if scrolled => {
+                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max_scroll);
+                return Ok(());
+            }
+            KeyCode::Down if scrolled => {
+                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
+                return Ok(());
+            }
+            KeyCode::PageUp => {
+                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 15).min(max_scroll);
+                return Ok(());
+            }
+            KeyCode::PageDown => {
+                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(15);
+                return Ok(());
+            }
+            _ => {}
         }
-        KeyCode::Down if scrolled => {
-            agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
-            return Ok(());
-        }
-        KeyCode::PageUp => {
-            agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 15).min(max_scroll);
-            return Ok(());
-        }
-        KeyCode::PageDown => {
-            agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(15);
-            return Ok(());
-        }
-        _ => {}
     }
 
     // Typing resets scroll to live view
@@ -1034,12 +1025,16 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         // Ctrl+W = toggle warp mode
         if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
             app.terminal_agents[idx].warp_mode = !app.terminal_agents[idx].warp_mode;
+            app.terminal_agents[idx].warp_passthrough = false;
             return Ok(());
         }
 
         let warp = app.terminal_agents[idx].warp_mode;
 
         if warp {
+            if app.terminal_agents[idx].should_bypass_warp_input() {
+                return handle_terminal_direct_pty_key(app, idx, code, modifiers);
+            }
             return handle_terminal_warp_key(app, idx, code, modifiers);
         }
 
@@ -1089,12 +1084,90 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
 
 /// Handle keystrokes for a terminal agent in warp mode.
 /// Keys are accumulated in the input buffer and only sent to PTY on Enter.
+fn sync_terminal_warp_buffer_from_pty(app: &mut App, idx: usize, wait_ms: u64) {
+    let synced = app.terminal_agents[idx].sync_warp_input_from_pty(Duration::from_millis(wait_ms));
+    if let Some(input) = synced {
+        if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+            buf.clear();
+            buf.push_str(&input);
+        }
+        app.terminal_agents[idx].warp_cursor = input.len();
+        app.terminal_agents[idx].warp_passthrough = true;
+    }
+}
+
+fn handle_terminal_direct_pty_key(
+    app: &mut App,
+    idx: usize,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<()> {
+    let sensitive_input = app.terminal_agents[idx].is_sensitive_input_active();
+    let bytes = key_to_bytes(code, modifiers);
+    if !bytes.is_empty() {
+        let _ = app.terminal_agents[idx].write_to_pty(&bytes);
+    }
+
+    if sensitive_input {
+        if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+            buf.clear();
+        }
+        app.terminal_agents[idx].warp_cursor = 0;
+        app.terminal_agents[idx].history_index = None;
+        app.terminal_agents[idx].warp_passthrough = false;
+        return Ok(());
+    }
+
+    let direct_submit = matches!(code, KeyCode::Enter)
+        || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+        || (code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL));
+
+    if !bytes.is_empty() && !direct_submit && !app.terminal_agents[idx].in_alternate_screen() {
+        let wait_ms = if code == KeyCode::Tab { 90 } else { 35 };
+        sync_terminal_warp_buffer_from_pty(app, idx, wait_ms);
+    }
+
+    match code {
+        KeyCode::Enter => {
+            let captured = app.terminal_agents[idx]
+                .input_buffer
+                .lock()
+                .map(|buf| buf.trim().to_string())
+                .unwrap_or_default();
+            record_terminal_command(app, idx, &captured);
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                buf.clear();
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+            app.terminal_agents[idx].history_index = None;
+            app.terminal_agents[idx].warp_passthrough = false;
+        }
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Ok(mut buf) = app.terminal_agents[idx].input_buffer.lock() {
+                buf.clear();
+            }
+            app.terminal_agents[idx].warp_cursor = 0;
+            app.terminal_agents[idx].history_index = None;
+            app.terminal_agents[idx].warp_passthrough = false;
+        }
+        _ => {
+            app.terminal_agents[idx].history_index = None;
+        }
+    }
+
+    Ok(())
+}
+
 fn handle_terminal_warp_key(
     app: &mut App,
     idx: usize,
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<()> {
+    if app.terminal_agents[idx].warp_passthrough {
+        return handle_terminal_direct_pty_key(app, idx, code, modifiers);
+    }
+
     let agent = &mut app.terminal_agents[idx];
 
     match code {
@@ -1123,6 +1196,7 @@ fn handle_terminal_warp_key(
             }
             app.terminal_agents[idx].warp_cursor = 0;
             app.terminal_agents[idx].history_index = None;
+            app.terminal_agents[idx].warp_passthrough = false;
         }
         KeyCode::Tab => {
             let empty = app.terminal_agents[idx]
@@ -1134,7 +1208,6 @@ fn handle_terminal_warp_key(
                 return open_terminal_suggestion_picker(app, idx);
             }
             // Non-empty: send current input + Tab to PTY for native autocomplete.
-            // Keep the warp buffer intact — the user continues editing from where they were.
             let text = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
@@ -1142,6 +1215,7 @@ fn handle_terminal_warp_key(
                 .unwrap_or_default();
             let _ = app.terminal_agents[idx].write_to_pty(text.as_bytes());
             let _ = app.terminal_agents[idx].write_to_pty(b"\t");
+            sync_terminal_warp_buffer_from_pty(app, idx, 90);
             return Ok(());
         }
         KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1329,10 +1403,12 @@ fn handle_terminal_warp_key(
             }
             app.terminal_agents[idx].warp_cursor = 0;
             app.terminal_agents[idx].history_index = None;
+            app.terminal_agents[idx].warp_passthrough = false;
         }
         // Ctrl+D — send EOF
         KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = app.terminal_agents[idx].write_to_pty(&[0x04]); // EOT
+            app.terminal_agents[idx].warp_passthrough = false;
         }
         // Ctrl+L — clear screen
         KeyCode::Char('l') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1740,11 +1816,10 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 },
                 // Yolo toggle (interactive only — field 5), sits between model and dir
                 n if n == yolo_field && is_interactive => match code {
-                    KeyCode::Char(' ') => {
-                        if dialog.selected_yolo_flag().is_some() {
-                            dialog.yolo_mode = !dialog.yolo_mode;
-                        }
+                    KeyCode::Char(' ') if dialog.selected_yolo_flag().is_some() => {
+                        dialog.yolo_mode = !dialog.yolo_mode;
                     }
+                    KeyCode::Char(' ') => {}
                     KeyCode::Up | KeyCode::BackTab => {
                         dialog.field = model_field;
                     }
@@ -1767,31 +1842,7 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
 
 /// Rebuild the payload_preview string from the current source agent state.
 fn ctx_rebuild_preview(app: &mut App) {
-    let src_info = app
-        .context_transfer_modal
-        .as_ref()
-        .map(|m| (m.source_agent_idx, m.source_is_terminal, m.n_prompts));
-    if let Some((idx, is_terminal, n_prompts)) = src_info {
-        if is_terminal {
-            if idx < app.terminal_agents.len() {
-                let preview = super::context_transfer::build_terminal_context_payload(
-                    &app.terminal_agents[idx],
-                    n_prompts,
-                );
-                if let Some(modal) = app.context_transfer_modal.as_mut() {
-                    modal.payload_preview = preview;
-                }
-            }
-        } else if idx < app.interactive_agents.len() {
-            let preview = super::context_transfer::build_context_payload(
-                &app.interactive_agents[idx],
-                n_prompts,
-            );
-            if let Some(modal) = app.context_transfer_modal.as_mut() {
-                modal.payload_preview = preview;
-            }
-        }
-    }
+    app.refresh_context_transfer_preview();
 }
 
 fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
@@ -1811,25 +1862,11 @@ fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
                 app.context_transfer_to_picker();
             }
             KeyCode::Right | KeyCode::Up | KeyCode::Char('+') => {
-                // Determine the max allowed before incrementing.
-                // For interactive: cap by actual prompt history length.
-                // For terminal: cap at 20 "pages" (each = 50 lines).
-                let history_len = if app
-                    .context_transfer_modal
-                    .as_ref()
-                    .is_some_and(|m| m.source_is_terminal)
-                {
-                    20
-                } else {
-                    app.context_transfer_modal
-                        .as_ref()
-                        .and_then(|m| app.interactive_agents.get(m.source_agent_idx))
-                        .and_then(|a| a.prompt_history.lock().ok().map(|h| h.len()))
-                        .unwrap_or(0)
-                        .max(1)
+                let Some(history_len) = app.context_transfer_max_units() else {
+                    return Ok(());
                 };
                 if let Some(modal) = app.context_transfer_modal.as_mut() {
-                    modal.n_prompts = (modal.n_prompts + 1).min(history_len);
+                    modal.increment_field(history_len);
                 }
                 ctx_rebuild_preview(app);
             }
@@ -1987,6 +2024,7 @@ fn insert_suggestion_into_terminal(app: &mut App, text: &str, is_cd: bool) {
             buf.push_str(&full_text);
         }
         agent.warp_cursor = full_text.len();
+        agent.warp_passthrough = false;
     } else {
         // Non-warp: clear PTY line with Ctrl+U then type suggestion
         let mut bytes: Vec<u8> = vec![0x15]; // Ctrl+U
@@ -2056,7 +2094,12 @@ fn handle_paste(app: &mut App, text: &str) {
                 app.interactive_agents.get_mut(idx)
             };
             if let Some(agent) = agent {
-                if agent.warp_mode {
+                if agent.warp_mode && (agent.should_bypass_warp_input() || agent.warp_passthrough) {
+                    let _ = agent.write_to_pty(text.as_bytes());
+                    if !agent.should_bypass_warp_input() {
+                        sync_terminal_warp_buffer_from_pty(app, idx, 35);
+                    }
+                } else if agent.warp_mode {
                     // Warp mode: insert into input buffer at cursor
                     if let Ok(mut buf) = agent.input_buffer.lock() {
                         let pos = agent.warp_cursor.min(buf.len());

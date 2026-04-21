@@ -50,6 +50,35 @@ fn sample_watcher(id: &str) -> Watcher {
     }
 }
 
+// ── Session lifecycle ───────────────────────────────────────────
+
+#[test]
+fn test_terminal_session_finish_removes_from_active_list() {
+    let db = test_db();
+    db.insert_terminal_session("term-1", "shell-1", "bash", "/tmp")
+        .unwrap();
+
+    let active = db.get_active_terminal_sessions().unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].id, "term-1");
+
+    db.finish_terminal_session("term-1").unwrap();
+    assert!(db.get_active_terminal_sessions().unwrap().is_empty());
+}
+
+#[test]
+fn test_mark_orphaned_terminal_sessions_clears_idle_records() {
+    let db = test_db();
+    db.insert_terminal_session("term-1", "shell-1", "bash", "/tmp")
+        .unwrap();
+    db.insert_terminal_session("term-2", "shell-2", "zsh", "/tmp")
+        .unwrap();
+
+    assert_eq!(db.get_active_terminal_sessions().unwrap().len(), 2);
+    db.mark_orphaned_terminal_sessions().unwrap();
+    assert!(db.get_active_terminal_sessions().unwrap().is_empty());
+}
+
 // ── BackgroundAgent CRUD ─────────────────────────────────────────────────
 
 #[test]
