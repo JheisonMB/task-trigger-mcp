@@ -34,11 +34,12 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         0
     };
 
-    // Dir browser: label row + up to 4 entry rows
-    let dir_rows: u16 = if dialog.dir_entries.is_empty() {
+    // Dir browser: label row + filter row + up to 10 entry rows + status line
+    let filtered_entries = dialog.filtered_dir_entries();
+    let dir_rows: u16 = if filtered_entries.is_empty() && dialog.dir_entries.is_empty() {
         0
     } else {
-        1 + dialog.dir_entries.len().min(4) as u16
+        3 + filtered_entries.len().min(10) as u16
     };
 
     let is_edit = dialog.is_edit_mode();
@@ -185,40 +186,74 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
         // Directory browser for terminal (field 1 = dir)
         if !dialog.dir_entries.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  Directories  (↑↓ navigate  → enter  ← go up):",
-                if dialog.field == term_dir_field {
-                    Style::default().fg(accent)
-                } else {
-                    Style::default().fg(DIM)
-                },
-            )));
+            let filtered = dialog.filtered_dir_entries();
+            let filter_display = if dialog.dir_filter.is_empty() {
+                "type to filter".to_string()
+            } else {
+                dialog.dir_filter.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  🔍 ",
+                    if dialog.field == term_dir_field {
+                        Style::default().fg(accent)
+                    } else {
+                        Style::default().fg(DIM)
+                    },
+                ),
+                Span::styled(
+                    filter_display,
+                    if dialog.dir_filter.is_empty() {
+                        Style::default().fg(DIM)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+            ]));
 
-            let visible_rows = 4;
-            let scroll = dialog.dir_selected.saturating_sub(visible_rows - 1);
+            let visible_rows = 10;
+            let scroll = if dialog.dir_selected >= visible_rows {
+                dialog.dir_selected - visible_rows + 1
+            } else {
+                0
+            };
+            let has_above = scroll > 0;
+            let has_below = !filtered.is_empty() && scroll + visible_rows < filtered.len();
 
-            let has_more_below = scroll + visible_rows < dialog.dir_entries.len();
-            for (i, entry) in dialog.dir_entries.iter().enumerate().skip(scroll) {
-                if i >= scroll + visible_rows {
-                    break;
-                }
-                let is_selected = i == dialog.dir_selected;
-                let entry_style = if is_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
+            if filtered.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    format!("    {entry}"),
-                    entry_style,
+                    "    (no matches)",
+                    Style::default().fg(DIM),
                 )));
+            } else {
+                for (i, entry) in filtered.iter().enumerate().skip(scroll).take(visible_rows) {
+                    let is_selected = i == dialog.dir_selected;
+                    let entry_style = if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("    {entry}"),
+                        entry_style,
+                    )));
+                }
             }
-            if has_more_below {
+
+            // Status line with scroll indicators
+            let up = if has_above { "↑ " } else { "  " };
+            let dn = if has_below { " ↓" } else { "  " };
+            if filtered.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "    ▼ more…",
+                    "    0 items",
+                    Style::default().fg(DIM),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("    {up}{}/{}{dn}", dialog.dir_selected + 1, filtered.len()),
                     Style::default().fg(DIM),
                 )));
             }
@@ -489,47 +524,80 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     // Directory / file browser
     if !dialog.dir_entries.is_empty() {
+        let filtered = dialog.filtered_dir_entries();
         let is_watcher = dialog.task_type == crate::tui::app::NewTaskType::Watcher;
-        let browser_label = if is_watcher {
-            "  Browse  (↑↓ navigate, Space to select):"
-        } else {
-            "  Directories  (↑↓ navigate  → enter  ← go up):"
-        };
-        // Browser label uses the selected CLI's accent color for emphasis
         let browser_field_idx = if is_watcher { extra_field } else { dir_field };
-        lines.push(Line::from(Span::styled(
-            browser_label,
-            if is_focused(browser_field_idx) {
-                Style::default().fg(accent)
-            } else {
-                Style::default().fg(DIM)
-            },
-        )));
 
-        let visible_rows = 4;
-        let scroll = dialog.dir_selected.saturating_sub(visible_rows - 1);
+        // Filter input line
+        let filter_display = if dialog.dir_filter.is_empty() {
+            "type to filter".to_string()
+        } else {
+            dialog.dir_filter.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  🔍 ",
+                if is_focused(browser_field_idx) {
+                    Style::default().fg(accent)
+                } else {
+                    Style::default().fg(DIM)
+                },
+            ),
+            Span::styled(
+                filter_display,
+                if dialog.dir_filter.is_empty() {
+                    Style::default().fg(DIM)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+        ]));
 
-        for (i, entry) in dialog.dir_entries.iter().enumerate().skip(scroll) {
-            if i >= scroll + visible_rows {
-                break;
-            }
+        let visible_rows = 10;
+        let scroll = if dialog.dir_selected >= visible_rows {
+            dialog.dir_selected - visible_rows + 1
+        } else {
+            0
+        };
+        let has_above = scroll > 0;
+        let has_below = !filtered.is_empty() && scroll + visible_rows < filtered.len();
 
-            let is_selected = i == dialog.dir_selected;
-            // Always highlight the selected entry so the user always sees the cursor.
-            let entry_style = if is_selected {
-                // Use the CLI-specific accent color for selection background so the
-                // browser matches the agent's emphasis color.
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
+        if filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("    {entry}"),
-                entry_style,
+                "    (no matches)",
+                Style::default().fg(DIM),
+            )));
+        } else {
+            for (i, entry) in filtered.iter().enumerate().skip(scroll).take(visible_rows) {
+                let is_selected = i == dialog.dir_selected;
+                let entry_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                lines.push(Line::from(Span::styled(
+                    format!("    {entry}"),
+                    entry_style,
+                )));
+            }
+        }
+
+        // Status line with scroll indicators
+        let up = if has_above { "↑ " } else { "  " };
+        let dn = if has_below { " ↓" } else { "  " };
+        if filtered.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "    0 items",
+                Style::default().fg(DIM),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("    {up}{}/{}{dn}", dialog.dir_selected + 1, filtered.len()),
+                Style::default().fg(DIM),
             )));
         }
         lines.push(Line::from(""));

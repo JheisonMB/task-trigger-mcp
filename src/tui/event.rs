@@ -623,9 +623,10 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
         }
         Focus::NewAgentDialog => {
             if let Some(dialog) = &mut app.new_agent_dialog {
+                let filtered_len = dialog.filtered_dir_entries().len();
                 if dir > 0 && dialog.dir_selected > 0 {
                     dialog.dir_selected -= 1;
-                } else if dir < 0 && dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                } else if dir < 0 && dialog.dir_selected + 1 < filtered_len {
                     dialog.dir_selected += 1;
                 }
             }
@@ -1694,17 +1695,31 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         }
                     }
                     KeyCode::Down => {
-                        if dialog.dir_selected + 1 < dialog.dir_entries.len() {
+                        let filtered_len = dialog.filtered_dir_entries().len();
+                        if dialog.dir_selected + 1 < filtered_len {
                             dialog.dir_selected += 1;
                         } else if is_terminal {
                             dialog.field = 2; // shell field for terminal
                         }
                     }
-                    KeyCode::Right | KeyCode::Char(' ') => {
+                    KeyCode::Right => {
                         dialog.navigate_to_selected();
                     }
                     KeyCode::Left => {
                         dialog.go_up();
+                    }
+                    KeyCode::Backspace => {
+                        if !dialog.dir_filter.is_empty() {
+                            dialog.dir_filter.pop();
+                            dialog.dir_selected = 0;
+                        }
+                    }
+                    KeyCode::Char(c) if c != ' ' => {
+                        dialog.dir_filter.push(c);
+                        dialog.dir_selected = 0;
+                    }
+                    KeyCode::Char(' ') => {
+                        dialog.navigate_to_selected();
                     }
                     _ => {}
                 },

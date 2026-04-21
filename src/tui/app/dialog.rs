@@ -51,6 +51,7 @@ pub struct NewAgentDialog {
     pub dir_entries: Vec<String>,
     pub dir_selected: usize,
     pub dir_scroll: usize,
+    pub dir_filter: String,
     pub current_path: String,
     pub prev_focus: Option<Focus>,
     // ── Model suggestions ──
@@ -103,6 +104,7 @@ impl NewAgentDialog {
             dir_entries: Vec::new(),
             dir_selected: 0,
             dir_scroll: 0,
+            dir_filter: String::new(),
             current_path: cwd,
             prev_focus: None,
             model_catalog: catalog,
@@ -348,6 +350,20 @@ impl NewAgentDialog {
         self.dir_entries = result;
         self.dir_selected = 0;
         self.dir_scroll = 0;
+        self.dir_filter.clear();
+    }
+
+    /// Return dir_entries filtered by dir_filter (case-insensitive).
+    pub fn filtered_dir_entries(&self) -> Vec<String> {
+        if self.dir_filter.is_empty() {
+            return self.dir_entries.clone();
+        }
+        let q = self.dir_filter.to_lowercase();
+        self.dir_entries
+            .iter()
+            .filter(|e| e.to_lowercase().contains(&q))
+            .cloned()
+            .collect()
     }
 
     /// Go up one directory level (← key).
@@ -369,16 +385,18 @@ impl NewAgentDialog {
         if self.task_type == NewTaskType::Watcher {
             self.watch_path = self.current_path.clone();
         }
+        self.dir_filter.clear();
         self.refresh_dir_entries();
     }
 
     /// Enter the selected directory entry (→ key or Space).
     pub fn navigate_to_selected(&mut self) {
-        if self.dir_selected >= self.dir_entries.len() {
+        let filtered = self.filtered_dir_entries();
+        if self.dir_selected >= filtered.len() {
             return;
         }
 
-        let selected = self.dir_entries[self.dir_selected].clone();
+        let selected = filtered[self.dir_selected].clone();
 
         // Strip prefix icons to get actual name
         let name = selected.trim_start_matches("📁 ").trim_start_matches("  ");
@@ -395,6 +413,7 @@ impl NewAgentDialog {
             if self.task_type == NewTaskType::Watcher {
                 self.watch_path = self.current_path.clone();
             }
+            self.dir_filter.clear();
             self.refresh_dir_entries();
         } else {
             // File selected (Watcher only) — set watch_path, stay in current dir
