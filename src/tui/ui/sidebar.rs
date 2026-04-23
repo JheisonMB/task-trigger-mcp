@@ -250,31 +250,18 @@ fn draw_sidebar_card(
     };
 
     let (mut status_color, agent_type, type_detail) = match agent {
-        AgentEntry::BackgroundAgent(t) => {
-            let has_active = app.active_runs.contains_key(&t.id);
-            let color = if !t.enabled {
+        AgentEntry::Agent(a) => {
+            let has_active = app.active_runs.contains_key(&a.id);
+            let color = if !a.enabled {
                 STATUS_DISABLED
             } else if has_active {
                 STATUS_RUNNING
-            } else if t.last_run_ok == Some(true) {
-                STATUS_OK
-            } else if t.last_run_ok == Some(false) {
+            } else if a.last_run_ok == Some(false) {
                 STATUS_FAIL
             } else {
                 STATUS_OK
             };
-            (color, "cron", t.cli.as_str())
-        }
-        AgentEntry::Watcher(w) => {
-            let has_active = app.active_runs.contains_key(&w.id);
-            let color = if !w.enabled {
-                STATUS_DISABLED
-            } else if has_active {
-                STATUS_RUNNING
-            } else {
-                STATUS_OK
-            };
-            (color, "watch", w.cli.as_str())
+            (color, a.trigger_type_label(), a.cli.as_str())
         }
         AgentEntry::Interactive(idx) => {
             let a = &app.interactive_agents[*idx];
@@ -371,8 +358,8 @@ fn draw_sidebar_card(
     if area.height >= 3 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
         let work_dir = match agent {
-            AgentEntry::BackgroundAgent(t) => t.working_dir.as_deref(),
-            AgentEntry::Watcher(w) => Some(w.path.as_str()),
+            AgentEntry::Agent(a) => a.working_dir.as_deref()
+                .or_else(|| a.watch_path()),
             AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
             AgentEntry::Terminal(idx) => Some(app.terminal_agents[*idx].working_dir.as_str()),
             AgentEntry::Group(_) => None,

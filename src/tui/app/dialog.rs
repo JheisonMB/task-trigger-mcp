@@ -450,9 +450,8 @@ impl NewAgentDialog {
 
 use super::AgentEntry;
 use super::App;
-use crate::application::ports::{
-    BackgroundAgentRepository, WatcherFieldsUpdate, WatcherRepository,
-};
+use crate::application::ports::AgentRepository;
+use crate::domain::models::Trigger;
 use anyhow::Result;
 
 impl App {
@@ -465,42 +464,59 @@ impl App {
         dialog.prev_focus = Some(prev_focus);
 
         match agent {
-            AgentEntry::BackgroundAgent(t) => {
-                dialog.edit_id = Some(t.id.clone());
-                dialog.task_type = NewTaskType::Scheduled;
-                dialog.prompt = t.prompt.clone();
-                dialog.cron_expr = t.schedule_expr.clone();
-                dialog.working_dir = t.working_dir.clone().unwrap_or_default();
-                dialog.model = t.model.clone().unwrap_or_default();
-                if let Some(idx) = dialog
-                    .available_clis
-                    .iter()
-                    .position(|c| c.as_str() == t.cli.as_str())
-                {
-                    dialog.cli_index = idx;
+            AgentEntry::Agent(a) => {
+                match &a.trigger {
+                    Some(crate::domain::models::Trigger::Cron { schedule_expr }) => {
+                        dialog.edit_id = Some(a.id.clone());
+                        dialog.task_type = NewTaskType::Scheduled;
+                        dialog.prompt = a.prompt.clone();
+                        dialog.cron_expr = schedule_expr.clone();
+                        dialog.working_dir = a.working_dir.clone().unwrap_or_default();
+                        dialog.model = a.model.clone().unwrap_or_default();
+                        if let Some(idx) = dialog
+                            .available_clis
+                            .iter()
+                            .position(|c| c.as_str() == a.cli.as_str())
+                        {
+                            dialog.cli_index = idx;
+                        }
+                        dialog.field = 2;
+                    }
+                    Some(crate::domain::models::Trigger::Watch { path, events, .. }) => {
+                        dialog.edit_id = Some(a.id.clone());
+                        dialog.task_type = NewTaskType::Watcher;
+                        dialog.prompt = a.prompt.clone();
+                        dialog.watch_path = path.clone();
+                        dialog.watch_events = events
+                            .iter()
+                            .map(|e| e.to_string().to_lowercase())
+                            .collect();
+                        dialog.model = a.model.clone().unwrap_or_default();
+                        if let Some(idx) = dialog
+                            .available_clis
+                            .iter()
+                            .position(|c| c.as_str() == a.cli.as_str())
+                        {
+                            dialog.cli_index = idx;
+                        }
+                        dialog.field = 2;
+                    }
+                    None => {
+                        // Manual-only agent — open as scheduled with empty cron
+                        dialog.edit_id = Some(a.id.clone());
+                        dialog.task_type = NewTaskType::Scheduled;
+                        dialog.prompt = a.prompt.clone();
+                        dialog.model = a.model.clone().unwrap_or_default();
+                        if let Some(idx) = dialog
+                            .available_clis
+                            .iter()
+                            .position(|c| c.as_str() == a.cli.as_str())
+                        {
+                            dialog.cli_index = idx;
+                        }
+                        dialog.field = 2;
+                    }
                 }
-                // Start on first editable field (prompt = field 2 in edit mode)
-                dialog.field = 2;
-            }
-            AgentEntry::Watcher(w) => {
-                dialog.edit_id = Some(w.id.clone());
-                dialog.task_type = NewTaskType::Watcher;
-                dialog.prompt = w.prompt.clone();
-                dialog.watch_path = w.path.clone();
-                dialog.watch_events = w
-                    .events
-                    .iter()
-                    .map(|e| e.to_string().to_lowercase())
-                    .collect();
-                dialog.model = w.model.clone().unwrap_or_default();
-                if let Some(idx) = dialog
-                    .available_clis
-                    .iter()
-                    .position(|c| c.as_str() == w.cli.as_str())
-                {
-                    dialog.cli_index = idx;
-                }
-                dialog.field = 2;
             }
             AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_) => return, // editing not supported
         }
@@ -642,25 +658,24 @@ impl App {
         model: Option<&str>,
         id: &str,
     ) -> Result<()> {
-        use crate::application::ports::BackgroundAgentFieldsUpdate;
         if dialog.prompt.is_empty() {
             return Ok(());
         }
-        let dir = if dialog.working_dir.is_empty() {
+        let Some(mut agent) = self.db.get_agent(id)? else {
+            return Ok(());
+        };
+        agent.prompt = dialog.prompt.clone();
+        if let Some(Trigger::Cron { schedule_expr }) = &mut agent.trigger {
+            *schedule_expr = dialog.cron_expr.clone();
+        }
+        agent.cli = dialog.selected_cli();
+        agent.model = model.map(String::from);
+        agent.working_dir = if dialog.working_dir.is_empty() {
             None
         } else {
-            Some(dialog.working_dir.as_str())
+            Some(dialog.working_dir.clone())
         };
-        let cli = dialog.selected_cli();
-        let fields = BackgroundAgentFieldsUpdate {
-            prompt: Some(&dialog.prompt),
-            schedule_expr: Some(&dialog.cron_expr),
-            cli: Some(cli.as_str()),
-            model: Some(model),
-            working_dir: Some(dir),
-            expires_at: None,
-        };
-        self.db.update_background_agent_fields(id, &fields)?;
+        self.db.upsert_agent(&agent)?;
         Ok(())
     }
 
@@ -673,18 +688,18 @@ impl App {
         if dialog.prompt.is_empty() || dialog.watch_path.is_empty() {
             return Ok(());
         }
-        let events_str = dialog.watch_events.join(",");
-        let cli = dialog.selected_cli();
-        let fields = WatcherFieldsUpdate {
-            prompt: Some(&dialog.prompt),
-            path: Some(&dialog.watch_path),
-            events: Some(&events_str),
-            cli: Some(cli.as_str()),
-            model: Some(model),
-            debounce_seconds: None,
-            recursive: None,
+        let Some(mut agent) = self.db.get_agent(id)? else {
+            return Ok(());
         };
-        self.db.update_watcher_fields(id, &fields)?;
+        agent.prompt = dialog.prompt.clone();
+        agent.cli = dialog.selected_cli();
+        agent.model = model.map(String::from);
+        if let Some(Trigger::Watch { path, events, .. }) = &mut agent.trigger {
+            *path = dialog.watch_path.clone();
+            *events = crate::domain::models::WatchEvent::parse_list(&dialog.watch_events)
+                .unwrap_or_default();
+        }
+        self.db.upsert_agent(&agent)?;
         Ok(())
     }
 
@@ -764,10 +779,7 @@ impl App {
             return Ok(());
         }
         let cli = dialog.selected_cli();
-        let id = format!(
-            "background_agent-{}",
-            &uuid::Uuid::new_v4().to_string()[..8]
-        );
+        let id = format!("agent-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let working_dir = if dialog.working_dir.is_empty() {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -775,23 +787,30 @@ impl App {
         } else {
             dialog.working_dir.clone()
         };
-        let background_agent = crate::domain::models::BackgroundAgent {
+        let log_dir = dirs::home_dir()
+            .map(|h| h.join(".canopy/logs"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
+        let log_path = log_dir.join(&id).with_extension("log").to_string_lossy().to_string();
+        let agent = crate::domain::models::Agent {
             id,
             prompt: dialog.prompt.clone(),
-            schedule_expr: dialog.cron_expr.clone(),
+            trigger: Some(crate::domain::models::Trigger::Cron {
+                schedule_expr: dialog.cron_expr.clone(),
+            }),
             cli,
             model,
             working_dir: Some(working_dir),
             enabled: true,
             created_at: Utc::now(),
-            last_run_at: None,
-            last_run_ok: None,
-            log_path: String::new(),
+            log_path,
             timeout_minutes: 15,
             expires_at: None,
+            last_run_at: None,
+            last_run_ok: None,
+            last_triggered_at: None,
+            trigger_count: 0,
         };
-        self.db
-            .insert_or_update_background_agent(&background_agent)?;
+        self.db.upsert_agent(&agent)?;
         Ok(())
     }
 
@@ -810,22 +829,33 @@ impl App {
         if events.is_empty() {
             return Ok(());
         }
-        let watcher = crate::domain::models::Watcher {
+        let log_dir = dirs::home_dir()
+            .map(|h| h.join(".canopy/logs"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
+        let log_path = log_dir.join(&id).with_extension("log").to_string_lossy().to_string();
+        let agent = crate::domain::models::Agent {
             id,
-            path: dialog.watch_path.clone(),
-            events,
             prompt: dialog.prompt.clone(),
+            trigger: Some(crate::domain::models::Trigger::Watch {
+                path: dialog.watch_path.clone(),
+                events,
+                debounce_seconds: 5,
+                recursive: false,
+            }),
             cli,
             model,
-            recursive: false,
-            debounce_seconds: 5,
+            working_dir: None,
             enabled: true,
-            trigger_count: 0,
             created_at: Utc::now(),
-            last_triggered_at: None,
+            log_path,
             timeout_minutes: 15,
+            expires_at: None,
+            last_run_at: None,
+            last_run_ok: None,
+            last_triggered_at: None,
+            trigger_count: 0,
         };
-        self.db.insert_or_update_watcher(&watcher)?;
+        self.db.upsert_agent(&agent)?;
         Ok(())
     }
 
@@ -1218,7 +1248,7 @@ impl SimplePromptDialog {
                     else {
                         continue;
                     };
-                    if crate::skills::find_skill_instructions(&path).is_none() {
+                    if crate::skills_module::find_skill_instructions(&path).is_none() {
                         continue;
                     }
                     // Label uses skill:name format (what the agent sees)

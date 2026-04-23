@@ -1,7 +1,7 @@
 use anyhow::Result;
 
 use crate::application::ports::{
-    BackgroundAgentRepository, RunRepository, StateRepository, WatcherRepository,
+    AgentRepository, RunRepository, StateRepository,
 };
 
 use super::{is_process_running, relative_time, tail_lines, AgentEntry, App};
@@ -22,8 +22,7 @@ impl App {
     }
 
     pub(super) fn refresh_agents(&mut self) -> Result<()> {
-        let background_agents = self.db.list_background_agents()?;
-        let watchers = self.db.list_watchers()?;
+        let agents = self.db.list_agents()?;
 
         self.agents.clear();
         // Interactive sessions first
@@ -38,12 +37,9 @@ impl App {
         for i in 0..self.split_groups.len() {
             self.agents.push(AgentEntry::Group(i));
         }
-        // Background agents and watchers last
-        for t in background_agents {
-            self.agents.push(AgentEntry::BackgroundAgent(t));
-        }
-        for w in watchers {
-            self.agents.push(AgentEntry::Watcher(w));
+        // Agents last
+        for a in agents {
+            self.agents.push(AgentEntry::Agent(a));
         }
 
         let total = self.agents.len();
@@ -174,7 +170,7 @@ impl App {
     }
 }
 
-pub(crate) fn send_mcp_task_run(port: &str, background_agent_id: &str) -> Result<()> {
+pub(crate) fn send_mcp_task_run(port: &str, agent_id: &str) -> Result<()> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
@@ -185,7 +181,7 @@ pub(crate) fn send_mcp_task_run(port: &str, background_agent_id: &str) -> Result
         "method": "tools/call",
         "params": {
             "name": "agent_run",
-            "arguments": { "id": background_agent_id }
+            "arguments": { "id": agent_id }
         }
     })
     .to_string();

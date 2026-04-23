@@ -70,12 +70,8 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         Focus::Preview => match app.selected_agent() {
-            Some(AgentEntry::BackgroundAgent(t)) => {
-                draw_task_details(frame, inner, t, app);
-                return;
-            }
-            Some(AgentEntry::Watcher(w)) => {
-                draw_watcher_details(frame, inner, w);
+            Some(AgentEntry::Agent(a)) => {
+                draw_agent_details(frame, inner, a, app);
                 return;
             }
             Some(AgentEntry::Interactive(idx)) => {
@@ -562,23 +558,25 @@ pub(crate) fn draw_brians_brain(
     }
 }
 
-// ── BackgroundAgent details (preview) ──────────────────────────────────────
+// ── Agent details (preview) ──────────────────────────────────────
 
-fn draw_task_details(
+fn draw_agent_details(
     frame: &mut Frame,
     area: Rect,
-    background_agent: &crate::domain::models::BackgroundAgent,
+    agent: &crate::domain::models::Agent,
     app: &App,
 ) {
-    let has_active = app.active_runs.contains_key(&background_agent.id);
-    let (status_text, status_color) = if !background_agent.enabled {
+    use crate::domain::models::Trigger;
+
+    let has_active = app.active_runs.contains_key(&agent.id);
+    let (status_text, status_color) = if !agent.enabled {
         ("DISABLED", STATUS_DISABLED)
     } else if has_active {
         ("RUNNING", STATUS_RUNNING)
-    } else if background_agent.last_run_ok == Some(true) {
-        ("OK", STATUS_OK)
-    } else if background_agent.last_run_ok == Some(false) {
+    } else if agent.last_run_ok == Some(false) {
         ("FAILED", STATUS_FAIL)
+    } else if agent.last_run_ok == Some(true) {
+        ("OK", STATUS_OK)
     } else {
         ("IDLE", STATUS_OK)
     };
@@ -590,31 +588,63 @@ fn draw_task_details(
         ]),
         Line::from(""),
         Line::from(vec![
+            Span::styled("Type:    ", Style::default().fg(DIM)),
+            Span::styled(agent.trigger_type_label(), Style::default().fg(INTERACTIVE_COLOR)),
+        ]),
+        Line::from(vec![
             Span::styled("Prompt:  ", Style::default().fg(DIM)),
-            Span::raw(&background_agent.prompt),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Cron:    ", Style::default().fg(DIM)),
-            Span::styled(
-                &background_agent.schedule_expr,
-                Style::default().fg(INTERACTIVE_COLOR),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("CLI:     ", Style::default().fg(DIM)),
-            Span::raw(background_agent.cli.as_str()),
+            Span::raw(&agent.prompt),
         ]),
     ];
 
-    if let Some(ref model) = background_agent.model {
+    match &agent.trigger {
+        Some(Trigger::Cron { schedule_expr }) => {
+            lines.push(Line::from(vec![
+                Span::styled("Cron:    ", Style::default().fg(DIM)),
+                Span::styled(schedule_expr, Style::default().fg(INTERACTIVE_COLOR)),
+            ]));
+        }
+        Some(Trigger::Watch { path, events, debounce_seconds, recursive, .. }) => {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("Path:    ", Style::default().fg(DIM)),
+                Span::raw(path),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Events:  ", Style::default().fg(DIM)),
+                Span::raw(
+                    events
+                        .iter()
+                        .map(|e| e.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Debounce:", Style::default().fg(DIM)),
+                Span::raw(format!(" {}s", debounce_seconds)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Recursive:", Style::default().fg(DIM)),
+                Span::raw(if *recursive { " yes" } else { " no" }),
+            ]));
+        }
+        None => {}
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled("CLI:     ", Style::default().fg(DIM)),
+        Span::raw(agent.cli.as_str()),
+    ]));
+
+    if let Some(ref model) = agent.model {
         lines.push(Line::from(vec![
             Span::styled("Model:   ", Style::default().fg(DIM)),
             Span::raw(model),
         ]));
     }
 
-    if let Some(ref dir) = background_agent.working_dir {
+    if let Some(ref dir) = agent.working_dir {
         lines.push(Line::from(vec![
             Span::styled("Dir:     ", Style::default().fg(DIM)),
             Span::raw(dir),
@@ -623,83 +653,29 @@ fn draw_task_details(
 
     lines.push(Line::from(vec![
         Span::styled("Timeout: ", Style::default().fg(DIM)),
-        Span::raw(format!("{} min", background_agent.timeout_minutes)),
+        Span::raw(format!("{} min", agent.timeout_minutes)),
     ]));
 
-    if let Some(ref exp) = background_agent.expires_at {
+    if let Some(ref exp) = agent.expires_at {
         lines.push(Line::from(vec![
             Span::styled("Expires: ", Style::default().fg(DIM)),
             Span::raw(relative_time(exp)),
         ]));
     }
 
-    if let Some(ref lr) = background_agent.last_run_at {
+    if let Some(ref lr) = agent.last_run_at {
         lines.push(Line::from(vec![
             Span::styled("Last run:", Style::default().fg(DIM)),
             Span::raw(relative_time(lr)),
         ]));
     }
 
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
-}
-
-// ── Watcher details (preview) ───────────────────────────────────
-
-fn draw_watcher_details(frame: &mut Frame, area: Rect, watcher: &crate::domain::models::Watcher) {
-    let (status_text, status_color) = if watcher.enabled {
-        ("ACTIVE", STATUS_RUNNING)
-    } else {
-        ("DISABLED", STATUS_DISABLED)
-    };
-
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Status:  ", Style::default().fg(DIM)),
-            Span::styled(status_text, Style::default().fg(status_color)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Prompt:  ", Style::default().fg(DIM)),
-            Span::raw(&watcher.prompt),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Path:    ", Style::default().fg(DIM)),
-            Span::raw(&watcher.path),
-        ]),
-        Line::from(vec![
-            Span::styled("Events:  ", Style::default().fg(DIM)),
-            Span::raw(
-                watcher
-                    .events
-                    .iter()
-                    .map(|e| e.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("CLI:     ", Style::default().fg(DIM)),
-            Span::raw(watcher.cli.as_str()),
-        ]),
-        Line::from(vec![
+    if agent.trigger_count > 0 {
+        lines.push(Line::from(vec![
             Span::styled("Triggers:", Style::default().fg(DIM)),
-            Span::raw(watcher.trigger_count.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Debounce:", Style::default().fg(DIM)),
-            Span::raw(format!("{}s", watcher.debounce_seconds)),
-        ]),
-        Line::from(vec![
-            Span::styled("Recursive:", Style::default().fg(DIM)),
-            Span::raw(if watcher.recursive { "yes" } else { "no" }),
-        ]),
-        Line::from(vec![
-            Span::styled("Timeout: ", Style::default().fg(DIM)),
-            Span::raw(format!("{} min", watcher.timeout_minutes)),
-        ]),
-    ];
+            Span::raw(agent.trigger_count.to_string()),
+        ]));
+    }
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);

@@ -397,13 +397,9 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::BackgroundAgent(t) => {
-                use crate::application::ports::BackgroundAgentRepository;
-                self.db.delete_background_agent(&t.id)?;
-            }
-            AgentEntry::Watcher(w) => {
-                use crate::application::ports::WatcherRepository;
-                self.db.delete_watcher(&w.id)?;
+            AgentEntry::Agent(a) => {
+                use crate::application::ports::AgentRepository;
+                self.db.delete_agent(&a.id)?;
             }
             AgentEntry::Interactive(idx) => {
                 if !self.close_interactive_session_at(*idx, 0) {

@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::application::notification_service::{DefaultNotificationService, NotificationService};
-use crate::application::ports::{BackgroundAgentRepository, WatcherRepository};
+use crate::application::ports::AgentRepository;
 use crate::db::Database;
-use crate::domain::models::{BackgroundAgent, RunLog, Watcher};
+use crate::domain::models::{Agent, RunLog};
 
 use super::agent::InteractiveAgent;
 use super::context_transfer::{
@@ -28,9 +28,9 @@ pub use dialog::{NewTaskMode, NewTaskType};
 // ── Types ───────────────────────────────────────────────────────
 
 /// Unified entry in the sidebar.
+#[allow(clippy::large_enum_variant)]
 pub enum AgentEntry {
-    BackgroundAgent(BackgroundAgent),
-    Watcher(Watcher),
+    Agent(Agent),
     Interactive(usize), // index into App::interactive_agents
     Terminal(usize),    // index into App::terminal_agents
     Group(usize),       // index into App::split_groups
@@ -39,8 +39,7 @@ pub enum AgentEntry {
 impl AgentEntry {
     pub fn id<'a>(&'a self, app: &'a App) -> &'a str {
         match self {
-            Self::BackgroundAgent(t) => &t.id,
-            Self::Watcher(w) => &w.id,
+            Self::Agent(a) => &a.id,
             Self::Interactive(idx) => app.interactive_agents.get(*idx).map_or("?", |a| &a.name),
             Self::Terminal(idx) => app.terminal_agents.get(*idx).map_or("?", |a| &a.name),
             Self::Group(idx) => app.split_groups.get(*idx).map_or("?", |g| &g.id),
@@ -361,11 +360,8 @@ impl App {
             return Ok(());
         };
         match agent {
-            AgentEntry::BackgroundAgent(t) => {
-                self.db.update_background_agent_enabled(&t.id, !t.enabled)?;
-            }
-            AgentEntry::Watcher(w) => {
-                self.db.update_watcher_enabled(&w.id, !w.enabled)?;
+            AgentEntry::Agent(a) => {
+                self.db.update_agent_enabled(&a.id, !a.enabled)?;
             }
             AgentEntry::Interactive(_) => {}
             AgentEntry::Terminal(_) => {}
@@ -1012,13 +1008,5 @@ pub(super) fn tail_lines(content: &str, n: usize) -> String {
 }
 
 pub(super) fn is_process_running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
+    crate::daemon::process::is_process_running(pid)
 }
