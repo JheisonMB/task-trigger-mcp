@@ -4,13 +4,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use crate::application::ports::{
-    BackgroundAgentFieldsUpdate, BackgroundAgentRepository, RunRepository, StateRepository,
-    WatcherFieldsUpdate, WatcherRepository,
-};
-use crate::domain::models::{
-    BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, WatchEvent, Watcher,
-};
+use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
+use crate::domain::models::{Agent, Cli, RunLog, RunStatus, Trigger, TriggerType};
 
 /// Thread-safe `SQLite` database wrapper.
 ///
@@ -41,36 +36,23 @@ impl Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
 
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS background_agents (
+            "CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 prompt TEXT NOT NULL,
-                schedule_expr TEXT NOT NULL,
+                trigger_type TEXT,
+                trigger_config TEXT,
                 cli TEXT NOT NULL,
                 model TEXT,
                 working_dir TEXT,
                 enabled BOOLEAN NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
+                log_path TEXT NOT NULL,
+                timeout_minutes INTEGER NOT NULL DEFAULT 15,
                 expires_at TEXT,
                 last_run_at TEXT,
                 last_run_ok BOOLEAN,
-                log_path TEXT NOT NULL,
-                timeout_minutes INTEGER NOT NULL DEFAULT 15
-            );
-
-            CREATE TABLE IF NOT EXISTS watchers (
-                id TEXT PRIMARY KEY,
-                path TEXT NOT NULL,
-                events TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                cli TEXT NOT NULL,
-                model TEXT,
-                debounce_seconds INTEGER NOT NULL DEFAULT 2,
-                recursive BOOLEAN NOT NULL DEFAULT 0,
-                enabled BOOLEAN NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
                 last_triggered_at TEXT,
-                trigger_count INTEGER NOT NULL DEFAULT 0,
-                timeout_minutes INTEGER NOT NULL DEFAULT 15
+                trigger_count INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS runs (
@@ -120,85 +102,6 @@ impl Database {
                 created_at TEXT NOT NULL
             );",
         )?;
-
-        // Migrate old schema if needed
-        self.migrate(&conn)?;
-
-        Ok(())
-    }
-
-    /// Run schema migrations for existing databases.
-    fn migrate(&self, conn: &Connection) -> Result<()> {
-        // Add timeout_minutes to background_agents if missing
-        let has_timeout = conn
-            .prepare("SELECT timeout_minutes FROM background_agents LIMIT 0")
-            .is_ok();
-        if !has_timeout {
-            conn.execute_batch(
-                "ALTER TABLE background_agents ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
-            )?;
-        }
-
-        // Add timeout_minutes to watchers if missing
-        let has_watcher_timeout = conn
-            .prepare("SELECT timeout_minutes FROM watchers LIMIT 0")
-            .is_ok();
-        if !has_watcher_timeout {
-            conn.execute_batch(
-                "ALTER TABLE watchers ADD COLUMN timeout_minutes INTEGER NOT NULL DEFAULT 15;",
-            )?;
-        }
-
-        // Migrate runs table from INTEGER id to TEXT id with new columns
-        let has_status = conn.prepare("SELECT status FROM runs LIMIT 0").is_ok();
-        if !has_status {
-            conn.execute_batch(
-                "ALTER TABLE runs RENAME TO runs_old;
-                 CREATE TABLE runs (
-                     id TEXT PRIMARY KEY,
-                     background_agent_id TEXT NOT NULL,
-                     status TEXT NOT NULL DEFAULT 'pending',
-                     trigger_type TEXT NOT NULL,
-                     summary TEXT,
-                     started_at TEXT NOT NULL,
-                     finished_at TEXT,
-                     exit_code INTEGER,
-                     timeout_at TEXT
-                 );
-                 INSERT INTO runs (id, background_agent_id, status, trigger_type, started_at, finished_at, exit_code)
-                     SELECT CAST(id AS TEXT), background_agent_id, 'success', trigger_type, started_at, finished_at, exit_code
-                     FROM runs_old;
-                 DROP TABLE runs_old;",
-            )?;
-        }
-
-        // Remove FK constraint from runs table so watchers can have runs too
-        let has_fk: bool = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .map(|sql| sql.contains("FOREIGN KEY"))
-            .unwrap_or(false);
-        if has_fk {
-            conn.execute_batch(
-                "ALTER TABLE runs RENAME TO runs_old;
-                 CREATE TABLE runs (
-                     id TEXT PRIMARY KEY,
-                     background_agent_id TEXT NOT NULL,
-                     status TEXT NOT NULL DEFAULT 'pending',
-                     trigger_type TEXT NOT NULL,
-                     summary TEXT,
-                     started_at TEXT NOT NULL,
-                     finished_at TEXT,
-                     exit_code INTEGER,
-                     timeout_at TEXT
-                 );
-                 INSERT INTO runs SELECT * FROM runs_old;
-                 DROP TABLE runs_old;",
-            )?;
-        }
 
         Ok(())
     }
@@ -360,13 +263,7 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO groups (id, orientation, session_a, session_b, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                id,
-                orientation,
-                session_a,
-                session_b,
-                Utc::now().to_rfc3339()
-            ],
+            params![id, orientation, session_a, session_b, Utc::now().to_rfc3339()],
         )?;
         Ok(())
     }
@@ -379,413 +276,178 @@ impl Database {
     }
 }
 
-// ── BackgroundAgent operations ──────────────────────────────────────────────
+// ── Agent operations ────────────────────────────────────────────────────
 
-impl BackgroundAgentRepository for Database {
-    fn insert_or_update_background_agent(&self, background_agent: &BackgroundAgent) -> Result<()> {
+const AGENT_COLUMNS: &str = "id, prompt, trigger_type, trigger_config, cli, model, working_dir, \
+                             enabled, created_at, log_path, timeout_minutes, expires_at, last_run_at, \
+                             last_run_ok, last_triggered_at, trigger_count";
+
+impl AgentRepository for Database {
+    fn upsert_agent(&self, agent: &Agent) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        let (trigger_type, trigger_config) = match &agent.trigger {
+            Some(trigger) => (Some(trigger.type_str().to_string()), Some(serde_json::to_string(trigger)?)),
+            None => (None, None),
+        };
+
         conn.execute(
-            "INSERT OR REPLACE INTO background_agents
-            (id, prompt, schedule_expr, cli, model, working_dir, enabled, created_at, expires_at, log_path, timeout_minutes)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            &format!("INSERT OR REPLACE INTO agents ({AGENT_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"),
             params![
-                &background_agent.id,
-                &background_agent.prompt,
-                &background_agent.schedule_expr,
-                background_agent.cli.as_str(),
-                &background_agent.model,
-                &background_agent.working_dir,
-                background_agent.enabled,
-                background_agent.created_at.to_rfc3339(),
-                background_agent.expires_at.map(|t| t.to_rfc3339()),
-                &background_agent.log_path,
-                background_agent.timeout_minutes as i64,
+                &agent.id,
+                &agent.prompt,
+                trigger_type,
+                trigger_config,
+                agent.cli.as_str(),
+                &agent.model,
+                &agent.working_dir,
+                agent.enabled,
+                agent.created_at.to_rfc3339(),
+                &agent.log_path,
+                agent.timeout_minutes as i64,
+                agent.expires_at.map(|t| t.to_rfc3339()),
+                agent.last_run_at.map(|t| t.to_rfc3339()),
+                agent.last_run_ok,
+                agent.last_triggered_at.map(|t| t.to_rfc3339()),
+                agent.trigger_count as i64,
             ],
         )?;
         Ok(())
     }
 
-    fn get_background_agent(&self, id: &str) -> Result<Option<BackgroundAgent>> {
+    fn get_agent(&self, id: &str) -> Result<Option<Agent>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
-                    created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
-             FROM background_agents WHERE id = ?1",
-        )?;
+        let mut stmt = conn.prepare(&format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1"))?;
 
-        let background_agent = stmt
+        let row = stmt
             .query_row(params![id], |row| {
-                Ok(TaskRow {
+                Ok(AgentRow {
                     id: row.get(0)?,
                     prompt: row.get(1)?,
-                    schedule_expr: row.get(2)?,
-                    cli_str: row.get(3)?,
-                    model: row.get(4)?,
-                    working_dir: row.get(5)?,
-                    enabled: row.get(6)?,
-                    created_at_str: row.get(7)?,
-                    expires_at_str: row.get(8)?,
-                    last_run_at_str: row.get(9)?,
-                    last_run_ok: row.get(10)?,
-                    log_path: row.get(11)?,
-                    timeout_minutes: row.get(12)?,
+                    trigger_type: row.get(2)?,
+                    trigger_config: row.get(3)?,
+                    cli_str: row.get(4)?,
+                    model: row.get(5)?,
+                    working_dir: row.get(6)?,
+                    enabled: row.get(7)?,
+                    created_at_str: row.get(8)?,
+                    log_path: row.get(9)?,
+                    timeout_minutes: row.get(10)?,
+                    expires_at_str: row.get(11)?,
+                    last_run_at_str: row.get(12)?,
+                    last_run_ok: row.get(13)?,
+                    last_triggered_at_str: row.get(14)?,
+                    trigger_count: row.get(15)?,
                 })
             })
             .optional()?;
 
-        match background_agent {
-            Some(row) => Ok(Some(row.into_task()?)),
+        match row {
+            Some(r) => Ok(Some(r.into_agent()?)),
             None => Ok(None),
         }
     }
 
-    fn list_background_agents(&self) -> Result<Vec<BackgroundAgent>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, prompt, schedule_expr, cli, model, working_dir, enabled,
-                    created_at, expires_at, last_run_at, last_run_ok, log_path, timeout_minutes
-             FROM background_agents ORDER BY created_at DESC",
-        )?;
-
-        let rows = stmt.query_map([], |row| {
-            Ok(TaskRow {
-                id: row.get(0)?,
-                prompt: row.get(1)?,
-                schedule_expr: row.get(2)?,
-                cli_str: row.get(3)?,
-                model: row.get(4)?,
-                working_dir: row.get(5)?,
-                enabled: row.get(6)?,
-                created_at_str: row.get(7)?,
-                expires_at_str: row.get(8)?,
-                last_run_at_str: row.get(9)?,
-                last_run_ok: row.get(10)?,
-                log_path: row.get(11)?,
-                timeout_minutes: row.get(12)?,
-            })
-        })?;
-
-        let mut background_agents = Vec::new();
-        for row_result in rows {
-            background_agents.push(row_result?.into_task()?);
-        }
-        Ok(background_agents)
+    fn list_agents(&self) -> Result<Vec<Agent>> {
+        self.list_agents_where("")
     }
 
-    fn delete_background_agent(&self, id: &str) -> Result<()> {
+    fn list_cron_agents(&self) -> Result<Vec<Agent>> {
+        self.list_agents_where("WHERE trigger_type = 'cron' AND enabled = 1")
+    }
+
+    fn list_watch_agents(&self) -> Result<Vec<Agent>> {
+        self.list_agents_where("WHERE trigger_type = 'watch' AND enabled = 1")
+    }
+
+    fn delete_agent(&self, id: &str) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        // Delete associated runs first (FK constraint)
-        conn.execute(
-            "DELETE FROM runs WHERE background_agent_id = ?1",
-            params![id],
-        )?;
-        conn.execute("DELETE FROM background_agents WHERE id = ?1", params![id])?;
+        conn.execute("DELETE FROM runs WHERE background_agent_id = ?1", params![id])?;
+        conn.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Ok(())
     }
 
-    fn update_background_agent_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+    fn update_agent_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "UPDATE background_agents SET enabled = ?1 WHERE id = ?2",
+            "UPDATE agents SET enabled = ?1 WHERE id = ?2",
             params![enabled, id],
         )?;
         Ok(())
     }
 
-    fn update_background_agent_fields(
-        &self,
-        id: &str,
-        fields: &BackgroundAgentFieldsUpdate<'_>,
-    ) -> Result<bool> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-
-        let mut sets = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(v) = fields.prompt {
-            sets.push("prompt = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.schedule_expr {
-            sets.push("schedule_expr = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.cli {
-            sets.push("cli = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.model {
-            sets.push("model = ?");
-            values.push(Box::new(v.map(|s| s.to_string())));
-        }
-        if let Some(v) = fields.working_dir {
-            sets.push("working_dir = ?");
-            values.push(Box::new(v.map(|s| s.to_string())));
-        }
-        if let Some(v) = fields.expires_at {
-            sets.push("expires_at = ?");
-            values.push(Box::new(v.map(|s| s.to_string())));
-        }
-
-        if sets.is_empty() {
-            return Ok(false);
-        }
-
-        let placeholders: Vec<String> = sets
-            .iter()
-            .enumerate()
-            .map(|(i, s)| s.replace('?', &format!("?{}", i + 1)))
-            .collect();
-
-        let id_param = sets.len() + 1;
-        let sql = format!(
-            "UPDATE background_agents SET {} WHERE id = ?{}",
-            placeholders.join(", "),
-            id_param
-        );
-        values.push(Box::new(id.to_string()));
-
-        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        let rows = conn.execute(&sql, params.as_slice())?;
-        Ok(rows > 0)
-    }
-
-    fn update_background_agent_last_run(&self, id: &str, success: bool) -> Result<()> {
+    fn update_agent_last_run(&self, id: &str, success: bool) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "UPDATE background_agents SET last_run_at = ?1, last_run_ok = ?2 WHERE id = ?3",
+            "UPDATE agents SET last_run_at = ?1, last_run_ok = ?2 WHERE id = ?3",
             params![Utc::now().to_rfc3339(), success, id],
+        )?;
+        Ok(())
+    }
+
+    fn update_agent_triggered(&self, id: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        conn.execute(
+            "UPDATE agents SET last_triggered_at = ?1, trigger_count = trigger_count + 1 WHERE id = ?2",
+            params![Utc::now().to_rfc3339(), id],
         )?;
         Ok(())
     }
 }
 
-// ── Watcher operations ───────────────────────────────────────────
-
-impl WatcherRepository for Database {
-    fn insert_or_update_watcher(&self, watcher: &Watcher) -> Result<()> {
+impl Database {
+    fn list_agents_where(&self, where_clause: &str) -> Result<Vec<Agent>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let events_json = serde_json::to_string(&watcher.events)?;
-
-        conn.execute(
-            "INSERT OR REPLACE INTO watchers
-            (id, path, events, prompt, cli, model, debounce_seconds, recursive, enabled, created_at, timeout_minutes)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-            params![
-                &watcher.id,
-                &watcher.path,
-                &events_json,
-                &watcher.prompt,
-                watcher.cli.as_str(),
-                &watcher.model,
-                watcher.debounce_seconds as i64,
-                watcher.recursive,
-                watcher.enabled,
-                watcher.created_at.to_rfc3339(),
-                watcher.timeout_minutes as i64,
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn get_watcher(&self, id: &str) -> Result<Option<Watcher>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive,
-                    enabled, created_at, last_triggered_at, trigger_count, timeout_minutes
-             FROM watchers WHERE id = ?1",
-        )?;
-
-        let watcher = stmt
-            .query_row(params![id], |row| {
-                Ok(WatcherRow {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    events_json: row.get(2)?,
-                    prompt: row.get(3)?,
-                    cli_str: row.get(4)?,
-                    model: row.get(5)?,
-                    debounce_seconds: row.get(6)?,
-                    recursive: row.get(7)?,
-                    enabled: row.get(8)?,
-                    created_at_str: row.get(9)?,
-                    last_triggered_at_str: row.get(10)?,
-                    trigger_count: row.get(11)?,
-                    timeout_minutes: row.get(12)?,
-                })
-            })
-            .optional()?;
-
-        match watcher {
-            Some(row) => Ok(Some(row.into_watcher()?)),
-            None => Ok(None),
-        }
-    }
-
-    fn list_watchers(&self) -> Result<Vec<Watcher>> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, path, events, prompt, cli, model, debounce_seconds, recursive,
-                    enabled, created_at, last_triggered_at, trigger_count, timeout_minutes
-             FROM watchers ORDER BY created_at DESC",
-        )?;
+        let sql = format!("SELECT {AGENT_COLUMNS} FROM agents {where_clause} ORDER BY created_at DESC");
+        let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map([], |row| {
-            Ok(WatcherRow {
+            Ok(AgentRow {
                 id: row.get(0)?,
-                path: row.get(1)?,
-                events_json: row.get(2)?,
-                prompt: row.get(3)?,
+                prompt: row.get(1)?,
+                trigger_type: row.get(2)?,
+                trigger_config: row.get(3)?,
                 cli_str: row.get(4)?,
                 model: row.get(5)?,
-                debounce_seconds: row.get(6)?,
-                recursive: row.get(7)?,
-                enabled: row.get(8)?,
-                created_at_str: row.get(9)?,
-                last_triggered_at_str: row.get(10)?,
-                trigger_count: row.get(11)?,
-                timeout_minutes: row.get(12)?,
+                working_dir: row.get(6)?,
+                enabled: row.get(7)?,
+                created_at_str: row.get(8)?,
+                log_path: row.get(9)?,
+                timeout_minutes: row.get(10)?,
+                expires_at_str: row.get(11)?,
+                last_run_at_str: row.get(12)?,
+                last_run_ok: row.get(13)?,
+                last_triggered_at_str: row.get(14)?,
+                trigger_count: row.get(15)?,
             })
         })?;
 
-        let mut watchers = Vec::new();
+        let mut agents = Vec::new();
         for row_result in rows {
-            watchers.push(row_result?.into_watcher()?);
+            agents.push(row_result?.into_agent()?);
         }
-        Ok(watchers)
-    }
-
-    fn list_enabled_watchers(&self) -> Result<Vec<Watcher>> {
-        let all = self.list_watchers()?;
-        Ok(all.into_iter().filter(|w| w.enabled).collect())
-    }
-
-    fn delete_watcher(&self, id: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
-            "DELETE FROM runs WHERE background_agent_id = ?1",
-            params![id],
-        )?;
-        conn.execute("DELETE FROM watchers WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    fn update_watcher_enabled(&self, id: &str, enabled: bool) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
-            "UPDATE watchers SET enabled = ?1 WHERE id = ?2",
-            params![enabled, id],
-        )?;
-        Ok(())
-    }
-
-    fn update_watcher_fields(&self, id: &str, fields: &WatcherFieldsUpdate<'_>) -> Result<bool> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-
-        let mut sets = Vec::new();
-        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-
-        if let Some(v) = fields.prompt {
-            sets.push("prompt = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.path {
-            sets.push("path = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.events {
-            sets.push("events = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.cli {
-            sets.push("cli = ?");
-            values.push(Box::new(v.to_string()));
-        }
-        if let Some(v) = fields.model {
-            sets.push("model = ?");
-            values.push(Box::new(v.map(|s| s.to_string())));
-        }
-        if let Some(v) = fields.debounce_seconds {
-            sets.push("debounce_seconds = ?");
-            values.push(Box::new(v as i64));
-        }
-        if let Some(v) = fields.recursive {
-            sets.push("recursive = ?");
-            values.push(Box::new(v));
-        }
-
-        if sets.is_empty() {
-            return Ok(false);
-        }
-
-        let placeholders: Vec<String> = sets
-            .iter()
-            .enumerate()
-            .map(|(i, s)| s.replace('?', &format!("?{}", i + 1)))
-            .collect();
-
-        let id_param = sets.len() + 1;
-        let sql = format!(
-            "UPDATE watchers SET {} WHERE id = ?{}",
-            placeholders.join(", "),
-            id_param
-        );
-        values.push(Box::new(id.to_string()));
-
-        let params: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
-        let rows = conn.execute(&sql, params.as_slice())?;
-        Ok(rows > 0)
-    }
-
-    fn update_watcher_triggered(&self, id: &str) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
-            "UPDATE watchers SET last_triggered_at = ?1, trigger_count = trigger_count + 1 WHERE id = ?2",
-            params![Utc::now().to_rfc3339(), id],
-        )?;
-        Ok(())
+        Ok(agents)
     }
 }
 
@@ -1003,26 +665,30 @@ impl StateRepository for Database {
     }
 }
 
-// ── Internal row types for deserialization ───────────────────────────
+// ── Internal row types for deserialization ────────────────────────────
 
-struct TaskRow {
+struct AgentRow {
     id: String,
     prompt: String,
-    schedule_expr: String,
+    #[allow(dead_code)]
+    trigger_type: Option<String>,
+    trigger_config: Option<String>,
     cli_str: String,
     model: Option<String>,
     working_dir: Option<String>,
     enabled: bool,
     created_at_str: String,
+    log_path: String,
+    timeout_minutes: i64,
     expires_at_str: Option<String>,
     last_run_at_str: Option<String>,
     last_run_ok: Option<bool>,
-    log_path: String,
-    timeout_minutes: i64,
+    last_triggered_at_str: Option<String>,
+    trigger_count: i64,
 }
 
-impl TaskRow {
-    fn into_task(self) -> Result<BackgroundAgent> {
+impl AgentRow {
+    fn into_agent(self) -> Result<Agent> {
         let cli = Cli::from_str(&self.cli_str);
         let created_at =
             chrono::DateTime::parse_from_rfc3339(&self.created_at_str)?.with_timezone(&Utc);
@@ -1036,67 +702,34 @@ impl TaskRow {
             .as_ref()
             .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
             .transpose()?;
-
-        Ok(BackgroundAgent {
-            id: self.id,
-            prompt: self.prompt,
-            schedule_expr: self.schedule_expr,
-            cli,
-            model: self.model,
-            working_dir: self.working_dir,
-            enabled: self.enabled,
-            created_at,
-            expires_at,
-            last_run_at,
-            last_run_ok: self.last_run_ok,
-            log_path: self.log_path,
-            timeout_minutes: self.timeout_minutes as u32,
-        })
-    }
-}
-
-struct WatcherRow {
-    id: String,
-    path: String,
-    events_json: String,
-    prompt: String,
-    cli_str: String,
-    model: Option<String>,
-    debounce_seconds: i64,
-    recursive: bool,
-    enabled: bool,
-    created_at_str: String,
-    last_triggered_at_str: Option<String>,
-    trigger_count: i64,
-    timeout_minutes: i64,
-}
-
-impl WatcherRow {
-    fn into_watcher(self) -> Result<Watcher> {
-        let cli = Cli::from_str(&self.cli_str);
-        let events: Vec<WatchEvent> = serde_json::from_str(&self.events_json)?;
-        let created_at =
-            chrono::DateTime::parse_from_rfc3339(&self.created_at_str)?.with_timezone(&Utc);
         let last_triggered_at = self
             .last_triggered_at_str
             .as_ref()
             .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&Utc)))
             .transpose()?;
 
-        Ok(Watcher {
+        let trigger = self
+            .trigger_config
+            .as_ref()
+            .map(|json| serde_json::from_str::<Trigger>(json))
+            .transpose()?;
+
+        Ok(Agent {
             id: self.id,
-            path: self.path,
-            events,
             prompt: self.prompt,
+            trigger,
             cli,
             model: self.model,
-            debounce_seconds: self.debounce_seconds as u64,
-            recursive: self.recursive,
+            working_dir: self.working_dir,
             enabled: self.enabled,
             created_at,
+            log_path: self.log_path,
+            timeout_minutes: self.timeout_minutes as u32,
+            expires_at,
+            last_run_at,
+            last_run_ok: self.last_run_ok,
             last_triggered_at,
             trigger_count: self.trigger_count as u64,
-            timeout_minutes: self.timeout_minutes as u32,
         })
     }
 }
