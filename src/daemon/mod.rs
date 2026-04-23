@@ -3,122 +3,36 @@
 //! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
 //! with `Parameters<T>` for proper MCP protocol compliance.
 
+pub(crate) mod cli;
+pub(crate) mod doctor;
+pub(crate) mod helpers;
+pub(crate) mod params;
+pub(crate) mod process;
+pub(crate) mod server;
+pub(crate) mod service_install;
+
 use std::sync::Arc;
 
 use chrono::Utc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::schemars;
 use rmcp::tool;
 use rmcp::tool_handler;
 use rmcp::tool_router;
 use rmcp::ErrorData as McpError;
 use rmcp::ServerHandler;
-use serde::Deserialize;
 use tokio::sync::Notify;
 
 use crate::application::notification_service::NotificationService;
-use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
+use crate::application::ports::{AgentRepository, RunRepository};
 use crate::db::Database;
-use crate::domain::models::{BackgroundAgent, Cli, WatchEvent, Watcher};
+use crate::daemon::helpers::{data_dir, error_result, filter_log_line, notify_run_result, success_result};
+use crate::daemon::params::*;
+use crate::domain::models::{Agent, Cli, Trigger, WatchEvent};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
 use crate::watchers::WatcherEngine;
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskAddParams {
-    /// Unique identifier. Lowercase, hyphens, underscores.
-    pub id: String,
-    /// The instruction the CLI will execute headlessly.
-    pub prompt: String,
-    /// Standard 5-field cron expression: minute hour day month weekday. Example: "0 9 * * *" for daily at 9am.
-    pub schedule: String,
-    /// CLI to use (e.g., "opencode", "kiro", "copilot"). Platform name from the registry. If omitted, auto-detects from registry.
-    pub cli: Option<String>,
-    /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
-    pub model: Option<String>,
-    /// Auto-expire after N minutes from registration.
-    pub duration_minutes: Option<i64>,
-    /// Working directory for the CLI.
-    pub working_dir: Option<String>,
-    /// Timeout in minutes for execution locking. If the agent doesn't report back within this time, the background_agent is unlocked. Default: 15.
-    pub timeout_minutes: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskWatchParams {
-    /// Unique identifier for the watcher.
-    pub id: String,
-    /// Absolute path to file or directory to watch.
-    pub path: String,
-    /// Events to watch: "create", "modify", "delete", "move", or "all".
-    pub events: Vec<String>,
-    /// Instruction for the CLI on trigger.
-    pub prompt: String,
-    /// CLI to use (e.g., "opencode", "kiro", "copilot"). Platform name from the registry. If omitted, auto-detects from registry.
-    pub cli: Option<String>,
-    /// Optional provider/model string. If omitted, the CLI uses its own configured default model.
-    pub model: Option<String>,
-    /// Debounce window in seconds (default: 2).
-    pub debounce_seconds: Option<u64>,
-    /// Watch subdirectories (default: false).
-    pub recursive: Option<bool>,
-    /// Timeout in minutes for execution locking. Default: 15.
-    pub timeout_minutes: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskUpdateParams {
-    /// ID of the background_agent or watcher to update.
-    pub id: String,
-    /// New prompt/instruction (applies to both background_agents and watchers).
-    pub prompt: Option<String>,
-    /// New CLI platform name (e.g., "opencode", "kiro", "copilot") — applies to both tasks and watchers.
-    pub cli: Option<String>,
-    /// New provider/model string, or null to clear (applies to both).
-    pub model: Option<Option<String>>,
-    /// New 5-field cron expression (background_agent only).
-    pub schedule: Option<String>,
-    /// New working directory, or null to clear (background_agent only).
-    pub working_dir: Option<Option<String>>,
-    /// New duration in minutes from now, or null to clear expiration (background_agent only).
-    pub duration_minutes: Option<Option<i64>>,
-    /// New absolute path to watch (watcher only).
-    pub path: Option<String>,
-    /// New event list: "create", "modify", "delete", "move" (watcher only).
-    pub events: Option<Vec<String>>,
-    /// New debounce window in seconds (watcher only).
-    pub debounce_seconds: Option<u64>,
-    /// Watch subdirectories (watcher only).
-    pub recursive: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskLogsParams {
-    /// BackgroundAgent or watcher ID.
-    pub id: String,
-    /// Last N lines to return (default: 50).
-    pub lines: Option<usize>,
-    /// ISO 8601 timestamp filter — only return logs after this time.
-    pub since: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct IdParam {
-    /// BackgroundAgent or watcher ID.
-    pub id: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct TaskReportParams {
-    /// The run ID (UUID) provided in the background_agent execution prompt.
-    pub run_id: String,
-    /// Execution status: `in_progress`, `success`, or `error`.
-    pub status: String,
-    /// Brief summary of what happened (required for success/error).
-    pub summary: Option<String>,
-}
 
 #[derive(Clone)]
 pub struct TaskTriggerHandler {
@@ -155,10 +69,21 @@ impl TaskTriggerHandler {
         }
     }
 
-    /// Register a new scheduled background_agent. The daemon's internal scheduler handles execution.
+    /// Create or update an agent. Supports cron triggers (schedule), watch triggers
+    /// (path + events), or manual-only agents (no trigger). When updating an existing
+    /// agent, only the fields you provide are changed.
     #[tool(
         name = "agent_add",
-        description = "Register a new scheduled background_agent. Use agent_models to see available model options. The schedule field must be a standard 5-field cron expression. Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), '30 14 1,15 * *' (1st and 15th at 2:30pm). Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). Use duration_minutes for temporary background_agents that auto-expire. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
+        description = "Create or update a scheduled background_agent. \
+         Use agent_models to see available model options. \
+         The schedule field must be a standard 5-field cron expression. \
+         Common patterns: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), \
+         '0 9 * * 1-5' (weekdays 9am), '0 */2 * * *' (every 2 hours), \
+         '30 14 1,15 * *' (1st and 15th at 2:30pm). \
+         Fields: minute(0-59) hour(0-23) day(1-31) month(1-12) weekday(0-6, 0=Sun). \
+         Use duration_minutes for temporary agents that auto-expire. \
+         The cli parameter is optional — if omitted, auto-detects from registry. \
+         The model parameter is optional — if omitted, the CLI uses its configured default."
     )]
     async fn task_add(
         &self,
@@ -194,31 +119,35 @@ impl TaskTriggerHandler {
             .duration_minutes
             .map(|mins| Utc::now() + chrono::Duration::minutes(mins));
 
-        let background_agent = BackgroundAgent {
+        let agent = Agent {
             id: params.id.clone(),
             prompt: params.prompt,
-            schedule_expr: schedule_expr.clone(),
+            trigger: Some(Trigger::Cron {
+                schedule_expr: schedule_expr.clone(),
+            }),
             cli,
             model: params.model,
             working_dir: params.working_dir,
             enabled: true,
             created_at: Utc::now(),
+            log_path: log_path.to_string_lossy().to_string(),
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
             expires_at,
             last_run_at: None,
             last_run_ok: None,
-            log_path: log_path.to_string_lossy().to_string(),
-            timeout_minutes: params.timeout_minutes.unwrap_or(15),
+            last_triggered_at: None,
+            trigger_count: 0,
         };
 
         self.db
-            .insert_or_update_background_agent(&background_agent)
+            .upsert_agent(&agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         self.scheduler_notify.notify_one();
 
         Ok(success_result(&format!(
-            "BackgroundAgent '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this background_agent automatically.",
-            background_agent.id,
+            "Agent '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this agent automatically.",
+            agent.id,
             schedule_expr,
             expires_at
                 .map(|e| format!(" (expires: {})", e.to_rfc3339()))
@@ -229,7 +158,9 @@ impl TaskTriggerHandler {
     /// Register a file or directory watcher.
     #[tool(
         name = "agent_watch",
-        description = "Watch a file or directory for changes and execute a prompt when events occur. The cli parameter is optional -- if omitted, it auto-detects the available CLI from PATH. The model parameter is optional -- if omitted, the CLI uses its own configured default model."
+        description = "Watch a file or directory for changes and execute a prompt when events occur. \
+         The cli parameter is optional — if omitted, auto-detects from registry. \
+         The model parameter is optional — if omitted, the CLI uses its configured default model."
     )]
     async fn task_watch(
         &self,
@@ -255,89 +186,113 @@ impl TaskTriggerHandler {
             Err(e) => return Ok(error_result(&e)),
         };
 
-        let watcher = Watcher {
+        let log_dir = data_dir()?.join("logs");
+        std::fs::create_dir_all(&log_dir)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let log_path = log_dir.join(&params.id).with_extension("log");
+
+        let agent = Agent {
             id: params.id.clone(),
-            path: params.path.clone(),
-            events,
             prompt: params.prompt,
+            trigger: Some(Trigger::Watch {
+                path: params.path.clone(),
+                events: events.clone(),
+                debounce_seconds: params.debounce_seconds.unwrap_or(2),
+                recursive: params.recursive.unwrap_or(false),
+            }),
             cli,
             model: params.model,
-            debounce_seconds: params.debounce_seconds.unwrap_or(2),
-            recursive: params.recursive.unwrap_or(false),
+            working_dir: None,
             enabled: true,
             created_at: Utc::now(),
+            log_path: log_path.to_string_lossy().to_string(),
+            timeout_minutes: params.timeout_minutes.unwrap_or(15),
+            expires_at: None,
+            last_run_at: None,
+            last_run_ok: None,
             last_triggered_at: None,
             trigger_count: 0,
-            timeout_minutes: params.timeout_minutes.unwrap_or(15),
         };
 
         self.db
-            .insert_or_update_watcher(&watcher)
+            .upsert_agent(&agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        if let Err(e) = self.watcher_engine.start_watcher(watcher.clone()).await {
-            tracing::warn!("Watcher '{}' saved but failed to start: {}", watcher.id, e);
+        if let Err(e) = self.watcher_engine.start_watcher(&agent).await {
+            tracing::warn!("Watcher '{}' saved but failed to start: {}", agent.id, e);
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "Watcher '{}' registered but could not start watching '{}': {}. It will be retried on daemon restart.",
-                watcher.id, params.path, e
+                agent.id, params.path, e
             ))]));
         }
 
         Ok(success_result(&format!(
             "Watcher '{}' active on '{}' for events: {:?}",
-            watcher.id, params.path, params.events
+            agent.id, params.path, params.events
         )))
     }
 
-    /// List all registered scheduled background_agents with status.
+    /// List all registered agents with status.
     #[tool(
         name = "agent_list",
-        description = "List all registered scheduled background_agents with their current status"
+        description = "List all registered scheduled agents with their current status"
     )]
     async fn task_list(&self) -> Result<CallToolResult, McpError> {
-        let background_agents = self
+        let agents = self
             .db
-            .list_background_agents()
+            .list_agents()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        if background_agents.is_empty() {
-            return Ok(success_result("No background_agents registered."));
+        if agents.is_empty() {
+            return Ok(success_result("No agents registered."));
         }
 
-        let mut lines = vec![format!(
-            "Found {} background_agent(s):\n",
-            background_agents.len()
-        )];
+        let mut lines = vec![format!("Found {} agent(s):\n", agents.len())];
 
-        for t in &background_agents {
-            let prompt_preview = if t.prompt.len() > 80 {
-                format!("{}...", &t.prompt[..80])
+        for a in &agents {
+            let prompt_preview = if a.prompt.len() > 80 {
+                format!("{}...", &a.prompt[..80])
             } else {
-                t.prompt.clone()
+                a.prompt.clone()
             };
 
-            let status = if !t.enabled {
+            let status = if !a.enabled {
                 "disabled"
-            } else if t.is_expired() {
+            } else if a.is_expired() {
                 "expired"
             } else {
                 "active"
             };
 
+            let trigger_label = a.trigger_type_label();
+            let trigger_detail = match &a.trigger {
+                Some(Trigger::Cron { schedule_expr }) => schedule_expr.clone(),
+                Some(Trigger::Watch { path, .. }) => path.clone(),
+                None => "manual".to_string(),
+            };
+
             let mut info = format!(
-                "- **{}** [{}]\n  Schedule: `{}`\n  CLI: {}\n  Prompt: {}\n",
-                t.id, status, t.schedule_expr, t.cli, prompt_preview
+                "- **{}** [{}] ({})\n  Trigger: {} `{}`\n  CLI: {}\n  Prompt: {}\n",
+                a.id, status, trigger_label, trigger_label, trigger_detail, a.cli, prompt_preview
             );
 
-            if let Some(last) = t.last_run_at {
-                let ok_str = t
+            if let Some(last) = a.last_run_at {
+                let ok_str = a
                     .last_run_ok
                     .map(|ok| if ok { "success" } else { "failed" })
                     .unwrap_or("unknown");
                 info.push_str(&format!("  Last run: {} ({})\n", last.to_rfc3339(), ok_str));
             }
 
-            if let Some(exp) = t.expires_at {
+            if let Some(last) = a.last_triggered_at {
+                info.push_str(&format!(
+                    "  Last triggered: {} (count: {})\n",
+                    last.to_rfc3339(),
+                    a.trigger_count
+                ));
+            }
+
+            if let Some(exp) = a.expires_at {
                 let remaining = exp.signed_duration_since(Utc::now());
                 if remaining.num_seconds() > 0 {
                     info.push_str(&format!("  Expires in: {}m\n", remaining.num_minutes()));
@@ -346,54 +301,16 @@ impl TaskTriggerHandler {
                 }
             }
 
-            lines.push(info);
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(
-            lines.join("\n"),
-        )]))
-    }
-
-    /// List all active file watchers with status.
-    #[tool(
-        name = "agent_watchers",
-        description = "List all registered file watchers with their current status"
-    )]
-    async fn task_watchers(&self) -> Result<CallToolResult, McpError> {
-        let watchers = self
-            .db
-            .list_watchers()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        if watchers.is_empty() {
-            return Ok(success_result("No watchers registered."));
-        }
-
-        let mut lines = vec![format!("Found {} watcher(s):\n", watchers.len())];
-
-        for w in &watchers {
-            let events: Vec<String> = w.events.iter().map(|e| e.to_string()).collect();
-            let runtime_active = self.watcher_engine.is_active(&w.id).await;
-
-            let status = if !w.enabled {
-                "paused"
-            } else if runtime_active {
-                "active"
-            } else {
-                "registered (not running)"
-            };
-
-            let mut info = format!(
-                "- **{}** [{}]\n  Path: {}\n  Events: {}\n  CLI: {}\n  Debounce: {}s | Recursive: {}\n",
-                w.id, status, w.path, events.join(", "), w.cli, w.debounce_seconds, w.recursive
-            );
-
-            if let Some(last) = w.last_triggered_at {
-                info.push_str(&format!(
-                    "  Last triggered: {} (total: {})\n",
-                    last.to_rfc3339(),
-                    w.trigger_count
-                ));
+            if a.is_watch() {
+                let runtime_active = self.watcher_engine.is_active(&a.id).await;
+                let watch_status = if !a.enabled {
+                    "paused"
+                } else if runtime_active {
+                    "active"
+                } else {
+                    "registered (not running)"
+                };
+                info.push_str(&format!("  Watch status: {}\n", watch_status));
             }
 
             lines.push(info);
@@ -404,211 +321,126 @@ impl TaskTriggerHandler {
         )]))
     }
 
-    /// Remove a background_agent or watcher completely.
+    /// Remove an agent completely.
     #[tool(
         name = "agent_remove",
-        description = "Remove a background_agent or watcher completely — deletes from database and stops any active watcher"
+        description = "Remove an agent completely — deletes from database and stops any active watcher"
     )]
     async fn task_remove(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
+        let existing = self
+            .db
+            .get_agent(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if existing.is_none() {
+            return Ok(error_result(&format!("No agent found with ID '{}'", id)));
+        }
+
         let _ = self.watcher_engine.stop_watcher(&id).await;
 
         self.db
-            .delete_background_agent(&id)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let _ = self.db.delete_watcher(&id);
-
-        Ok(success_result(&format!("'{}' removed", id)))
-    }
-
-    /// Pause a file watcher without deleting it.
-    #[tool(
-        name = "agent_unwatch",
-        description = "Pause a file watcher without deleting its definition — can be resumed later"
-    )]
-    async fn task_unwatch(
-        &self,
-        Parameters(IdParam { id }): Parameters<IdParam>,
-    ) -> Result<CallToolResult, McpError> {
-        let _ = self.watcher_engine.stop_watcher(&id).await;
-
-        self.db
-            .update_watcher_enabled(&id, false)
+            .delete_agent(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        Ok(success_result(&format!("Watcher '{}' paused", id)))
+        self.scheduler_notify.notify_one();
+        Ok(success_result(&format!("Agent '{}' removed", id)))
     }
 
-    /// Enable a disabled background_agent or watcher.
+    /// Enable a disabled agent.
     #[tool(
         name = "agent_enable",
-        description = "Enable a disabled scheduled background_agent or watcher"
+        description = "Enable a disabled agent — resumes scheduling or file watching"
     )]
     async fn task_enable(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        if let Ok(Some(background_agent)) = self.db.get_background_agent(&id) {
-            if background_agent.is_expired() {
-                let clear_expiry = crate::application::ports::BackgroundAgentFieldsUpdate {
-                    expires_at: Some(None),
-                    ..Default::default()
-                };
-                let _ = self.db.update_background_agent_fields(&id, &clear_expiry);
-            }
+        let Some(existing) = self.db.get_agent(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        else {
+            return Ok(error_result(&format!("No agent found with ID '{}'", id)));
+        };
+
+        if existing.is_expired() {
+            let mut updated = existing.clone();
+            updated.expires_at = None;
+            self.db
+                .upsert_agent(&updated)
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         }
 
-        let _ = self.db.update_background_agent_enabled(&id, true);
+        self.db
+            .update_agent_enabled(&id, true)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         self.scheduler_notify.notify_one();
 
-        if let Ok(Some(watcher)) = self.db.get_watcher(&id) {
-            self.db
-                .update_watcher_enabled(&id, true)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            let _ = self.watcher_engine.start_watcher(watcher).await;
+        if existing.is_watch() {
+            let _ = self.watcher_engine.start_watcher(&existing).await;
         }
 
-        Ok(success_result(&format!("'{}' enabled", id)))
+        Ok(success_result(&format!("Agent '{}' enabled", id)))
     }
 
-    /// Disable a background_agent without removing it.
+    /// Disable an agent without removing it.
     #[tool(
         name = "agent_disable",
-        description = "Disable a scheduled background_agent or watcher without removing it"
+        description = "Disable an agent without removing it — pauses scheduling or file watching"
     )]
     async fn task_disable(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let _ = self.db.update_background_agent_enabled(&id, false);
+        let Some(existing) = self.db.get_agent(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        else {
+            return Ok(error_result(&format!("No agent found with ID '{}'", id)));
+        };
 
-        if self.db.get_watcher(&id).ok().flatten().is_some() {
-            self.db
-                .update_watcher_enabled(&id, false)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        self.db
+            .update_agent_enabled(&id, false)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if existing.is_watch() {
             let _ = self.watcher_engine.stop_watcher(&id).await;
         }
 
-        Ok(success_result(&format!("'{}' disabled", id)))
+        self.scheduler_notify.notify_one();
+        Ok(success_result(&format!("Agent '{}' disabled", id)))
     }
 
-    /// Execute a background_agent immediately, outside its schedule.
+    /// Execute an agent immediately, outside its schedule.
     #[tool(
         name = "agent_run",
-        description = "Execute a background_agent immediately outside its schedule — useful for testing"
+        description = "Execute an agent immediately outside its schedule — useful for testing"
     )]
     async fn agent_run(
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let is_task = self
+        let existing = self
             .db
-            .get_background_agent(&id)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .is_some();
-        let is_watcher = self
-            .db
-            .get_watcher(&id)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .is_some();
+            .get_agent(&id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        if !is_task && !is_watcher {
-            return Ok(error_result(&format!(
-                "No background_agent or watcher found with ID '{}'",
-                id
-            )));
-        }
+        let Some(agent) = existing else {
+            return Ok(error_result(&format!("No agent found with ID '{}'", id)));
+        };
 
         let executor = Arc::clone(&self.executor);
-        let background_agent_id = id.clone();
+        let notification_service = self.notification_service.clone();
+        let agent_id = id.clone();
 
-        if is_task {
-            let background_agent = self.db.get_background_agent(&id).unwrap().unwrap();
-            let notification_service = Arc::clone(&self.notification_service);
-            tokio::spawn(async move {
-                match executor
-                    .execute_task(
-                        &background_agent,
-                        crate::domain::models::TriggerType::Manual,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(code) => {
-                        tracing::info!(
-                            "Manual run '{}' finished (exit {})",
-                            background_agent_id,
-                            code
-                        );
-                        if code == 0 {
-                            notification_service.notify_task_completed(
-                                &background_agent_id,
-                                true,
-                                Some(code),
-                            );
-                        } else {
-                            notification_service.notify_task_failed(
-                                &background_agent_id,
-                                code,
-                                "Manual run failed",
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Manual run '{}' failed: {}", background_agent_id, e);
-                        notification_service.notify_task_failed(
-                            &background_agent_id,
-                            1,
-                            &e.to_string(),
-                        );
-                    }
-                }
-            });
-        } else {
-            let watcher = self.db.get_watcher(&id).unwrap().unwrap();
-            let notification_service = self.notification_service.clone();
-            tokio::spawn(async move {
-                match executor
-                    .execute_watcher_task(&watcher, "manual", "manual")
-                    .await
-                {
-                    Ok(code) => {
-                        tracing::info!(
-                            "Manual run '{}' finished (exit {})",
-                            background_agent_id,
-                            code
-                        );
-                        if code == 0 {
-                            notification_service.notify_task_completed(
-                                &background_agent_id,
-                                true,
-                                Some(code),
-                            );
-                        } else {
-                            notification_service.notify_task_failed(
-                                &background_agent_id,
-                                code,
-                                "Manual watcher run failed",
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Manual run '{}' failed: {}", background_agent_id, e);
-                        notification_service.notify_task_failed(
-                            &background_agent_id,
-                            1,
-                            &e.to_string(),
-                        );
-                    }
-                }
-            });
-        }
+        tokio::spawn(async move {
+            let result = executor.execute_agent(&agent, true).await;
+            notify_run_result(&notification_service, &agent_id, result, "Manual run failed");
+        });
 
         Ok(success_result(&format!(
-            "BackgroundAgent '{}' launched in background. Use agent_logs to check progress.",
+            "Agent '{}' launched in background. Use agent_logs to check progress.",
             id
         )))
     }
@@ -619,19 +451,12 @@ impl TaskTriggerHandler {
         description = "Get overall daemon health, scheduler state, and statistics"
     )]
     async fn task_status(&self) -> Result<CallToolResult, McpError> {
-        let background_agents = self
+        let agents = self
             .db
-            .list_background_agents()
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let watchers = self
-            .db
-            .list_watchers()
+            .list_agents()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let active_tasks = background_agents
-            .iter()
-            .filter(|t| t.enabled && !t.is_expired())
-            .count();
+        let active_agents = agents.iter().filter(|a| a.enabled && !a.is_expired()).count();
         let active_watchers = self.watcher_engine.active_count().await;
 
         let uptime = self.start_time.elapsed();
@@ -651,15 +476,19 @@ impl TaskTriggerHandler {
             .map(|d| d.join("logs").to_string_lossy().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        let temporal: Vec<String> = background_agents
+        let cron_count = agents.iter().filter(|a| a.is_cron()).count();
+        let watch_count = agents.iter().filter(|a| a.is_watch()).count();
+        let manual_count = agents.len() - cron_count - watch_count;
+
+        let temporal: Vec<String> = agents
             .iter()
-            .filter(|t| t.expires_at.is_some() && t.enabled)
-            .map(|t| {
-                let remaining = t.expires_at.unwrap().signed_duration_since(Utc::now());
+            .filter(|a| a.expires_at.is_some() && a.enabled)
+            .map(|a| {
+                let remaining = a.expires_at.unwrap().signed_duration_since(Utc::now());
                 if remaining.num_seconds() > 0 {
-                    format!("  - {}: {}m remaining", t.id, remaining.num_minutes())
+                    format!("  - {}: {}m remaining", a.id, remaining.num_minutes())
                 } else {
-                    format!("  - {}: EXPIRED", t.id)
+                    format!("  - {}: EXPIRED", a.id)
                 }
             })
             .collect();
@@ -676,8 +505,8 @@ impl TaskTriggerHandler {
              Transport: {}\n\
              Port: {}\n\
              Scheduler: internal (tokio)\n\
-             Active background_agents: {} / {}\n\
-             Active watchers: {} / {}\n\
+             Active agents: {} / {} (cron: {}, watch: {}, manual: {})\n\
+             Active watchers: {}\n\
              Log directory: {}",
             env!("CARGO_PKG_VERSION"),
             uptime_str,
@@ -687,25 +516,27 @@ impl TaskTriggerHandler {
             } else {
                 "N/A".to_string()
             },
-            active_tasks,
-            background_agents.len(),
+            active_agents,
+            agents.len(),
+            cron_count,
+            watch_count,
+            manual_count,
             active_watchers,
-            watchers.len(),
             log_dir,
         );
 
         if !temporal.is_empty() {
-            status.push_str("\n\nTemporal background_agents:\n");
+            status.push_str("\n\nTemporal agents:\n");
             status.push_str(&temporal.join("\n"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(status)]))
     }
 
-    /// List available AI models that can be used with background_agents and watchers.
+    /// List available AI models.
     #[tool(
         name = "agent_models",
-        description = "List common AI models available for use with background_agents and watchers. Returns provider/model strings that can be passed to the model field of agent_add or agent_watch."
+        description = "List common AI models available for use with agents. Returns provider/model strings that can be passed to the model field of agent_add or agent_watch."
     )]
     async fn task_models(&self) -> Result<CallToolResult, McpError> {
         let models = [
@@ -746,10 +577,10 @@ impl TaskTriggerHandler {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    /// Get log output for a background_agent or watcher.
+    /// Get log output for an agent.
     #[tool(
         name = "agent_logs",
-        description = "Get the log output for a background_agent or watcher with optional line and time filters"
+        description = "Get the log output for an agent with optional line and time filters"
     )]
     async fn task_logs(
         &self,
@@ -757,22 +588,24 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
-        let log_path = if let Ok(Some(background_agent)) = self.db.get_background_agent(&params.id)
+        let log_path = match self.db.get_agent(&params.id)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
         {
-            background_agent.log_path
-        } else {
-            let dir = data_dir().map_err(|e| McpError::internal_error(e.to_string(), None))?;
-            dir.join("logs")
-                .join(&params.id)
-                .with_extension("log")
-                .to_string_lossy()
-                .to_string()
+            Some(agent) => agent.log_path,
+            None => {
+                let dir = data_dir().map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                dir.join("logs")
+                    .join(&params.id)
+                    .with_extension("log")
+                    .to_string_lossy()
+                    .to_string()
+            }
         };
 
         let path = std::path::Path::new(&log_path);
         if !path.exists() {
             return Ok(success_result(&format!(
-                "No logs found for '{}'. The background_agent has not been executed yet.",
+                "No logs found for '{}'. The agent has not been executed yet.",
                 params.id
             )));
         }
@@ -784,19 +617,7 @@ impl TaskTriggerHandler {
 
         if let Some(ref since) = params.since {
             if let Ok(since_dt) = chrono::DateTime::parse_from_rfc3339(since) {
-                lines.retain(|line| {
-                    if line.starts_with("--- [") {
-                        if let Some(at_pos) = line.find(" at ") {
-                            let rest = &line[at_pos + 4..];
-                            if let Some(end) = rest.find(" ---") {
-                                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&rest[..end]) {
-                                    return dt >= since_dt;
-                                }
-                            }
-                        }
-                    }
-                    true
-                });
+                lines.retain(|line| filter_log_line(line, &since_dt));
             }
         }
 
@@ -853,10 +674,10 @@ impl TaskTriggerHandler {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    /// Update fields of an existing background_agent or watcher without recreating it.
+    /// Update fields of an existing agent without recreating it.
     #[tool(
         name = "agent_update",
-        description = "Modify an existing scheduled background_agent or file watcher. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the ID belongs to a background_agent or watcher. For background_agents: schedule, prompt, cli, model, working_dir, duration_minutes. For watchers: path, events, prompt, cli, model, debounce_seconds, recursive."
+        description = "Modify an existing agent. Only the provided fields are updated — omitted fields remain unchanged. Auto-detects whether the agent is a cron or watch agent and applies the appropriate fields."
     )]
     async fn task_update(
         &self,
@@ -868,209 +689,171 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        let is_task = self
-            .db
-            .get_background_agent(&params.id)
+        let Some(mut agent) = self.db.get_agent(&params.id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .is_some();
-        let is_watcher = self
-            .db
-            .get_watcher(&params.id)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .is_some();
-
-        if !is_task && !is_watcher {
-            return Ok(error_result(&format!(
-                "No background_agent or watcher found with ID '{}'",
-                params.id
-            )));
-        }
+        else {
+            return Ok(error_result(&format!("No agent found with ID '{}'", params.id)));
+        };
 
         if let Some(ref prompt) = params.prompt {
             if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
             }
+            agent.prompt = prompt.clone();
         }
 
-        let cli_str = if let Some(ref cli) = params.cli {
-            if cli.is_empty() {
-                return Ok(error_result("CLI name must not be empty"));
-            }
-            Some(cli.as_str())
-        } else {
-            None
-        };
+        if let Some(ref cli) = params.cli {
+            agent.cli = Cli::from_str(cli);
+        }
 
-        if is_task {
-            let ignored: Vec<&str> = [
-                params.path.as_ref().map(|_| "path"),
-                params.events.as_ref().map(|_| "events"),
-                params.debounce_seconds.map(|_| "debounce_seconds"),
-                params.recursive.map(|_| "recursive"),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
+        if let Some(ref model_update) = params.model {
+            agent.model = model_update.clone();
+        }
 
-            if let Some(ref schedule) = params.schedule {
-                let trimmed = schedule.trim();
-                if !validate_cron(trimmed) {
-                    return Ok(error_result(&format!(
-                        "Invalid cron expression '{}'. Must be a 5-field cron expression.",
-                        schedule
-                    )));
-                }
-            }
+        if params.working_dir.is_some() {
+            agent.working_dir = params.working_dir.clone().flatten();
+        }
 
-            let expires_at: Option<Option<&str>> = match &params.duration_minutes {
-                Some(Some(mins)) => {
-                    if *mins <= 0 {
-                        return Ok(error_result("duration_minutes must be positive"));
+        if params.enabled.is_some() {
+            agent.enabled = params.enabled.unwrap();
+        }
+
+        match &mut agent.trigger {
+            Some(Trigger::Cron { schedule_expr }) => {
+                if let Some(ref schedule) = params.schedule {
+                    let trimmed = schedule.trim();
+                    if !validate_cron(trimmed) {
+                        return Ok(error_result(&format!(
+                            "Invalid cron expression '{}'.",
+                            schedule
+                        )));
                     }
-                    None
+                    *schedule_expr = trimmed.to_string();
                 }
-                Some(None) => Some(None),
-                None => None,
-            };
 
-            let expires_at_string: Option<String> = match &params.duration_minutes {
-                Some(Some(mins)) => {
-                    let ts = Utc::now() + chrono::Duration::minutes(*mins);
-                    Some(ts.to_rfc3339())
+                if let Some(duration) = params.duration_minutes {
+                    if duration.is_some() {
+                        let mins = duration.unwrap();
+                        if mins <= 0 {
+                            return Ok(error_result("duration_minutes must be positive"));
+                        }
+                        agent.expires_at = Some(Utc::now() + chrono::Duration::minutes(mins));
+                    } else {
+                        agent.expires_at = None;
+                    }
                 }
-                _ => None,
-            };
-
-            let expires_at_param: Option<Option<&str>> = if expires_at_string.is_some() {
-                Some(Some(expires_at_string.as_deref().unwrap()))
-            } else {
-                expires_at
-            };
-
-            let schedule_trimmed = params.schedule.as_deref().map(|s| s.trim());
-
-            let task_fields = crate::application::ports::BackgroundAgentFieldsUpdate {
-                prompt: params.prompt.as_deref(),
-                schedule_expr: schedule_trimmed,
-                cli: cli_str,
-                model: params.model.as_ref().map(|m| m.as_deref()),
-                working_dir: params.working_dir.as_ref().map(|w| w.as_deref()),
-                expires_at: expires_at_param,
-            };
-
-            let updated = self
-                .db
-                .update_background_agent_fields(&params.id, &task_fields)
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-            if !updated {
-                return Ok(error_result("No fields to update were provided"));
             }
+            Some(Trigger::Watch {
+                path,
+                events,
+                debounce_seconds,
+                recursive,
+            }) => {
+                if let Some(ref new_path) = params.path {
+                    if let Err(e) = validate_watch_path(new_path) {
+                        return Ok(error_result(&e));
+                    }
+                    *path = new_path.clone();
+                }
 
-            self.scheduler_notify.notify_one();
+                if let Some(ref event_strs) = params.events {
+                    match WatchEvent::parse_list(event_strs) {
+                        Ok(parsed) => *events = parsed,
+                        Err(e) => return Ok(error_result(&e)),
+                    }
+                }
 
-            let mut msg = format!("BackgroundAgent '{}' updated successfully.", params.id);
-            if params.schedule.is_some() {
-                msg.push_str(" Schedule change will take effect immediately.");
+                if let Some(ds) = params.debounce_seconds {
+                    *debounce_seconds = ds;
+                }
+
+                if let Some(r) = params.recursive {
+                    *recursive = r;
+                }
             }
-            if !ignored.is_empty() {
-                msg.push_str(&format!(
-                    " Note: watcher-only fields ignored: {}",
-                    ignored.join(", ")
-                ));
+            None => {
+                // Manual-only agent — can upgrade to cron or watch if schedule/path provided
+                if params.schedule.is_some() {
+                    let schedule = params.schedule.as_ref().unwrap();
+                    let trimmed = schedule.trim();
+                    if !validate_cron(trimmed) {
+                        return Ok(error_result(&format!(
+                            "Invalid cron expression '{}'.",
+                            schedule
+                        )));
+                    }
+                    agent.trigger = Some(Trigger::Cron {
+                        schedule_expr: trimmed.to_string(),
+                    });
+                } else if params.path.is_some() {
+                    let new_path = params.path.as_ref().unwrap();
+                    if let Err(e) = validate_watch_path(new_path) {
+                        return Ok(error_result(&e));
+                    }
+                    let new_events = match &params.events {
+                        Some(event_strs) => WatchEvent::parse_list(event_strs)
+                            .map_err(|e| McpError::internal_error(e, None))?,
+                        None => vec![WatchEvent::Create, WatchEvent::Modify],
+                    };
+                    agent.trigger = Some(Trigger::Watch {
+                        path: new_path.clone(),
+                        events: new_events,
+                        debounce_seconds: params.debounce_seconds.unwrap_or(2),
+                        recursive: params.recursive.unwrap_or(false),
+                    });
+                }
             }
-            return Ok(success_result(&msg));
         }
 
-        let ignored: Vec<&str> = [
-            params.schedule.as_ref().map(|_| "schedule"),
-            params.working_dir.as_ref().map(|_| "working_dir"),
-            params.duration_minutes.as_ref().map(|_| "duration_minutes"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-
-        if let Some(ref path) = params.path {
-            if let Err(e) = validate_watch_path(path) {
-                return Ok(error_result(&e));
-            }
-        }
-
-        let events_json: Option<String> = if let Some(ref event_strs) = params.events {
-            let events = match WatchEvent::parse_list(event_strs) {
-                Ok(e) => e,
-                Err(e) => return Ok(error_result(&e)),
-            };
-            Some(serde_json::to_string(&events).map_err(|e| {
-                McpError::internal_error(format!("Failed to serialize events: {}", e), None)
-            })?)
-        } else {
-            None
-        };
-
-        let watcher_fields = crate::application::ports::WatcherFieldsUpdate {
-            prompt: params.prompt.as_deref(),
-            path: params.path.as_deref(),
-            events: events_json.as_deref(),
-            cli: cli_str,
-            model: params.model.as_ref().map(|m| m.as_deref()),
-            debounce_seconds: params.debounce_seconds,
-            recursive: params.recursive,
-        };
-
-        let updated = self
-            .db
-            .update_watcher_fields(&params.id, &watcher_fields)
+        self.db
+            .upsert_agent(&agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        if !updated {
-            return Ok(error_result("No fields to update were provided"));
+        if agent.is_cron() {
+            self.scheduler_notify.notify_one();
         }
 
-        let needs_restart = params.path.is_some()
-            || params.events.is_some()
-            || params.debounce_seconds.is_some()
-            || params.recursive.is_some()
-            || params.cli.is_some()
-            || params.prompt.is_some()
-            || params.model.is_some();
+        if agent.is_watch() {
+            let needs_restart = params.path.is_some()
+                || params.events.is_some()
+                || params.debounce_seconds.is_some()
+                || params.recursive.is_some()
+                || params.cli.is_some()
+                || params.prompt.is_some()
+                || params.model.is_some();
 
-        let mut restarted = false;
-        if needs_restart {
-            let _ = self.watcher_engine.stop_watcher(&params.id).await;
-            if let Ok(Some(watcher)) = self.db.get_watcher(&params.id) {
-                if watcher.enabled {
-                    if let Err(e) = self.watcher_engine.start_watcher(watcher).await {
+            let mut restarted = false;
+            if needs_restart {
+                let _ = self.watcher_engine.stop_watcher(&params.id).await;
+                if agent.enabled {
+                    if let Err(e) = self.watcher_engine.start_watcher(&agent).await {
                         return Ok(CallToolResult::success(vec![Content::text(format!(
-                            "Watcher '{}' updated but failed to restart: {}. It will be retried on daemon restart.",
+                            "Agent '{}' updated but watcher failed to restart: {}. It will be retried on daemon restart.",
                             params.id, e
                         ))]));
                     }
                     restarted = true;
                 }
             }
+
+            if restarted {
+                return Ok(success_result(&format!(
+                    "Agent '{}' updated successfully. Watcher restarted with new configuration.",
+                    params.id
+                )));
+            }
         }
 
-        let mut msg = format!("Watcher '{}' updated successfully.", params.id);
-        if restarted {
-            msg.push_str(" Watcher restarted with new configuration.");
-        } else if needs_restart {
-            msg.push_str(" Watcher is paused — changes will apply when re-enabled.");
-        }
-        if !ignored.is_empty() {
-            msg.push_str(&format!(
-                " Note: background_agent-only fields ignored: {}",
-                ignored.join(", ")
-            ));
-        }
-        Ok(success_result(&msg))
+        Ok(success_result(&format!(
+            "Agent '{}' updated successfully.",
+            params.id
+        )))
     }
 
-    /// Report execution status from within a running background_agent.
+    /// Report execution status from within a running agent.
     #[tool(
         name = "agent_report",
-        description = "Report execution status for a running background_agent. The run_id is provided in the background_agent execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
+        description = "Report execution status for a running agent. The run_id is provided in the agent execution prompt. Call with status='in_progress' immediately when starting, then status='success' or status='error' with a summary when finished."
     )]
     async fn task_report(
         &self,
@@ -1103,23 +886,23 @@ impl TaskTriggerHandler {
             .ok_or_else(|| {
                 McpError::internal_error(format!("Run '{}' not found.", params.run_id), None)
             })?;
-        if run.status.is_active() {
-            if let Some(timeout_at) = run.timeout_at {
-                if chrono::Utc::now() > timeout_at {
-                    let _ = self.db.update_run_status(
-                        &params.run_id,
-                        RunStatus::Timeout,
-                        Some("Execution timed out"),
-                    );
-                    return Ok(error_result(&format!(
-                        "Run '{}' has timed out and can no longer be updated.",
-                        params.run_id
-                    )));
-                }
+
+        if !run.status.is_active() {
+            // not active — skip timeout check
+        } else if let Some(timeout_at) = run.timeout_at {
+            if chrono::Utc::now() > timeout_at {
+                let _ = self.db.update_run_status(
+                    &params.run_id,
+                    RunStatus::Timeout,
+                    Some("Execution timed out"),
+                );
+                return Ok(error_result(&format!(
+                    "Run '{}' has timed out and can no longer be updated.",
+                    params.run_id
+                )));
             }
         }
 
-        // Validate state transitions
         let valid = matches!(
             (&run.status, &status),
             (RunStatus::Pending, RunStatus::InProgress)
@@ -1149,7 +932,7 @@ impl TaskTriggerHandler {
             let success = status == RunStatus::Success;
             let _ = self
                 .db
-                .update_background_agent_last_run(&run.background_agent_id, success);
+                .update_agent_last_run(&run.background_agent_id, success);
         }
 
         Ok(success_result(&format!(
@@ -1168,24 +951,10 @@ impl ServerHandler for TaskTriggerHandler {
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_instructions(
-                "MCP server for registering, managing, and executing scheduled and event-driven background_agents. \
-                 Use agent_add to create scheduled background_agents, agent_watch for file watchers, \
+                "MCP server for registering, managing, and executing scheduled and event-driven agents. \
+                 Use agent_add to create scheduled agents, agent_watch for file watchers, \
                  agent_run to test immediately, and agent_status for daemon health."
                     .to_string(),
             )
     }
-}
-
-fn data_dir() -> Result<std::path::PathBuf, McpError> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| McpError::internal_error("Home directory not found", None))?;
-    Ok(home.join(".canopy"))
-}
-
-fn success_result(message: &str) -> CallToolResult {
-    CallToolResult::success(vec![Content::text(message.to_string())])
-}
-
-fn error_result(message: &str) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(message.to_string())])
 }
