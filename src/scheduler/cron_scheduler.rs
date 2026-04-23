@@ -1,9 +1,9 @@
 //! Internal cron scheduler — runs inside the daemon process.
 //!
 //! Instead of polling on a fixed interval, the scheduler computes the
-//! nearest `next_fire_time` across all active background_agents and sleeps exactly
+//! nearest `next_fire_time` across all active cron agents and sleeps exactly
 //! until that instant.  A `Notify` handle lets the daemon wake the
-//! scheduler early when background_agents are added, updated, or re-enabled.
+//! scheduler early when agents are added, updated, or re-enabled.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -13,9 +13,8 @@ use cron::Schedule;
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
-use crate::application::ports::BackgroundAgentRepository;
+use crate::application::ports::AgentRepository;
 use crate::db::Database;
-use crate::domain::models::TriggerType;
 use crate::executor::Executor;
 
 /// The internal cron scheduler that runs as a tokio background_agent.
@@ -25,7 +24,7 @@ pub struct CronScheduler {
     cancel: CancellationToken,
     /// Wakes the scheduler to recalculate the next fire time.
     notify: Arc<Notify>,
-    /// Track last execution time per background_agent to avoid double-firing.
+    /// Track last execution time per agent to avoid double-firing.
     last_fired: Arc<Mutex<std::collections::HashMap<String, chrono::DateTime<Utc>>>>,
 }
 
@@ -40,12 +39,12 @@ impl CronScheduler {
         }
     }
 
-    /// Get a handle to wake the scheduler when background_agents change.
+    /// Get a handle to wake the scheduler when agents change.
     pub fn notifier(&self) -> Arc<Notify> {
         Arc::clone(&self.notify)
     }
 
-    /// Start the scheduler loop as a background tokio background_agent.
+    /// Start the scheduler loop as a background tokio task.
     ///
     /// Returns a `CancellationToken` that can be used to stop the scheduler.
     pub fn start(self: Arc<Self>) -> CancellationToken {
@@ -61,7 +60,7 @@ impl CronScheduler {
         cancel
     }
 
-    /// The main scheduler loop. Sleeps until the next background_agent is due,
+    /// The main scheduler loop. Sleeps until the next agent is due,
     /// or wakes early on cancel/notify.
     async fn run_loop(&self) {
         loop {
@@ -70,7 +69,6 @@ impl CronScheduler {
             tokio::select! {
                 _ = self.cancel.cancelled() => break,
                 _ = self.notify.notified() => {
-                    // Tasks changed — recalculate immediately
                     continue;
                 }
                 _ = tokio::time::sleep(sleep_dur) => {
@@ -82,24 +80,28 @@ impl CronScheduler {
         }
     }
 
-    /// Compute how long to sleep until the nearest background_agent fires.
-    /// Falls back to 60 s if there are no active background_agents or on parse errors.
+    /// Compute how long to sleep until the nearest agent fires.
+    /// Falls back to 60 s if there are no active agents or on parse errors.
     fn next_sleep_duration(&self) -> std::time::Duration {
         const FALLBACK: std::time::Duration = std::time::Duration::from_secs(60);
 
-        let Ok(background_agents) = self.db.list_background_agents() else {
+        let Ok(agents) = self.db.list_cron_agents() else {
             return FALLBACK;
         };
 
         let now = Utc::now();
         let mut earliest: Option<chrono::DateTime<Utc>> = None;
 
-        for background_agent in &background_agents {
-            if !background_agent.enabled || background_agent.is_expired() {
+        for agent in &agents {
+            if !agent.enabled || agent.is_expired() {
                 continue;
             }
 
-            let cron_7field = to_7field_cron(&background_agent.schedule_expr);
+            let Some(schedule_expr) = agent.schedule_expr() else {
+                continue;
+            };
+
+            let cron_7field = to_7field_cron(schedule_expr);
             let Ok(schedule) = Schedule::from_str(&cron_7field) else {
                 continue;
             };
@@ -117,7 +119,6 @@ impl CronScheduler {
             Some(t) => {
                 let delta = t.signed_duration_since(now);
                 if delta.num_milliseconds() <= 0 {
-                    // Already due — fire immediately
                     std::time::Duration::ZERO
                 } else {
                     std::time::Duration::from_millis(delta.num_milliseconds() as u64)
@@ -127,82 +128,77 @@ impl CronScheduler {
         }
     }
 
-    /// Fire all background_agents whose next cron time is now (within a 1-second tolerance).
+    /// Fire all agents whose next cron time is now (within a 1-second tolerance).
     async fn fire_due_tasks(&self) -> anyhow::Result<()> {
-        let background_agents = self.db.list_background_agents()?;
+        let agents = self.db.list_cron_agents()?;
         let now = Utc::now();
 
-        for background_agent in &background_agents {
-            if !background_agent.enabled {
+        for agent in &agents {
+            if !agent.enabled {
                 continue;
             }
 
-            if background_agent.is_expired() {
-                tracing::info!(
-                    "BackgroundAgent '{}' has expired, disabling",
-                    background_agent.id
-                );
-                self.db
-                    .update_background_agent_enabled(&background_agent.id, false)?;
+            if agent.is_expired() {
+                tracing::info!("Agent '{}' has expired, disabling", agent.id);
+                self.db.update_agent_enabled(&agent.id, false)?;
                 continue;
             }
 
-            let cron_7field = to_7field_cron(&background_agent.schedule_expr);
+            let Some(schedule_expr) = agent.schedule_expr() else {
+                continue;
+            };
+
+            let cron_7field = to_7field_cron(schedule_expr);
             let schedule = match Schedule::from_str(&cron_7field) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!(
-                        "BackgroundAgent '{}' has invalid cron expression '{}': {}",
-                        background_agent.id,
-                        background_agent.schedule_expr,
+                        "Agent '{}' has invalid cron expression '{}': {}",
+                        agent.id,
+                        schedule_expr,
                         e
                     );
                     continue;
                 }
             };
 
-            // Check if the background_agent should have fired between now-60s and now.
-            // The 60 s window covers minor scheduling jitter.
             let window_start = now - chrono::Duration::seconds(60);
             let mut upcoming = schedule.after(&window_start);
 
-            if let Some(next_fire) = upcoming.next() {
-                if next_fire <= now {
-                    let mut last_fired = self.last_fired.lock().await;
-                    if let Some(last) = last_fired.get(&background_agent.id) {
-                        if *last >= window_start {
-                            continue;
-                        }
-                    }
+            let Some(next_fire) = upcoming.next() else {
+                continue;
+            };
 
-                    last_fired.insert(background_agent.id.clone(), now);
-                    drop(last_fired);
+            if next_fire > now {
+                continue;
+            }
 
-                    let executor = Arc::clone(&self.executor);
-                    let background_agent = background_agent.clone();
-                    tokio::spawn(async move {
-                        match executor
-                            .execute_task(&background_agent, TriggerType::Scheduled, false)
-                            .await
-                        {
-                            Ok(code) => {
-                                tracing::info!(
-                                    "Scheduled background_agent '{}' completed (exit code: {})",
-                                    background_agent.id,
-                                    code
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Scheduled background_agent '{}' failed: {}",
-                                    background_agent.id,
-                                    e
-                                );
-                            }
-                        }
-                    });
+            let mut last_fired = self.last_fired.lock().await;
+            if let Some(last) = last_fired.get(&agent.id) {
+                if *last >= window_start {
+                    continue;
                 }
             }
+
+            last_fired.insert(agent.id.clone(), now);
+            drop(last_fired);
+
+            let executor = Arc::clone(&self.executor);
+            let agent = agent.clone();
+            tokio::spawn(async move {
+                match executor.execute_agent(&agent, false).await {
+                    Ok(code) => {
+                        tracing::info!(
+                            "Scheduled agent '{}' completed (exit code: {})",
+                            agent.id,
+                            code
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Scheduled agent '{}' failed: {}", agent.id, e);
+                    }
+                }
+            });
         }
 
         Ok(())
