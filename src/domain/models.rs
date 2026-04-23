@@ -1,55 +1,127 @@
 //! Core domain models for the canopy daemon.
 //!
-//! Defines background_agents, watchers, execution logs, and all supporting types.
+//! Defines agents, triggers, execution logs, and all supporting types.
+//! An agent has an optional trigger — `Cron` for scheduled execution,
+//! `Watch` for file-system events. An agent without a trigger exists
+//! but won't fire automatically.
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// A scheduled background_agent that runs on a cron schedule.
+// ── Unified Agent model ────────────────────────────────────────────────
+
+/// The type of trigger that causes an agent to execute automatically.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Trigger {
+    Cron {
+        /// Standard 5-field cron expression.
+        schedule_expr: String,
+    },
+    Watch {
+        /// Absolute path to file or directory to watch.
+        path: String,
+        /// File system events to watch for.
+        events: Vec<WatchEvent>,
+        /// Debounce window in seconds.
+        #[serde(default = "default_debounce")]
+        debounce_seconds: u64,
+        /// Watch subdirectories recursively.
+        #[serde(default)]
+        recursive: bool,
+    },
+    // Future trigger types can be added here:
+    // Event { event_type: String, payload_filter: Option<String> },
+    // Webhook { url: String, secret: Option<String> },
+}
+
+impl Trigger {
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            Trigger::Cron { .. } => "cron",
+            Trigger::Watch { .. } => "watch",
+        }
+    }
+}
+
+fn default_debounce() -> u64 {
+    2
+}
+
+/// A unified agent — the core entity in canopy.
+///
+/// An agent can have a trigger (cron schedule or file watcher) or no trigger
+/// at all (manual-only execution). The trigger field determines how and when
+/// the agent runs automatically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BackgroundAgent {
+pub struct Agent {
     pub id: String,
     pub prompt: String,
-    pub schedule_expr: String,
+    pub trigger: Option<Trigger>,
     pub cli: Cli,
     pub model: Option<String>,
     pub working_dir: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub last_run_at: Option<DateTime<Utc>>,
-    pub last_run_ok: Option<bool>,
+    /// Log file path.
     pub log_path: String,
     /// Timeout in minutes for execution locking (default: 15).
     pub timeout_minutes: u32,
+    // Cron-specific
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub last_run_ok: Option<bool>,
+    // Watch-specific
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    pub trigger_count: u64,
 }
 
-impl BackgroundAgent {
-    /// Check if this background_agent has expired.
+impl Agent {
     pub fn is_expired(&self) -> bool {
         self.expires_at.is_some_and(|exp| Utc::now() > exp)
     }
+
+    pub fn trigger_type_label(&self) -> &'static str {
+        match &self.trigger {
+            Some(Trigger::Cron { .. }) => "cron",
+            Some(Trigger::Watch { .. }) => "watch",
+            None => "manual",
+        }
+    }
+
+    pub fn schedule_expr(&self) -> Option<&str> {
+        match &self.trigger {
+            Some(Trigger::Cron { schedule_expr }) => Some(schedule_expr),
+            _ => None,
+        }
+    }
+
+    pub fn watch_path(&self) -> Option<&str> {
+        match &self.trigger {
+            Some(Trigger::Watch { path, .. }) => Some(path),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn watch_events(&self) -> Option<&[WatchEvent]> {
+        match &self.trigger {
+            Some(Trigger::Watch { events, .. }) => Some(events),
+            _ => None,
+        }
+    }
+
+    pub fn is_cron(&self) -> bool {
+        matches!(&self.trigger, Some(Trigger::Cron { .. }))
+    }
+
+    pub fn is_watch(&self) -> bool {
+        matches!(&self.trigger, Some(Trigger::Watch { .. }))
+    }
 }
 
-/// A file system watcher that triggers background_agents on file changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Watcher {
-    pub id: String,
-    pub path: String,
-    pub events: Vec<WatchEvent>,
-    pub prompt: String,
-    pub cli: Cli,
-    pub model: Option<String>,
-    pub debounce_seconds: u64,
-    pub recursive: bool,
-    pub enabled: bool,
-    pub created_at: DateTime<Utc>,
-    pub last_triggered_at: Option<DateTime<Utc>>,
-    pub trigger_count: u64,
-    /// Timeout in minutes for execution locking (default: 15).
-    pub timeout_minutes: u32,
-}
+// ── Shared types ────────────────────────────────────────────────────────
 
 /// File system event types that watchers can respond to.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -72,11 +144,7 @@ impl WatchEvent {
         }
     }
 
-    /// Parse a list of event strings into `WatchEvent` values.
-    ///
-    /// Returns an error if any string is invalid or if the list is empty.
     pub fn parse_list(event_strs: &[String]) -> Result<Vec<WatchEvent>, String> {
-        // "all" expands to every event type
         if event_strs.len() == 1 && event_strs[0].eq_ignore_ascii_case("all") {
             return Ok(vec![Self::Create, Self::Modify, Self::Delete, Self::Move]);
         }
@@ -112,20 +180,15 @@ impl std::fmt::Display for WatchEvent {
 }
 
 /// A CLI platform identifier, backed by the canopy registry.
-///
-/// Stored as a plain string (e.g. `"opencode"`, `"kiro"`). Adding support for a new CLI
-/// only requires updating the `canopy-registry/platforms.json` — no Rust code changes needed.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(transparent)]
 pub struct Cli(pub String);
 
 impl Cli {
-    /// Construct from any platform name.
     pub fn new(name: impl Into<String>) -> Self {
         Cli(name.into())
     }
 
-    /// Parse from a DB/JSON string. Accepts any non-empty value; empty strings default to `"opencode"`.
     pub fn from_str(s: &str) -> Self {
         if s.is_empty() {
             Cli("opencode".to_string())
@@ -134,13 +197,10 @@ impl Cli {
         }
     }
 
-    /// Return the platform name used for DB storage and display.
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Return the binary name for this CLI, looked up from the saved registry config.
-    /// Falls back to the platform name if no registry entry is found.
     pub fn command_name(&self) -> String {
         let registry = Self::load_registry();
         registry
@@ -148,9 +208,6 @@ impl Cli {
             .unwrap_or_else(|| self.0.clone())
     }
 
-    /// Detect which CLIs are currently available, using the saved registry config.
-    /// Returns names of CLIs whose binary was found in PATH during `canopy setup`.
-    /// Falls back to an empty list if the config file is absent.
     pub fn detect_available() -> Vec<Cli> {
         let Some(registry) = Self::load_registry() else {
             return Vec::new();
@@ -162,8 +219,6 @@ impl Cli {
             .collect()
     }
 
-    /// Auto-detect a default CLI. Returns the single available CLI,
-    /// or `None` if zero or multiple CLIs are found.
     pub fn detect_default() -> Option<Cli> {
         let available = Self::detect_available();
         if available.len() == 1 {
@@ -173,10 +228,6 @@ impl Cli {
         }
     }
 
-    /// Resolve CLI from an optional user-provided parameter.
-    ///
-    /// - `Some(name)` → returns `Cli(name)` for any non-empty string.
-    /// - `None` → auto-detects from the saved registry. Fails if zero or multiple CLIs found.
     pub fn resolve(param: Option<&str>) -> Result<Cli, String> {
         match param {
             Some(name) if !name.is_empty() => Ok(Cli::new(name)),
@@ -201,10 +252,6 @@ impl Cli {
         }
     }
 
-    /// Get the execution strategy for this CLI.
-    ///
-    /// Loads the strategy from the saved registry config.
-    /// Panics with a clear error if configuration is not found.
     pub fn strategy(&self) -> Box<super::cli_strategy::CliStrategy> {
         let home = dirs::home_dir().expect("Could not determine home directory");
         let config_path = home.join(".canopy/cli_config.json");
@@ -284,7 +331,6 @@ impl RunStatus {
         }
     }
 
-    /// Whether this status represents an active (locked) run.
     pub fn is_active(&self) -> bool {
         matches!(self, Self::Pending | Self::InProgress)
     }
@@ -296,7 +342,7 @@ impl std::fmt::Display for RunStatus {
     }
 }
 
-/// Record of a single background_agent execution.
+/// Record of a single agent execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
     pub id: String,
@@ -310,7 +356,7 @@ pub struct RunLog {
     pub timeout_at: Option<DateTime<Utc>>,
 }
 
-/// How a background_agent was triggered.
+/// How an agent was triggered.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TriggerType {
@@ -372,9 +418,7 @@ impl SplitOrientation {
 pub struct SplitGroup {
     pub id: String,
     pub orientation: SplitOrientation,
-    /// Name/id of the first session (left or top).
     pub session_a: String,
-    /// Name/id of the second session (right or bottom).
     pub session_b: String,
     #[allow(dead_code)]
     pub created_at: DateTime<Utc>,

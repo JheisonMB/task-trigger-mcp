@@ -2,64 +2,102 @@ use super::*;
 
 use chrono::Duration;
 
-#[test]
-fn test_task_not_expired_no_expiry() {
-    let background_agent = BackgroundAgent {
-        id: "t1".to_string(),
-        prompt: "test".to_string(),
-        schedule_expr: "* * * * *".to_string(),
+fn sample_agent(id: &str, trigger: Option<Trigger>) -> Agent {
+    Agent {
+        id: id.to_string(),
+        prompt: "Run tests".to_string(),
+        trigger,
         cli: Cli::new("opencode"),
         model: None,
-        working_dir: None,
+        working_dir: Some("/tmp/project".to_string()),
         enabled: true,
         created_at: Utc::now(),
+        log_path: "/tmp/test.log".to_string(),
+        timeout_minutes: 15,
         expires_at: None,
         last_run_at: None,
         last_run_ok: None,
-        log_path: "/tmp/t.log".to_string(),
-        timeout_minutes: 15,
-    };
-    assert!(!background_agent.is_expired());
+        last_triggered_at: None,
+        trigger_count: 0,
+    }
 }
 
 #[test]
-fn test_task_not_expired_future() {
-    let background_agent = BackgroundAgent {
-        id: "t2".to_string(),
-        prompt: "test".to_string(),
-        schedule_expr: "* * * * *".to_string(),
-        cli: Cli::new("opencode"),
-        model: None,
-        working_dir: None,
-        enabled: true,
-        created_at: Utc::now(),
-        expires_at: Some(Utc::now() + Duration::hours(1)),
-        last_run_at: None,
-        last_run_ok: None,
-        log_path: "/tmp/t.log".to_string(),
-        timeout_minutes: 15,
-    };
-    assert!(!background_agent.is_expired());
+fn test_agent_not_expired_no_expiry() {
+    let agent = sample_agent("t1", None);
+    assert!(!agent.is_expired());
 }
 
 #[test]
-fn test_task_expired_past() {
-    let background_agent = BackgroundAgent {
-        id: "t3".to_string(),
-        prompt: "test".to_string(),
-        schedule_expr: "* * * * *".to_string(),
-        cli: Cli::new("opencode"),
-        model: None,
-        working_dir: None,
-        enabled: true,
-        created_at: Utc::now() - Duration::hours(2),
-        expires_at: Some(Utc::now() - Duration::hours(1)),
-        last_run_at: None,
-        last_run_ok: None,
-        log_path: "/tmp/t.log".to_string(),
-        timeout_minutes: 15,
+fn test_agent_not_expired_future() {
+    let mut agent = sample_agent("t2", None);
+    agent.expires_at = Some(Utc::now() + Duration::hours(1));
+    assert!(!agent.is_expired());
+}
+
+#[test]
+fn test_agent_expired_past() {
+    let mut agent = sample_agent("t3", None);
+    agent.created_at = Utc::now() - Duration::hours(2);
+    agent.expires_at = Some(Utc::now() - Duration::hours(1));
+    assert!(agent.is_expired());
+}
+
+#[test]
+fn test_agent_trigger_type_labels() {
+    let cron_agent = sample_agent("c1", Some(Trigger::Cron { schedule_expr: "0 9 * * *".to_string() }));
+    assert_eq!(cron_agent.trigger_type_label(), "cron");
+    assert!(cron_agent.is_cron());
+    assert!(!cron_agent.is_watch());
+
+    let watch_agent = sample_agent("w1", Some(Trigger::Watch {
+        path: "/tmp".to_string(),
+        events: vec![WatchEvent::Create],
+        debounce_seconds: 2,
+        recursive: false,
+    }));
+    assert_eq!(watch_agent.trigger_type_label(), "watch");
+    assert!(!watch_agent.is_cron());
+    assert!(watch_agent.is_watch());
+
+    let manual_agent = sample_agent("m1", None);
+    assert_eq!(manual_agent.trigger_type_label(), "manual");
+    assert!(!manual_agent.is_cron());
+    assert!(!manual_agent.is_watch());
+}
+
+#[test]
+fn test_agent_accessors() {
+    let cron_agent = sample_agent("c1", Some(Trigger::Cron { schedule_expr: "0 9 * * *".to_string() }));
+    assert_eq!(cron_agent.schedule_expr(), Some("0 9 * * *"));
+    assert!(cron_agent.watch_path().is_none());
+
+    let watch_agent = sample_agent("w1", Some(Trigger::Watch {
+        path: "/tmp/watched".to_string(),
+        events: vec![WatchEvent::Create, WatchEvent::Modify],
+        debounce_seconds: 5,
+        recursive: true,
+    }));
+    assert_eq!(watch_agent.watch_path(), Some("/tmp/watched"));
+    assert!(watch_agent.schedule_expr().is_none());
+    let events = watch_agent.watch_events().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.contains(&WatchEvent::Create));
+    assert!(events.contains(&WatchEvent::Modify));
+}
+
+#[test]
+fn test_trigger_type_str() {
+    let cron_trigger = Trigger::Cron { schedule_expr: "0 9 * * *".to_string() };
+    assert_eq!(cron_trigger.type_str(), "cron");
+
+    let watch_trigger = Trigger::Watch {
+        path: "/tmp".to_string(),
+        events: vec![WatchEvent::Create],
+        debounce_seconds: 2,
+        recursive: false,
     };
-    assert!(background_agent.is_expired());
+    assert_eq!(watch_trigger.type_str(), "watch");
 }
 
 #[test]
@@ -85,9 +123,7 @@ fn test_cli_from_str() {
     assert_eq!(Cli::from_str("opencode").as_str(), "opencode");
     assert_eq!(Cli::from_str("kiro").as_str(), "kiro");
     assert_eq!(Cli::from_str("gemini").as_str(), "gemini");
-    // Unknown strings are accepted as-is
     assert_eq!(Cli::from_str("unknown").as_str(), "unknown");
-    // Empty string defaults to opencode
     assert_eq!(Cli::from_str("").as_str(), "opencode");
 }
 
@@ -122,7 +158,6 @@ fn test_cli_resolve_explicit_gemini() {
 
 #[test]
 fn test_cli_resolve_unknown_returns_ok() {
-    // Any non-empty string is now valid; unknown CLIs fail at execution time
     assert_eq!(Cli::resolve(Some("vim")).unwrap().as_str(), "vim");
 }
 
@@ -170,7 +205,6 @@ fn test_trigger_type_from_str() {
         TriggerType::Manual
     ));
     assert!(matches!(TriggerType::from_str("watch"), TriggerType::Watch));
-    // Unknown defaults to Scheduled
     assert!(matches!(
         TriggerType::from_str("unknown"),
         TriggerType::Scheduled
@@ -232,22 +266,13 @@ fn test_run_status_display() {
 }
 
 #[test]
-fn test_watcher_not_expired_no_trigger() {
-    let watcher = Watcher {
-        id: "w1".to_string(),
+fn test_watcher_trigger_accessors() {
+    let agent = sample_agent("w1", Some(Trigger::Watch {
         path: "/tmp".to_string(),
         events: vec![WatchEvent::Create],
-        prompt: "test".to_string(),
-        cli: Cli::new("opencode"),
-        model: None,
         debounce_seconds: 5,
         recursive: false,
-        enabled: true,
-        created_at: Utc::now(),
-        last_triggered_at: None,
-        trigger_count: 0,
-        timeout_minutes: 15,
-    };
-    assert_eq!(watcher.trigger_count, 0);
-    assert!(watcher.last_triggered_at.is_none());
+    }));
+    assert_eq!(agent.trigger_count, 0);
+    assert!(agent.last_triggered_at.is_none());
 }
