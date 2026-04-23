@@ -39,7 +39,7 @@ pub fn ensure_global_skills_dir() -> Result<PathBuf> {
 /// registry gets a per-skill symlink `<platform_skills_dir>/<skill_name>`.
 pub fn create_platform_symlinks(
     home: &Path,
-    platforms: &[&crate::setup::Platform],
+    platforms: &[&crate::setup_module::Platform],
 ) -> Result<Vec<String>> {
     let global = home.join(".agents").join("skills");
     if !global.exists() {
@@ -92,7 +92,7 @@ pub fn create_platform_symlinks(
 /// Validate symlink integrity: return broken symlink paths.
 /// Used by the `canopy skills` wizard (future subcommand).
 #[allow(dead_code)]
-pub fn find_broken_symlinks(home: &Path, platforms: &[&crate::setup::Platform]) -> Vec<PathBuf> {
+pub fn find_broken_symlinks(home: &Path, platforms: &[&crate::setup_module::Platform]) -> Vec<PathBuf> {
     let mut broken = Vec::new();
 
     for platform in platforms {
@@ -258,7 +258,7 @@ struct GhEntry {
 /// Run the interactive skills management wizard.
 /// Intended for the future `canopy skills` subcommand.
 #[allow(dead_code)]
-pub fn run_skills_wizard(home: &Path, platforms: &[&crate::setup::Platform]) -> Result<()> {
+pub fn run_skills_wizard(home: &Path, platforms: &[&crate::setup_module::Platform]) -> Result<()> {
     println!();
     println!("  \x1b[1mSkills Manager\x1b[0m");
     println!("  ─────────────────────────────────────────────");
@@ -304,7 +304,7 @@ fn list_skills(global: &Path) -> Result<()> {
 }
 
 #[allow(dead_code)]
-fn validate_skills(home: &Path, platforms: &[&crate::setup::Platform]) -> Result<()> {
+fn validate_skills(home: &Path, platforms: &[&crate::setup_module::Platform]) -> Result<()> {
     let broken = find_broken_symlinks(home, platforms);
     if broken.is_empty() {
         println!("  \x1b[32m✓\x1b[0m All skill symlinks are healthy.");
@@ -331,7 +331,7 @@ fn validate_skills(home: &Path, platforms: &[&crate::setup::Platform]) -> Result
 }
 
 #[allow(dead_code)]
-fn remove_skill(home: &Path, global: &Path, platforms: &[&crate::setup::Platform]) -> Result<()> {
+fn remove_skill(home: &Path, global: &Path, platforms: &[&crate::setup_module::Platform]) -> Result<()> {
     let skills = list_skill_dirs(global);
     if skills.is_empty() {
         println!("  \x1b[33m⚠\x1b[0m  No skills to remove.");

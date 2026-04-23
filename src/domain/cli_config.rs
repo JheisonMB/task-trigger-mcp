@@ -76,7 +76,7 @@ impl CliRegistry {
     }
 
     /// Detect which CLIs from a list are available in PATH.
-    pub fn detect_available(platforms: &[crate::setup::PlatformWithCli]) -> Self {
+    pub fn detect_available(platforms: &[crate::setup_module::PlatformWithCli]) -> Self {
         let mut registry = Self::new();
 
         for platform in platforms {

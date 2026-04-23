@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use crate::setup::{self, Platform};
+use crate::setup_module::{self as setup, Platform};
 
 // ── Public entry point ─────────────────────────────────────────────────────
 

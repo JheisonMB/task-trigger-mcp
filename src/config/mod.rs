@@ -66,7 +66,7 @@ impl McpConfigRegistry {
                     toml::from_str(&content).context("Failed to parse TOML config")?;
                 serde_json::to_value(&toml_val).context("Failed to convert TOML to JSON")?
             } else {
-                let clean = crate::setup::strip_jsonc_comments(&content);
+                let clean = crate::setup_module::strip_jsonc_comments(&content);
                 serde_json::from_str(&clean).context("Failed to parse config file")?
             };
 
@@ -92,7 +92,7 @@ impl McpConfigRegistry {
 
     /// Extract all MCP configs from detected platforms.
     #[allow(dead_code)]
-    pub fn extract_all(platforms: &[&crate::setup::Platform]) -> Result<Self> {
+    pub fn extract_all(platforms: &[&crate::setup_module::Platform]) -> Result<Self> {
         let mut registry = Self::new();
         let home = dirs::home_dir().context("No home directory")?;
 
@@ -251,6 +251,6 @@ fn extract_servers_from_array(array: &serde_json::Value) -> Vec<McpServerEntry> 
 
 /// Get the `mcp_servers_key` path for a platform from the registry.
 #[allow(dead_code)]
-pub fn get_mcp_servers_key_for_platform(platform: &crate::setup::Platform) -> &[String] {
+pub fn get_mcp_servers_key_for_platform(platform: &crate::setup_module::Platform) -> &[String] {
     &platform.mcp_servers_key
 }

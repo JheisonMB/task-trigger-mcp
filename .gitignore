@@ -9,6 +9,7 @@
 .zencoder/
 .qwen/
 .agents/
+.codex/
 skills-lock.json
 
 ### Rust ###

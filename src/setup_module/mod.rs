@@ -160,13 +160,19 @@ fn resolve_config_path(home: &Path, config_path: &str) -> std::path::PathBuf {
 /// Returns "/" as default if not yet configured.
 fn load_mcp_fs_root(home: &Path) -> String {
     let path = home.join(".canopy/mcp_config.json");
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(s) = v.get("filesystem_root").and_then(|v| v.as_str()) {
-                if !s.is_empty() {
-                    return s.to_string();
-                }
-            }
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return dirs::home_dir()
+            .map(|h| h.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/".to_string());
+    };
+    if let Some(s) = v.get("filesystem_root").and_then(|v| v.as_str()) {
+        if !s.is_empty() {
+            return s.to_string();
         }
     }
     dirs::home_dir()
@@ -1149,6 +1155,7 @@ fn start_daemon_if_needed() -> Result<bool> {
 }
 
 fn install_service_if_needed() -> Result<bool> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let home = dirs::home_dir().context("No home directory")?;
 
     #[cfg(target_os = "macos")]
@@ -1166,20 +1173,12 @@ fn install_service_if_needed() -> Result<bool> {
     }
 
     let exe = std::env::current_exe()?;
-    crate::service_install::install_service(&exe, 7755)?;
+    crate::daemon::service_install::install_service(&exe, 7755)?;
     Ok(true)
 }
 
 fn is_process_running(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
+    crate::daemon::process::is_process_running(pid)
 }
 
 /// Check if auto-setup should run (no CLI config found).
@@ -1874,18 +1873,18 @@ fn run_sync_step(
 /// Runs silently on failure so a network error never blocks setup completion.
 fn run_essential_skills_step(home: &Path, selected: &[&Platform]) -> String {
     // Ensure global skills directory exists
-    if crate::skills::ensure_global_skills_dir().is_err() {
+    if crate::skills_module::ensure_global_skills_dir().is_err() {
         return "\x1b[33m⚠\x1b[0m Skills: could not create ~/.agents/skills/".to_string();
     }
 
     // Download Essential Pack from GitHub (best-effort)
-    let downloaded = crate::skills::download_essential_pack().unwrap_or_else(|e| {
+    let downloaded = crate::skills_module::download_essential_pack().unwrap_or_else(|e| {
         tracing::warn!("Essential skills download failed: {e}");
         0
     });
 
     // Create platform symlinks for all selected platforms that have skills_dir
-    let symlinks = crate::skills::create_platform_symlinks(home, selected).unwrap_or_else(|e| {
+    let symlinks = crate::skills_module::create_platform_symlinks(home, selected).unwrap_or_else(|e| {
         tracing::warn!("Skills symlink creation failed: {e}");
         vec![]
     });
