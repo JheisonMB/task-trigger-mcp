@@ -1,4 +1,4 @@
-//! BackgroundAgent executor — spawns CLI subprocesses headlessly.
+//! Agent executor — spawns CLI subprocesses headlessly.
 //!
 //! Resolves the CLI binary path via `which`, spawns the process with
 //! the appropriate flags, captures output to log files, and records
@@ -11,16 +11,15 @@ use std::sync::Arc;
 use tokio::process::Command;
 
 use crate::application::notification_service::NotificationService;
-use crate::application::ports::{BackgroundAgentRepository, RunRepository, WatcherRepository};
+use crate::application::ports::{AgentRepository, RunRepository};
 use crate::db::Database;
-use crate::domain::models::{BackgroundAgent, Cli, RunLog, RunStatus, TriggerType, Watcher};
+use crate::domain::models::{Agent, Cli, RunLog, RunStatus, Trigger, TriggerType};
 use crate::scheduler::substitute_variables;
 
 /// Maximum log file size before rotation (5 MB).
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024;
 
-/// Inputs for a single CLI execution. Used by `run_cli_process` to
-/// decouple the common spawn-capture-log logic from caller-specific setup.
+/// Inputs for a single CLI execution.
 struct CliRunParams<'a> {
     id: &'a str,
     cli: &'a Cli,
@@ -37,7 +36,7 @@ struct CliRunResult {
     success: bool,
 }
 
-/// BackgroundAgent execution engine.
+/// Agent execution engine.
 pub struct Executor {
     db: Arc<Database>,
     notification_service: Arc<dyn NotificationService>,
@@ -52,75 +51,62 @@ impl Executor {
     }
 
     /// Resolve a timed-out active run by marking it as timeout.
-    /// Called lazily before checking the lock.
-    fn resolve_timeout(&self, background_agent_id: &str) {
-        if let Ok(Some(run)) = self.db.get_active_run(background_agent_id) {
-            if let Some(timeout_at) = run.timeout_at {
-                if Utc::now() > timeout_at {
-                    tracing::info!(
-                        "Run '{}' for '{}' timed out, unlocking",
-                        run.id,
-                        background_agent_id
-                    );
-                    let _ = self.db.update_run_status(
-                        &run.id,
-                        RunStatus::Timeout,
-                        Some("Execution timed out"),
-                    );
-                    let _ = self
-                        .db
-                        .update_background_agent_last_run(background_agent_id, false);
-                }
-            }
+    fn resolve_timeout(&self, agent_id: &str) {
+        let Ok(Some(run)) = self.db.get_active_run(agent_id) else {
+            return;
+        };
+        let Some(timeout_at) = run.timeout_at else {
+            return;
+        };
+        if Utc::now() <= timeout_at {
+            return;
         }
+        tracing::info!("Run '{}' for '{}' timed out, unlocking", run.id, agent_id);
+        let _ = self.db.update_run_status(
+            &run.id,
+            RunStatus::Timeout,
+            Some("Execution timed out"),
+        );
+        let _ = self.db.update_agent_last_run(agent_id, false);
     }
 
-    /// Execute a scheduled background_agent.
+    /// Execute a unified agent.
     ///
     /// When `force` is true (manual runs), expiry and enabled checks are skipped.
-    /// Returns the `run_id` if execution started, or None if skipped.
-    pub async fn execute_task(
-        &self,
-        background_agent: &BackgroundAgent,
-        trigger: TriggerType,
-        force: bool,
-    ) -> Result<i32> {
+    /// Returns the exit code if execution started, or -1 if skipped.
+    pub async fn execute_agent(&self, agent: &Agent, force: bool) -> Result<i32> {
+        let trigger_type = match &agent.trigger {
+            Some(Trigger::Cron { .. }) => TriggerType::Scheduled,
+            Some(Trigger::Watch { .. }) => TriggerType::Watch,
+            None => TriggerType::Manual,
+        };
+
         if !force {
-            if background_agent.is_expired() {
-                tracing::info!(
-                    "BackgroundAgent '{}' has expired, disabling",
-                    background_agent.id
-                );
-                self.db
-                    .update_background_agent_enabled(&background_agent.id, false)?;
+            if agent.is_expired() {
+                tracing::info!("Agent '{}' has expired, disabling", agent.id);
+                self.db.update_agent_enabled(&agent.id, false)?;
                 return Ok(-1);
             }
 
-            if !background_agent.enabled {
-                tracing::info!(
-                    "BackgroundAgent '{}' is disabled, skipping",
-                    background_agent.id
-                );
+            if !agent.enabled {
+                tracing::info!("Agent '{}' is disabled, skipping", agent.id);
                 return Ok(-1);
             }
         }
 
-        self.resolve_timeout(&background_agent.id);
-        if let Ok(Some(active)) = self.db.get_active_run(&background_agent.id) {
+        self.resolve_timeout(&agent.id);
+        if let Ok(Some(active)) = self.db.get_active_run(&agent.id) {
             tracing::info!(
-                "BackgroundAgent '{}' is locked (run {}), recording as missed",
-                background_agent.id,
+                "Agent '{}' is locked (run {}), recording as missed",
+                agent.id,
                 active.id
             );
             let missed = RunLog {
                 id: uuid::Uuid::new_v4().to_string(),
-                background_agent_id: background_agent.id.clone(),
+                background_agent_id: agent.id.clone(),
                 status: RunStatus::Missed,
-                trigger_type: trigger,
-                summary: Some(format!(
-                    "Skipped: background_agent locked by run {}",
-                    active.id
-                )),
+                trigger_type,
+                summary: Some(format!("Skipped: agent locked by run {}", active.id)),
                 started_at: Utc::now(),
                 finished_at: Some(Utc::now()),
                 exit_code: None,
@@ -132,14 +118,13 @@ impl Executor {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
-        let timeout_at =
-            now + chrono::Duration::minutes(i64::from(background_agent.timeout_minutes));
+        let timeout_at = now + chrono::Duration::minutes(i64::from(agent.timeout_minutes));
 
         let run = RunLog {
             id: run_id.clone(),
-            background_agent_id: background_agent.id.clone(),
+            background_agent_id: agent.id.clone(),
             status: RunStatus::Pending,
-            trigger_type: trigger,
+            trigger_type,
             summary: None,
             started_at: now,
             finished_at: None,
@@ -148,23 +133,32 @@ impl Executor {
         };
         self.db.insert_run(&run)?;
 
+        let file_path = match &agent.trigger {
+            Some(Trigger::Watch { .. }) => Some("manual".to_string()),
+            _ => None,
+        };
+        let event_type = match &agent.trigger {
+            Some(Trigger::Watch { .. }) => Some("manual"),
+            _ => None,
+        };
+
         let user_prompt = substitute_variables(
-            &background_agent.prompt,
-            &background_agent.id,
-            &background_agent.log_path,
-            None,
-            None,
+            &agent.prompt,
+            &agent.id,
+            &agent.log_path,
+            file_path.as_deref(),
+            event_type,
         );
-        let wrapped = wrap_prompt(&user_prompt, &background_agent.id, &run_id);
+        let wrapped = wrap_prompt(&user_prompt, &agent.id, &run_id);
 
         let params = CliRunParams {
-            id: &background_agent.id,
-            cli: &background_agent.cli,
+            id: &agent.id,
+            cli: &agent.cli,
             prompt: wrapped,
-            model: background_agent.model.as_deref(),
-            working_dir: background_agent.working_dir.as_deref(),
-            log_path: background_agent.log_path.clone(),
-            trigger,
+            model: agent.model.as_deref(),
+            working_dir: agent.working_dir.as_deref(),
+            log_path: agent.log_path.clone(),
+            trigger: trigger_type,
         };
 
         let result = self.run_cli_process(&params).await?;
@@ -188,56 +182,54 @@ impl Executor {
         }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
-        if let Err(e) = self
-            .db
-            .update_background_agent_last_run(&background_agent.id, result.success)
-        {
-            tracing::error!(
-                "Failed to update last_run for background_agent '{}': {}",
-                background_agent.id,
-                e
+        if let Err(e) = self.db.update_agent_last_run(&agent.id, result.success) {
+            tracing::error!("Failed to update last_run for agent '{}': {}", agent.id, e);
+        }
+
+        if agent.is_watch() {
+            if let Err(e) = self.db.update_agent_triggered(&agent.id) {
+                tracing::error!("Failed to update trigger count for agent '{}': {}", agent.id, e);
+            }
+        }
+
+        if result.success {
+            self.notification_service.notify_task_completed(
+                &agent.id,
+                true,
+                Some(result.exit_code),
+            );
+        } else {
+            self.notification_service.notify_task_failed(
+                &agent.id,
+                result.exit_code,
+                &format!("Agent failed with exit code {}", result.exit_code),
             );
         }
 
-        {
-            if result.success {
-                self.notification_service.notify_task_completed(
-                    &background_agent.id,
-                    true,
-                    Some(result.exit_code),
-                );
-            } else {
-                self.notification_service.notify_task_failed(
-                    &background_agent.id,
-                    result.exit_code,
-                    &format!("Scheduled task failed with exit code {}", result.exit_code),
-                );
-            }
-        }
         Ok(result.exit_code)
     }
 
-    /// Execute a watcher-triggered background_agent.
-    pub async fn execute_watcher_task(
+    /// Execute a watcher-triggered agent with specific file path and event info.
+    pub async fn execute_agent_with_context(
         &self,
-        watcher: &Watcher,
+        agent: &Agent,
         file_path: &str,
         event_type: &str,
     ) -> Result<i32> {
-        if !watcher.enabled {
+        if !agent.enabled {
             return Ok(-1);
         }
 
-        self.resolve_timeout(&watcher.id);
-        if let Ok(Some(active)) = self.db.get_active_run(&watcher.id) {
+        self.resolve_timeout(&agent.id);
+        if let Ok(Some(active)) = self.db.get_active_run(&agent.id) {
             tracing::info!(
-                "Watcher '{}' is locked (run {}), recording as missed",
-                watcher.id,
+                "Agent '{}' is locked (run {}), recording as missed",
+                agent.id,
                 active.id
             );
             let missed = RunLog {
                 id: uuid::Uuid::new_v4().to_string(),
-                background_agent_id: watcher.id.clone(),
+                background_agent_id: agent.id.clone(),
                 status: RunStatus::Missed,
                 trigger_type: TriggerType::Watch,
                 summary: Some(format!("Skipped: locked by run {}", active.id)),
@@ -250,22 +242,13 @@ impl Executor {
             return Ok(-1);
         }
 
-        let log_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("No home directory"))?
-            .join(".canopy/logs");
-        let log_path = log_dir
-            .join(&watcher.id)
-            .with_extension("log")
-            .to_string_lossy()
-            .to_string();
-
         let run_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
-        let timeout_at = now + chrono::Duration::minutes(i64::from(watcher.timeout_minutes));
+        let timeout_at = now + chrono::Duration::minutes(i64::from(agent.timeout_minutes));
 
         let run = RunLog {
             id: run_id.clone(),
-            background_agent_id: watcher.id.clone(),
+            background_agent_id: agent.id.clone(),
             status: RunStatus::Pending,
             trigger_type: TriggerType::Watch,
             summary: None,
@@ -277,21 +260,21 @@ impl Executor {
         self.db.insert_run(&run)?;
 
         let user_prompt = substitute_variables(
-            &watcher.prompt,
-            &watcher.id,
-            &log_path,
+            &agent.prompt,
+            &agent.id,
+            &agent.log_path,
             Some(file_path),
             Some(event_type),
         );
-        let wrapped = wrap_prompt(&user_prompt, &watcher.id, &run_id);
+        let wrapped = wrap_prompt(&user_prompt, &agent.id, &run_id);
 
         let params = CliRunParams {
-            id: &watcher.id,
-            cli: &watcher.cli,
+            id: &agent.id,
+            cli: &agent.cli,
             prompt: wrapped,
-            model: watcher.model.as_deref(),
-            working_dir: None,
-            log_path,
+            model: agent.model.as_deref(),
+            working_dir: agent.working_dir.as_deref(),
+            log_path: agent.log_path.clone(),
             trigger: TriggerType::Watch,
         };
 
@@ -316,26 +299,26 @@ impl Executor {
         }
         let _ = self.db.update_run_exit_code(&run_id, result.exit_code);
 
-        // Send notification for watcher task completion
+        if let Err(e) = self.db.update_agent_triggered(&agent.id) {
+            tracing::error!(
+                "Failed to update trigger count for agent '{}': {}",
+                agent.id,
+                e
+            );
+        }
+
         if result.success {
             self.notification_service.notify_task_completed(
-                &watcher.id,
+                &agent.id,
                 true,
                 Some(result.exit_code),
             );
         } else {
-            self.notification_service.notify_task_failed(
-                &watcher.id,
+            self.notification_service.notify_agent_failed(
+                &agent.id,
+                agent.cli.as_str(),
                 result.exit_code,
-                &format!("Watcher task failed with exit code {}", result.exit_code),
-            );
-        }
-
-        if let Err(e) = self.db.update_watcher_triggered(&watcher.id) {
-            tracing::error!(
-                "Failed to update trigger count for watcher '{}': {}",
-                watcher.id,
-                e
+                &format!("Watcher agent failed with exit code {}", result.exit_code),
             );
         }
 
@@ -431,10 +414,10 @@ fn build_cli_command(
     cmd
 }
 
-/// Append execution output to a background_agent's log file with rotation.
+/// Append execution output to an agent's log file with rotation.
 fn append_to_log(
     log_path: &str,
-    background_agent_id: &str,
+    agent_id: &str,
     trigger: &TriggerType,
     started_at: &chrono::DateTime<Utc>,
     exit_code: i32,
@@ -458,7 +441,7 @@ fn append_to_log(
 
     writeln!(
         file,
-        "--- [{trigger}] {background_agent_id} at {started_at} ---"
+        "--- [{trigger}] {agent_id} at {started_at} ---"
     )?;
     writeln!(file, "exit_code: {exit_code}")?;
 
@@ -496,16 +479,16 @@ fn rotate_log_if_needed(path: &Path) -> Result<()> {
 }
 
 /// Wrap the user's prompt with structured `task_report` instructions.
-fn wrap_prompt(user_prompt: &str, background_agent_id: &str, run_id: &str) -> String {
+fn wrap_prompt(user_prompt: &str, agent_id: &str, run_id: &str) -> String {
     format!(
         "[SYSTEM INSTRUCTIONS]\n\
-         You are executing a managed background_agent. You MUST follow these steps:\n\
+         You are executing a managed agent. You MUST follow these steps:\n\
          1. IMMEDIATELY call the task_report tool: task_report(run_id=\"{run_id}\", status=\"in_progress\")\n\
-         2. Execute the user's background_agent below\n\
+         2. Execute the user's task below\n\
          3. When finished, call: task_report(run_id=\"{run_id}\", status=\"success\", summary=\"<brief summary of what happened>\")\n\
-            If the background_agent failed: task_report(run_id=\"{run_id}\", status=\"error\", summary=\"<what went wrong>\")\n\
+            If the task failed: task_report(run_id=\"{run_id}\", status=\"error\", summary=\"<what went wrong>\")\n\
          \n\
-         BackgroundAgent ID: {background_agent_id}\n\
+         Agent ID: {agent_id}\n\
          Run ID: {run_id}\n\
          [/SYSTEM INSTRUCTIONS]\n\
          \n\
