@@ -157,37 +157,19 @@ fn resolve_config_path(home: &Path, config_path: &str) -> std::path::PathBuf {
 }
 
 /// Load the saved filesystem root path for the MCP filesystem server.
-/// Returns "/" as default if not yet configured.
+/// Returns home dir as default if not yet configured.
 fn load_mcp_fs_root(home: &Path) -> String {
-    let path = home.join(".canopy/mcp_config.json");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return dirs::home_dir()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
-    };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return dirs::home_dir()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".to_string());
-    };
-    if let Some(s) = v.get("filesystem_root").and_then(|v| v.as_str()) {
-        if !s.is_empty() {
-            return s.to_string();
-        }
-    }
-    dirs::home_dir()
-        .map(|h| h.to_string_lossy().to_string())
-        .unwrap_or_else(|| "/".to_string())
+    let canopy_dir = home.join(".canopy");
+    let config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+    config.mcp_filesystem_root
 }
 
 /// Persist the chosen filesystem root path for reuse across setups and updates.
 fn save_mcp_fs_root(home: &Path, root: &str) {
-    let path = home.join(".canopy/mcp_config.json");
-    let content = serde_json::json!({ "filesystem_root": root });
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&content).unwrap_or_default() + "\n",
-    );
+    let canopy_dir = home.join(".canopy");
+    let mut config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+    config.mcp_filesystem_root = root.to_string();
+    let _ = config.save(&canopy_dir);
 }
 fn is_binary_available(binary: &str) -> bool {
     which::which(binary).is_ok()
@@ -325,7 +307,10 @@ fn try_install_uv() -> bool {
 #[allow(dead_code)]
 pub fn is_configured() -> bool {
     dirs::home_dir()
-        .map(|h| h.join(".canopy/.configured").exists())
+        .map(|h| {
+            let config = crate::domain::canopy_config::CanopyConfig::load(&h.join(".canopy"));
+            config.is_configured()
+        })
         .unwrap_or(false)
 }
 
@@ -418,15 +403,6 @@ pub fn run_setup() -> Result<()> {
     let canopy_dir = home.join(".canopy");
     std::fs::create_dir_all(&canopy_dir)?;
 
-    let cli_step = match cli_registry.save(&canopy_dir.join("cli_config.json")) {
-        Ok(_) => format!(
-            "\x1b[32m✓\x1b[0m CLI config: {} CLI(s) saved",
-            cli_registry.available_clis.len()
-        ),
-        Err(e) => format!("\x1b[33m⚠\x1b[0m CLI config: {e}"),
-    };
-    wiz.add(cli_step);
-
     // ── Step 5: MCP Manager (sync/add/remove) ───────────────────
     if !selected.is_empty() {
         let sync_summary = run_sync_step(&mut wiz, &home, &selected, &registry.canonical_servers)?;
@@ -459,10 +435,18 @@ pub fn run_setup() -> Result<()> {
     };
     wiz.add(service_msg.to_string());
 
-    // Mark configured
-    let marker = home.join(".canopy/.configured");
-    std::fs::create_dir_all(marker.parent().unwrap())?;
-    std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
+    // ── Save unified config ──────────────────────────────────────
+    let mut config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+    config.mark_configured();
+    config.clis = cli_registry.available_clis;
+    let config_step = match config.save(&canopy_dir) {
+        Ok(_) => format!(
+            "\x1b[32m✓\x1b[0m Config: {} CLI(s) saved to config.toml",
+            config.clis.len()
+        ),
+        Err(e) => format!("\x1b[33m⚠\x1b[0m Config: {e}"),
+    };
+    wiz.add(config_step);
 
     // ── Final summary ───────────────────────────────────────────
     wiz.render()?;
@@ -1186,7 +1170,8 @@ pub fn needs_setup() -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
-    !home.join(".canopy/cli_config.json").exists()
+    let config = crate::domain::canopy_config::CanopyConfig::load(&home.join(".canopy"));
+    !config.is_configured()
 }
 
 /// Run setup silently (no prompts, auto-detect all platforms).
@@ -1217,10 +1202,12 @@ pub fn run_setup_silent() -> Result<()> {
         crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
     let canopy_dir = home.join(".canopy");
     std::fs::create_dir_all(&canopy_dir)?;
-    cli_registry.save(&canopy_dir.join("cli_config.json"))?;
 
-    let marker = home.join(".canopy/.configured");
-    std::fs::write(&marker, chrono::Utc::now().to_rfc3339())?;
+    // Save unified config
+    let mut config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+    config.mark_configured();
+    config.clis = cli_registry.available_clis;
+    config.save(&canopy_dir)?;
 
     Ok(())
 }
@@ -1231,7 +1218,7 @@ pub fn maybe_refresh_registry() -> bool {
     let Some(home) = dirs::home_dir() else {
         return false;
     };
-    let config_path = home.join(".canopy/cli_config.json");
+    let config_path = home.join(".canopy/config.toml");
 
     // Check if file exists and when it was last modified
     let last_modified = match std::fs::metadata(&config_path) {
@@ -1275,7 +1262,10 @@ fn refresh_registry_inner(home: &Path) -> Result<()> {
         crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
 
     if !cli_registry.available_clis.is_empty() {
-        cli_registry.save(&home.join(".canopy/cli_config.json"))?;
+        let canopy_dir = home.join(".canopy");
+        let mut config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+        config.clis = cli_registry.available_clis;
+        let _ = config.save(&canopy_dir);
     }
 
     Ok(())
@@ -1286,9 +1276,7 @@ fn refresh_registry_inner(home: &Path) -> Result<()> {
 /// Replace `{filesystem_dir}` and `{home}` placeholders in a JSON value tree.
 fn substitute_placeholders(value: &mut serde_json::Value, home: &str, fs_dir: &str) {
     match value {
-        serde_json::Value::String(s)
-            if s.contains("{filesystem_dir}") || s.contains("{home}") =>
-        {
+        serde_json::Value::String(s) if s.contains("{filesystem_dir}") || s.contains("{home}") => {
             *s = s
                 .replace("{filesystem_dir}", fs_dir)
                 .replace("{home}", home);
@@ -1884,10 +1872,11 @@ fn run_essential_skills_step(home: &Path, selected: &[&Platform]) -> String {
     });
 
     // Create platform symlinks for all selected platforms that have skills_dir
-    let symlinks = crate::skills_module::create_platform_symlinks(home, selected).unwrap_or_else(|e| {
-        tracing::warn!("Skills symlink creation failed: {e}");
-        vec![]
-    });
+    let symlinks =
+        crate::skills_module::create_platform_symlinks(home, selected).unwrap_or_else(|e| {
+            tracing::warn!("Skills symlink creation failed: {e}");
+            vec![]
+        });
 
     if downloaded == 0 && symlinks.is_empty() {
         // Check if we actually have any skills installed
