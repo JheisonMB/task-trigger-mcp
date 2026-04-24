@@ -358,8 +358,7 @@ fn draw_sidebar_card(
     if area.height >= 3 {
         let accent_bar = Span::styled("▌", Style::default().fg(status_color));
         let work_dir = match agent {
-            AgentEntry::Agent(a) => a.working_dir.as_deref()
-                .or_else(|| a.watch_path()),
+            AgentEntry::Agent(a) => a.working_dir.as_deref().or_else(|| a.watch_path()),
             AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
             AgentEntry::Terminal(idx) => Some(app.terminal_agents[*idx].working_dir.as_str()),
             AgentEntry::Group(_) => None,
