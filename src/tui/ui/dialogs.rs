@@ -1408,7 +1408,25 @@ fn draw_at_picker_dropdown(
         .map(|(i, entry)| {
             let abs_idx = i + scroll;
             let icon = if entry.is_dir { "📁 " } else { "   " };
-            let label = format!("{}{}", icon, entry.name);
+            
+            // Show relative path when in recursive search mode (query active)
+            let label = if picker.query.is_empty() {
+                // Flat mode: just show filename
+                format!("{}{}", icon, entry.name)
+            } else {
+                // Recursive mode: show relative path to distinguish files with same name
+                let relative_path = entry.path.strip_prefix(&picker.workdir)
+                    .unwrap_or(&entry.path);
+                let display_path = if relative_path.to_string_lossy() == entry.name {
+                    // Same directory as workdir
+                    entry.name.clone()
+                } else {
+                    // Show relative path
+                    relative_path.to_string_lossy().to_string()
+                };
+                format!("{}{}", icon, display_path)
+            };
+            
             let style = if abs_idx == picker.selected {
                 Style::default()
                     .fg(Color::Black)
