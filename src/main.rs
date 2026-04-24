@@ -24,7 +24,7 @@ mod watchers;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use daemon::cli::{DaemonAction, handle_daemon_action};
+use daemon::cli::{handle_daemon_action, DaemonAction};
 use daemon::doctor::run_doctor;
 use daemon::server::{run_http_server, run_stdio_server};
 
@@ -57,9 +57,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Daemon { action }) => {
-            handle_daemon_action(action, cli.port).await
-        }
+        Some(Commands::Daemon { action }) => handle_daemon_action(action, cli.port).await,
         Some(Commands::Doctor) => run_doctor().await,
         Some(Commands::Stdio) => run_stdio_server().await,
         Some(Commands::Serve) => run_http_server(cli.port).await,
