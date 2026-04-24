@@ -830,11 +830,11 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("F4      ", key_style),
-            Span::styled("dissolve split group", desc_style),
+            Span::styled("dissolve split / end session", desc_style),
         ]),
         Line::from(vec![
             Span::styled("Shift+F4", key_style),
-            Span::styled("terminate session (kills & dissolves)", desc_style),
+            Span::styled("end session in split mode", desc_style),
         ]),
         Line::from(vec![
             Span::styled("Ctrl+←→ ", key_style),

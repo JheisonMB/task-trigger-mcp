@@ -54,7 +54,6 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                     h.push(("Shift+←→", "split focus"));
                 } else {
                     h.push(("F4", "end"));
-                    h.push(("Ctrl+S", "split"));
                 }
                 if matches!(app.selected_agent(), Some(AgentEntry::Terminal(_))) {
                     h.push(("Tab", "catalog"));

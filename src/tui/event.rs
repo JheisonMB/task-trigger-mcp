@@ -857,15 +857,25 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // F4 = dissolve current split group (keeps sessions alive)
+    // F4 behavior depends on context:
+    // - In split mode: dissolve split (keep sessions alive)
+    // - In normal agent mode: terminate session
     if code == KeyCode::F(4) && !modifiers.contains(KeyModifiers::SHIFT) {
-        app.dissolve_split();
+        if app.active_split_id.is_some() {
+            // In split mode: dissolve only
+            app.dissolve_split();
+        } else {
+            // In normal mode: terminate session
+            app.terminate_focused_session();
+        }
         return Ok(());
     }
 
-    // Shift+F4 = terminate current session (kills sessions and dissolves group)
+    // Shift+F4 = terminate session AND dissolve split (only in split mode)
     if code == KeyCode::F(4) && modifiers.contains(KeyModifiers::SHIFT) {
-        app.terminate_focused_session();
+        if app.active_split_id.is_some() {
+            app.terminate_focused_session();
+        }
         return Ok(());
     }
 
