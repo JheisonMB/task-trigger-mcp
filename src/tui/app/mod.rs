@@ -669,15 +669,15 @@ impl App {
     }
 
     pub(crate) fn refresh_context_transfer_preview(&mut self) {
-        let Some((source, n_prompts)) = self
-            .context_transfer_modal
-            .as_ref()
-            .and_then(|modal| self.modal_source(modal).map(|source| (source, modal.n_prompts)))
-        else {
+        let Some((source, n_prompts)) = self.context_transfer_modal.as_ref().and_then(|modal| {
+            self.modal_source(modal)
+                .map(|source| (source, modal.n_prompts))
+        }) else {
             return;
         };
 
-        let Some(preview) = self.build_context_transfer_payload_from_source(source, n_prompts) else {
+        let Some(preview) = self.build_context_transfer_payload_from_source(source, n_prompts)
+        else {
             return;
         };
 
@@ -692,7 +692,13 @@ impl App {
             ContextTransferSource::Interactive(idx) => self
                 .interactive_agents
                 .get(idx)
-                .and_then(|agent| agent.prompt_history.lock().ok().map(|history| history.len()))
+                .and_then(|agent| {
+                    agent
+                        .prompt_history
+                        .lock()
+                        .ok()
+                        .map(|history| history.len())
+                })
                 .unwrap_or(0)
                 .max(1),
             ContextTransferSource::Terminal(_) => 20,
@@ -716,7 +722,10 @@ impl App {
 
     fn active_split_session_name(&self) -> Option<String> {
         let split_id = self.active_split_id.as_ref()?;
-        let group = self.split_groups.iter().find(|group| group.id == *split_id)?;
+        let group = self
+            .split_groups
+            .iter()
+            .find(|group| group.id == *split_id)?;
         Some(if self.split_right_focused {
             group.session_b.clone()
         } else {
@@ -725,7 +734,11 @@ impl App {
     }
 
     fn context_transfer_source_by_name(&self, name: &str) -> Option<ContextTransferSource> {
-        if let Some(idx) = self.interactive_agents.iter().position(|agent| agent.name == name) {
+        if let Some(idx) = self
+            .interactive_agents
+            .iter()
+            .position(|agent| agent.name == name)
+        {
             return Some(ContextTransferSource::Interactive(idx));
         }
         self.terminal_agents
@@ -790,18 +803,14 @@ impl App {
         n_prompts: usize,
     ) -> Option<String> {
         match source {
-            ContextTransferSource::Interactive(idx) => self
-                .interactive_agents
-                .get(idx)
-                .map(|agent| {
+            ContextTransferSource::Interactive(idx) => {
+                self.interactive_agents.get(idx).map(|agent| {
                     build_context_payload_for(agent, n_prompts, ContextSourceKind::Interactive)
-                }),
-            ContextTransferSource::Terminal(idx) => self
-                .terminal_agents
-                .get(idx)
-                .map(|agent| {
-                    build_context_payload_for(agent, n_prompts, ContextSourceKind::Terminal)
-                }),
+                })
+            }
+            ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx).map(|agent| {
+                build_context_payload_for(agent, n_prompts, ContextSourceKind::Terminal)
+            }),
         }
     }
 
@@ -835,8 +844,8 @@ impl App {
         let _ = self.db.mark_orphaned_sessions();
 
         let home = dirs::home_dir().unwrap_or_default();
-        let config_path = home.join(".canopy/cli_config.json");
-        let registry = crate::domain::cli_config::CliRegistry::load(&config_path);
+        let canopy_dir = home.join(".canopy");
+        let canopy_config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
 
         let (cols, rows) = {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
@@ -847,7 +856,7 @@ impl App {
             let cli = crate::domain::models::Cli::from_str(&session.cli);
 
             // Get CLI config for resume args and accent color
-            let cli_config = registry.as_ref().and_then(|r| r.get(cli.as_str()));
+            let cli_config = canopy_config.get_cli(cli.as_str());
             let resume_args = cli_config.and_then(|c| c.resume_args.as_deref());
             let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
             let accent = cli_config
