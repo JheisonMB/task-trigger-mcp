@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Complete CLI definition from the registry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CliConfig {
     #[serde(default)]
     pub name: String,
@@ -91,6 +91,7 @@ impl CliRegistry {
     }
 
     /// Save this configuration to a file.
+    #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -100,6 +101,7 @@ impl CliRegistry {
     }
 
     /// Load configuration from a file.
+    #[allow(dead_code)]
     pub fn load(path: &Path) -> Option<Self> {
         let content = std::fs::read_to_string(path).ok()?;
         serde_json::from_str(&content).ok()
