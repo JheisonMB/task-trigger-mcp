@@ -71,11 +71,13 @@ pub struct NewAgentDialog {
 }
 
 impl NewAgentDialog {
-    pub fn new() -> Self {
+    pub fn new(start_dir: Option<&str>) -> Self {
         let (available, configs) = Self::load_available_clis();
-        let cwd = std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let cwd = start_dir.map(|s| s.to_string()).unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default()
+        });
         let catalog = models_db::load_catalog();
         let mut dialog = Self {
             edit_id: None,
@@ -132,11 +134,12 @@ impl NewAgentDialog {
 
     fn load_available_clis() -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
         if let Some(home) = dirs::home_dir() {
-            let config_path = home.join(".canopy/cli_config.json");
-            if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&config_path) {
+            let canopy_dir = home.join(".canopy");
+            let config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+            if !config.clis.is_empty() {
                 let mut clis = Vec::new();
                 let mut configs = Vec::new();
-                for c in &registry.available_clis {
+                for c in &config.clis {
                     if let Ok(cli) = Cli::resolve(Some(&c.name)) {
                         clis.push(cli);
                         configs.push(Some(c.clone()));
@@ -460,7 +463,12 @@ impl App {
         let Some(agent) = self.agents.get(self.selected) else {
             return;
         };
-        let mut dialog = NewAgentDialog::new();
+        // Get working dir from the agent being edited
+        let agent_dir = match agent {
+            AgentEntry::Agent(a) => a.working_dir.as_deref(),
+            _ => None,
+        };
+        let mut dialog = NewAgentDialog::new(agent_dir);
         dialog.prev_focus = Some(prev_focus);
 
         match agent {
@@ -528,7 +536,21 @@ impl App {
 
     pub fn open_new_agent_dialog(&mut self) {
         let prev_focus = self.focus;
-        self.new_agent_dialog = Some(NewAgentDialog::new());
+
+        // Get working dir from current agent if available
+        let agent_dir = self.selected_agent().and_then(|entry| match entry {
+            AgentEntry::Interactive(idx) => self
+                .interactive_agents
+                .get(*idx)
+                .map(|a| a.working_dir.as_str()),
+            AgentEntry::Terminal(idx) => self
+                .terminal_agents
+                .get(*idx)
+                .map(|a| a.working_dir.as_str()),
+            _ => None,
+        });
+
+        self.new_agent_dialog = Some(NewAgentDialog::new(agent_dir));
         self.new_agent_dialog.as_mut().unwrap().prev_focus = Some(prev_focus);
         self.focus = Focus::NewAgentDialog;
     }
@@ -790,7 +812,11 @@ impl App {
         let log_dir = dirs::home_dir()
             .map(|h| h.join(".canopy/logs"))
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
-        let log_path = log_dir.join(&id).with_extension("log").to_string_lossy().to_string();
+        let log_path = log_dir
+            .join(&id)
+            .with_extension("log")
+            .to_string_lossy()
+            .to_string();
         let agent = crate::domain::models::Agent {
             id,
             prompt: dialog.prompt.clone(),
@@ -832,7 +858,11 @@ impl App {
         let log_dir = dirs::home_dir()
             .map(|h| h.join(".canopy/logs"))
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
-        let log_path = log_dir.join(&id).with_extension("log").to_string_lossy().to_string();
+        let log_path = log_dir
+            .join(&id)
+            .with_extension("log")
+            .to_string_lossy()
+            .to_string();
         let agent = crate::domain::models::Agent {
             id,
             prompt: dialog.prompt.clone(),
@@ -1008,45 +1038,99 @@ impl AtPicker {
     /// Rebuild `entries` from `current_dir` filtered by `query`.
     ///
     /// Results are ordered: directories first, then files — all filtered by `query`.
+    /// When a query is active, search is recursive across all subdirectories.
     pub fn refresh(&mut self) {
         let q = self.query.to_lowercase();
         let mut dirs: Vec<AtEntry> = Vec::new();
         let mut files: Vec<AtEntry> = Vec::new();
 
-        // ── Regular filesystem entries ─────────────────────────────────────
-        if let Ok(rd) = std::fs::read_dir(&self.current_dir) {
-            for entry in rd.flatten() {
-                let path = entry.path();
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                if !q.is_empty() && !name.to_lowercase().contains(&q) {
-                    continue;
-                }
-                if path.is_dir() {
+        if q.is_empty() {
+            // No query — list current directory only (flat browse mode)
+            if let Ok(rd) = std::fs::read_dir(&self.current_dir) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    let name = match path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
                     if AT_IGNORE_DIRS.contains(&name.as_str()) {
                         continue;
                     }
-                    dirs.push(AtEntry {
-                        name,
-                        path,
-                        is_dir: true,
-                    });
-                } else {
-                    files.push(AtEntry {
-                        name,
-                        path,
-                        is_dir: false,
-                    });
+                    if path.is_dir() {
+                        dirs.push(AtEntry {
+                            name,
+                            path,
+                            is_dir: true,
+                        });
+                    } else {
+                        files.push(AtEntry {
+                            name,
+                            path,
+                            is_dir: false,
+                        });
+                    }
                 }
             }
+        } else {
+            // Query active — recursive search across subdirectories
+            self.recursive_search(&self.current_dir, &q, &mut dirs, &mut files, 0);
         }
+
         dirs.sort_by(|a, b| a.name.cmp(&b.name));
         files.sort_by(|a, b| a.name.cmp(&b.name));
         dirs.extend(files);
         self.entries = dirs;
         self.selected = 0;
+    }
+
+    /// Recursively search for files/dirs matching `q`, up to a depth limit.
+    fn recursive_search(
+        &self,
+        dir: &std::path::Path,
+        q: &str,
+        dirs: &mut Vec<AtEntry>,
+        files: &mut Vec<AtEntry>,
+        depth: usize,
+    ) {
+        const MAX_DEPTH: usize = 8;
+        const MAX_RESULTS: usize = 200;
+        if depth > MAX_DEPTH || (dirs.len() + files.len()) >= MAX_RESULTS {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            if dirs.len() + files.len() >= MAX_RESULTS {
+                break;
+            }
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            if AT_IGNORE_DIRS.contains(&name.as_str()) {
+                continue;
+            }
+            let matches = name.to_lowercase().contains(q);
+            if path.is_dir() {
+                if matches {
+                    dirs.push(AtEntry {
+                        name,
+                        path: path.clone(),
+                        is_dir: true,
+                    });
+                }
+                // Always recurse into dirs to find matching files deeper
+                self.recursive_search(&path, q, dirs, files, depth + 1);
+            } else if matches {
+                files.push(AtEntry {
+                    name,
+                    path,
+                    is_dir: false,
+                });
+            }
+        }
     }
 
     /// Navigate into the currently selected directory.
@@ -1691,6 +1775,21 @@ impl SimplePromptDialog {
         let new_content = format!("{}\n{}", before, after);
         self.set_section_content(section_id, new_content);
         self.section_cursors.insert(section_id.to_string(), cur + 1);
+        self.update_section_scroll(section_id, field_width);
+    }
+
+    /// Insert text at cursor position in any section.
+    /// Used for paste operations to insert all text at once.
+    pub fn insert_text_at_cursor(&mut self, section_id: &str, text: &str, field_width: usize) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let cur = self.cursor(section_id).min(chars.len());
+        let before: String = chars[..cur].iter().collect();
+        let after: String = chars[cur..].iter().collect();
+        let new_content = format!("{}{}{}", before, text, after);
+        self.set_section_content(section_id, new_content);
+        self.section_cursors
+            .insert(section_id.to_string(), cur + text.chars().count());
         self.update_section_scroll(section_id, field_width);
     }
 }
