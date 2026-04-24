@@ -92,7 +92,10 @@ pub fn create_platform_symlinks(
 /// Validate symlink integrity: return broken symlink paths.
 /// Used by the `canopy skills` wizard (future subcommand).
 #[allow(dead_code)]
-pub fn find_broken_symlinks(home: &Path, platforms: &[&crate::setup_module::Platform]) -> Vec<PathBuf> {
+pub fn find_broken_symlinks(
+    home: &Path,
+    platforms: &[&crate::setup_module::Platform],
+) -> Vec<PathBuf> {
     let mut broken = Vec::new();
 
     for platform in platforms {
@@ -331,7 +334,11 @@ fn validate_skills(home: &Path, platforms: &[&crate::setup_module::Platform]) ->
 }
 
 #[allow(dead_code)]
-fn remove_skill(home: &Path, global: &Path, platforms: &[&crate::setup_module::Platform]) -> Result<()> {
+fn remove_skill(
+    home: &Path,
+    global: &Path,
+    platforms: &[&crate::setup_module::Platform],
+) -> Result<()> {
     let skills = list_skill_dirs(global);
     if skills.is_empty() {
         println!("  \x1b[33m⚠\x1b[0m  No skills to remove.");
