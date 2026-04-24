@@ -829,8 +829,12 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
             Span::styled("split with another session", desc_style),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl+X  ", key_style),
-            Span::styled("dissolve current split", desc_style),
+            Span::styled("F4      ", key_style),
+            Span::styled("dissolve split group", desc_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Shift+F4", key_style),
+            Span::styled("terminate session (kills & dissolves)", desc_style),
         ]),
         Line::from(vec![
             Span::styled("Ctrl+←→ ", key_style),
@@ -839,10 +843,6 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("Ctrl+T  ", key_style),
             Span::styled("context transfer to agent", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("F4      ", key_style),
-            Span::styled("terminate session (or split group)", desc_style),
         ]),
     ];
 
