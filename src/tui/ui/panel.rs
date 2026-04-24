@@ -103,7 +103,8 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 let idx = *idx;
                 if let Some(agent) = app.interactive_agents.get(idx) {
                     if let Some(snap) = agent.screen_snapshot() {
-                        render_vt_screen(frame, inner, &snap);
+                        let sensitive = agent.is_sensitive_input_active();
+                        render_vt_screen_with_mask(frame, inner, &snap, sensitive);
                         if !snap.scrolled {
                             let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
                             let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
@@ -118,6 +119,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 let idx = *idx;
                 if let Some(agent) = app.terminal_agents.get(idx) {
                     let warp = agent.warp_mode;
+                    let sensitive = agent.is_sensitive_input_active();
                     if warp {
                         // Split: PTY output above, warp input box below
                         let input_h = 3u16;
@@ -126,7 +128,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                         let input_area = Rect::new(inner.x, inner.y + pty_h, inner.width, input_h);
 
                         if let Some(snap) = agent.screen_snapshot() {
-                            render_vt_screen(frame, pty_area, &snap);
+                            render_vt_screen_with_mask(frame, pty_area, &snap, sensitive);
                             render_indicators(frame, pty_area, &snap, app);
                         }
 
@@ -135,7 +137,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                     }
 
                     if let Some(snap) = agent.screen_snapshot() {
-                        render_vt_screen(frame, inner, &snap);
+                        render_vt_screen_with_mask(frame, inner, &snap, sensitive);
                         if !snap.scrolled {
                             let cx = inner.x + snap.cursor_col.min(inner.width.saturating_sub(1));
                             let cy = inner.y + snap.cursor_row.min(inner.height.saturating_sub(1));
@@ -347,7 +349,7 @@ fn draw_group_details(frame: &mut Frame, area: Rect, app: &App, group_idx: usize
         Line::from(""),
         Line::from(Span::styled(
             if is_active {
-                "  Ctrl+X to dissolve  ·  Ctrl+←/→ switch panel"
+                "  F4 to dissolve  ·  Shift+F4 to end  ·  Ctrl+←/→ switch panel"
             } else {
                 "  Enter to activate split  ·  D to dissolve"
             },
@@ -400,12 +402,22 @@ fn render_indicators(frame: &mut Frame, inner: Rect, snap: &ScreenSnapshot, _app
 // ── vt100 screen rendering ──────────────────────────────────────
 
 fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &ScreenSnapshot) {
+    render_vt_screen_with_mask(frame, area, snap, false);
+}
+
+fn render_vt_screen_with_mask(
+    frame: &mut Frame,
+    area: Rect,
+    snap: &ScreenSnapshot,
+    mask_cursor_line: bool,
+) {
     let buf = frame.buffer_mut();
     for (row_idx, row) in snap.cells.iter().enumerate() {
         if row_idx as u16 >= area.height {
             break;
         }
         let y = area.y + row_idx as u16;
+        let is_cursor_row = row_idx as u16 == snap.cursor_row;
 
         for (col_idx, cell) in row.iter().enumerate() {
             if col_idx as u16 >= area.width {
@@ -417,7 +429,14 @@ fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &ScreenSnapshot) {
                 continue;
             };
 
-            let ch = if c.ch.is_empty() { " " } else { &c.ch };
+            // Mask characters on the cursor line when sensitive input is active
+            let ch = if mask_cursor_line && is_cursor_row && !c.ch.is_empty() && c.ch != " " {
+                "•"
+            } else if c.ch.is_empty() {
+                " "
+            } else {
+                &c.ch
+            };
             let (fg, bg) = if c.inverse {
                 (c.bg, c.fg)
             } else {
@@ -589,7 +608,10 @@ fn draw_agent_details(
         Line::from(""),
         Line::from(vec![
             Span::styled("Type:    ", Style::default().fg(DIM)),
-            Span::styled(agent.trigger_type_label(), Style::default().fg(INTERACTIVE_COLOR)),
+            Span::styled(
+                agent.trigger_type_label(),
+                Style::default().fg(INTERACTIVE_COLOR),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Prompt:  ", Style::default().fg(DIM)),
@@ -604,7 +626,13 @@ fn draw_agent_details(
                 Span::styled(schedule_expr, Style::default().fg(INTERACTIVE_COLOR)),
             ]));
         }
-        Some(Trigger::Watch { path, events, debounce_seconds, recursive, .. }) => {
+        Some(Trigger::Watch {
+            path,
+            events,
+            debounce_seconds,
+            recursive,
+            ..
+        }) => {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Path:    ", Style::default().fg(DIM)),
