@@ -430,8 +430,14 @@ fn render_vt_screen_with_mask(
             };
 
             // Mask characters on the cursor line when sensitive input is active
+            // Only mask characters at/after cursor position to preserve the prompt
             let ch = if mask_cursor_line && is_cursor_row && !c.ch.is_empty() && c.ch != " " {
-                "•"
+                // Only mask if we're at or after the cursor column
+                if col_idx as u16 >= snap.cursor_col {
+                    "•"
+                } else {
+                    &c.ch
+                }
             } else if c.ch.is_empty() {
                 " "
             } else {
