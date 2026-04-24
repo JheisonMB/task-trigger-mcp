@@ -90,7 +90,7 @@ rand = "0.10"
 
 # Clipboard for text copy from TUI
 arboard = "3.6"
-toml = "0.9.6"
+toml = "1.1.2"
 
 # Auto-update dependencies
 flate2 = "1.0"
