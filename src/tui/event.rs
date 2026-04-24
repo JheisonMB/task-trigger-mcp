@@ -541,13 +541,26 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
 // ── Mouse: scroll wheel + Shift+Click to copy selection ─────────────
 
 fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) -> Result<()> {
-    // Shift+Left release — terminal has already placed the selection in the
-    // clipboard; just surface the "Copied" indicator as visual feedback.
+    // Shift+Left release — copy both formatted and plain text
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
         && modifiers.contains(KeyModifiers::SHIFT)
     {
         app.show_copied = true;
         app.copied_at = std::time::Instant::now();
+        
+        // Also copy plain text to clipboard for better external paste
+        if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+            let idx = *idx;
+            if let Some(agent) = app.interactive_agents.get(idx) {
+                if let Some(plain_text) = agent.get_plain_text_from_screen() {
+                    // Try to copy to clipboard
+                    let _ = arboard::Clipboard::new().and_then(|mut clipboard| {
+                        clipboard.set_text(&plain_text)
+                    });
+                }
+            }
+        }
+        
         return Ok(());
     }
 

@@ -1059,6 +1059,69 @@ impl InteractiveAgent {
         Some(sanitize_line(&line).trim_end().to_string())
     }
 
+    /// Get plain text from the current visible screen area.
+    /// This is used for copying clean text without ANSI formatting.
+    pub fn get_plain_text_from_screen(&self) -> Option<String> {
+        let vt = self.vt.lock().ok()?;
+        let screen = vt.screen();
+        let (rows, cols) = screen.size();
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+
+        let mut text = String::new();
+        // Get text from all visible lines
+        for row in 0..rows {
+            let mut line = String::new();
+            for col in 0..cols {
+                if let Some(cell) = screen.cell(row, col) {
+                    line.push_str(cell.contents());
+                }
+            }
+            // Add line to text, preserving newlines
+            if !line.trim().is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&sanitize_line(&line));
+            }
+        }
+
+        Some(text)
+    }
+
+    /// Get plain text from a specific selection area.
+    /// Used when user selects text with mouse.
+    pub fn get_plain_text_from_selection(&self, start_row: usize, end_row: usize) -> Option<String> {
+        let vt = self.vt.lock().ok()?;
+        let screen = vt.screen();
+        let (rows, cols) = screen.size();
+        if rows == 0 || cols == 0 {
+            return None;
+        }
+
+        let mut text = String::new();
+        let start_row = start_row.min(rows.saturating_sub(1) as usize);
+        let end_row = end_row.min(rows.saturating_sub(1) as usize);
+
+        for row in start_row..=end_row {
+            let mut line = String::new();
+            for col in 0..cols {
+                if let Some(cell) = screen.cell(row as u16, col as u16) {
+                    line.push_str(cell.contents());
+                }
+            }
+            if !line.trim().is_empty() {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(&sanitize_line(&line));
+            }
+        }
+
+        Some(text)
+    }
+
     pub fn is_sensitive_input_active(&self) -> bool {
         self.current_visible_line_text()
             .is_some_and(|line| line_looks_sensitive_prompt(&line))
