@@ -16,6 +16,9 @@ use crate::db::Database;
 use crate::domain::models::{Agent, Cli, RunLog, RunStatus, Trigger, TriggerType};
 use crate::scheduler::substitute_variables;
 
+#[cfg(test)]
+mod tests;
+
 /// Maximum log file size before rotation (5 MB).
 const MAX_LOG_SIZE: u64 = 5 * 1024 * 1024;
 

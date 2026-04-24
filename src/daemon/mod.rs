@@ -11,6 +11,9 @@ pub(crate) mod process;
 pub(crate) mod server;
 pub(crate) mod service_install;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use chrono::Utc;
