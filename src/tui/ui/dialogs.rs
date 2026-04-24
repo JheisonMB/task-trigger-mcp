@@ -834,7 +834,7 @@ pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("Shift+F4", key_style),
-            Span::styled("end in split", desc_style),
+            Span::styled("end", desc_style),
         ]),
         Line::from(vec![
             Span::styled("Ctrl+←→ ", key_style),
