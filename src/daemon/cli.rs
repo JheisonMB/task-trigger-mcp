@@ -3,12 +3,12 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::application::ports::{AgentRepository, StateRepository};
-use crate::db::Database;
 use crate::daemon::process::{
     is_process_running, is_service_enabled, is_systemd_available, kill_port_occupant,
     print_last_n_lines, read_pid, remove_pid_file, send_signal,
 };
-use crate::daemon::service_install as service_install;
+use crate::daemon::service_install;
+use crate::db::Database;
 
 #[derive(Subcommand)]
 pub(crate) enum DaemonAction {
@@ -193,8 +193,12 @@ fn handle_status(data_dir: &std::path::Path) -> Result<()> {
     };
 
     let port = db.get_state("port")?.unwrap_or_else(|| "7755".to_string());
-    let version = db.get_state("version")?.unwrap_or_else(|| "unknown".to_string());
-    let last_start = db.get_state("last_start")?.unwrap_or_else(|| "unknown".to_string());
+    let version = db
+        .get_state("version")?
+        .unwrap_or_else(|| "unknown".to_string());
+    let last_start = db
+        .get_state("last_start")?
+        .unwrap_or_else(|| "unknown".to_string());
     let agents = db.list_agents()?;
     let cron_count = agents.iter().filter(|a| a.is_cron()).count();
     let watch_count = agents.iter().filter(|a| a.is_watch()).count();
@@ -203,7 +207,12 @@ fn handle_status(data_dir: &std::path::Path) -> Result<()> {
     println!("Version: {version}");
     println!("Port: {port}");
     println!("Started: {last_start}");
-    println!("Agents: {} (cron: {}, watch: {})", agents.len(), cron_count, watch_count);
+    println!(
+        "Agents: {} (cron: {}, watch: {})",
+        agents.len(),
+        cron_count,
+        watch_count
+    );
     Ok(())
 }
 

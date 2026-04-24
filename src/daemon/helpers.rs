@@ -19,7 +19,10 @@ pub(crate) fn error_result(message: &str) -> CallToolResult {
     CallToolResult::error(vec![rmcp::model::Content::text(message.to_string())])
 }
 
-pub(crate) fn filter_log_line(line: &str, since_dt: &chrono::DateTime<chrono::FixedOffset>) -> bool {
+pub(crate) fn filter_log_line(
+    line: &str,
+    since_dt: &chrono::DateTime<chrono::FixedOffset>,
+) -> bool {
     if !line.starts_with("--- [") {
         return true;
     }

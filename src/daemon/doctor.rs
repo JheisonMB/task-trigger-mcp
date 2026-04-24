@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 
 use crate::application::ports::AgentRepository;
-use crate::db::Database;
 use crate::daemon::process::is_process_running;
+use crate::db::Database;
 
 pub(crate) async fn run_doctor() -> Result<()> {
     const DOCTOR_BANNER: &str = r#"
@@ -24,8 +24,6 @@ pub(crate) async fn run_doctor() -> Result<()> {
     let home = dirs::home_dir().context("No home directory")?;
     let canopy_dir = home.join(".canopy");
     let db_path = canopy_dir.join("background_agents.db");
-    let cli_config_path = canopy_dir.join("cli_config.json");
-    let configured_marker = canopy_dir.join(".configured");
 
     let mut issues = Vec::new();
 
@@ -48,23 +46,36 @@ pub(crate) async fn run_doctor() -> Result<()> {
             if let Ok(agents) = db.list_agents() {
                 let cron_count = agents.iter().filter(|a| a.is_cron()).count();
                 let watch_count = agents.iter().filter(|a| a.is_watch()).count();
-                println!("    Agents: {} (cron: {}, watch: {})", agents.len(), cron_count, watch_count);
+                println!(
+                    "    Agents: {} (cron: {}, watch: {})",
+                    agents.len(),
+                    cron_count,
+                    watch_count
+                );
             }
         }
     } else {
         println!("  \x1b[33m⚠\x1b[0m  Database not found (will be created on setup)");
     }
 
-    if cli_config_path.exists() {
-        println!(
-            "  \x1b[32m✓\x1b[0m CLI config: {}",
-            cli_config_path.display()
-        );
-        if let Some(registry) = crate::domain::cli_config::CliRegistry::load(&cli_config_path) {
-            println!("    Available CLIs: {}", registry.names().join(", "));
+    // Unified config.toml
+    let config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+    if config.is_configured() {
+        println!("  \x1b[32m✓\x1b[0m Config: config.toml");
+        if config.clis.is_empty() {
+            println!("    CLIs: (none configured)");
+        } else {
+            println!("    CLIs: {}", config.cli_names().join(", "));
         }
     } else {
-        println!("  \x1b[33m⚠\x1b[0m  CLI config not found (run setup)");
+        // Check for legacy files
+        let cli_config_path = canopy_dir.join("cli_config.json");
+        let configured_marker = canopy_dir.join(".configured");
+        if cli_config_path.exists() || configured_marker.exists() {
+            println!("  \x1b[33m⚠\x1b[0m  Legacy config files found (run setup to migrate to config.toml)");
+        } else {
+            println!("  \x1b[33m⚠\x1b[0m  Config not found (run setup)");
+        }
     }
 
     let pid_path = canopy_dir.join("daemon.pid");
@@ -81,7 +92,7 @@ pub(crate) async fn run_doctor() -> Result<()> {
         println!("  \x1b[33m⚠\x1b[0m  Daemon not running");
     }
 
-    if configured_marker.exists() {
+    if config.is_configured() {
         println!("  \x1b[32m✓\x1b[0m Setup completed");
     } else {
         println!("  \x1b[33m⚠\x1b[0m  Setup not completed");

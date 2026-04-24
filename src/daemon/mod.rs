@@ -26,9 +26,11 @@ use tokio::sync::Notify;
 
 use crate::application::notification_service::NotificationService;
 use crate::application::ports::{AgentRepository, RunRepository};
-use crate::db::Database;
-use crate::daemon::helpers::{data_dir, error_result, filter_log_line, notify_run_result, success_result};
+use crate::daemon::helpers::{
+    data_dir, error_result, filter_log_line, notify_run_result, success_result,
+};
 use crate::daemon::params::*;
+use crate::db::Database;
 use crate::domain::models::{Agent, Cli, Trigger, WatchEvent};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
@@ -358,7 +360,9 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(existing) = self.db.get_agent(&id)
+        let Some(existing) = self
+            .db
+            .get_agent(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
         else {
             return Ok(error_result(&format!("No agent found with ID '{}'", id)));
@@ -394,7 +398,9 @@ impl TaskTriggerHandler {
         &self,
         Parameters(IdParam { id }): Parameters<IdParam>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(existing) = self.db.get_agent(&id)
+        let Some(existing) = self
+            .db
+            .get_agent(&id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
         else {
             return Ok(error_result(&format!("No agent found with ID '{}'", id)));
@@ -436,7 +442,12 @@ impl TaskTriggerHandler {
 
         tokio::spawn(async move {
             let result = executor.execute_agent(&agent, true).await;
-            notify_run_result(&notification_service, &agent_id, result, "Manual run failed");
+            notify_run_result(
+                &notification_service,
+                &agent_id,
+                result,
+                "Manual run failed",
+            );
         });
 
         Ok(success_result(&format!(
@@ -456,7 +467,10 @@ impl TaskTriggerHandler {
             .list_agents()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let active_agents = agents.iter().filter(|a| a.enabled && !a.is_expired()).count();
+        let active_agents = agents
+            .iter()
+            .filter(|a| a.enabled && !a.is_expired())
+            .count();
         let active_watchers = self.watcher_engine.active_count().await;
 
         let uptime = self.start_time.elapsed();
@@ -588,7 +602,9 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         let max_lines = params.lines.unwrap_or(50);
 
-        let log_path = match self.db.get_agent(&params.id)
+        let log_path = match self
+            .db
+            .get_agent(&params.id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
         {
             Some(agent) => agent.log_path,
@@ -689,10 +705,15 @@ impl TaskTriggerHandler {
             return Ok(error_result(&e));
         }
 
-        let Some(mut agent) = self.db.get_agent(&params.id)
+        let Some(mut agent) = self
+            .db
+            .get_agent(&params.id)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?
         else {
-            return Ok(error_result(&format!("No agent found with ID '{}'", params.id)));
+            return Ok(error_result(&format!(
+                "No agent found with ID '{}'",
+                params.id
+            )));
         };
 
         if let Some(ref prompt) = params.prompt {
