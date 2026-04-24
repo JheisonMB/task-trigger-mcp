@@ -78,10 +78,13 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
 fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     // Approximate instruction field width from terminal width
-    // dialog is ~65% of terminal, minus borders/padding (~6 chars)
-    let field_width = (app.term_width as usize * 65 / 100)
-        .saturating_sub(6)
-        .max(20);
+    // Must match the render calculation in dialogs.rs:
+    //   dialog_width = (term_width * 65/100).max(40)
+    //   inner_width  = dialog_width - 2 (borders)
+    //   field_width  = inner_width - 2 (padding)
+    let field_width = ((app.term_width as usize * 65 / 100).max(40))
+        .saturating_sub(4)
+        .max(10);
 
     // Resolve workdir for @ file picker (needs agent borrow before dialog borrow).
     let workdir: PathBuf = app
@@ -570,6 +573,19 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
                         agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
                     }
                 }
+            } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
+                let idx = *idx;
+                if idx < app.terminal_agents.len() {
+                    let agent = &mut app.terminal_agents[idx];
+                    if agent.in_alternate_screen() {
+                        let _ = agent.forward_scroll(dir > 0);
+                    } else if dir > 0 {
+                        let max = agent.max_scroll();
+                        agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                    } else {
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                    }
+                }
             } else if dir > 0 {
                 app.scroll_log_up();
             } else {
@@ -582,6 +598,19 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
                 let idx = *idx;
                 if idx < app.interactive_agents.len() {
                     let agent = &mut app.interactive_agents[idx];
+                    if agent.in_alternate_screen() {
+                        let _ = agent.forward_scroll(dir > 0);
+                    } else if dir > 0 {
+                        let max = agent.max_scroll();
+                        agent.scroll_offset = (agent.scroll_offset + 3).min(max);
+                    } else {
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+                    }
+                }
+            } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
+                let idx = *idx;
+                if idx < app.terminal_agents.len() {
+                    let agent = &mut app.terminal_agents[idx];
                     if agent.in_alternate_screen() {
                         let _ = agent.forward_scroll(dir > 0);
                     } else if dir > 0 {
@@ -806,12 +835,6 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // Ctrl+X: dissolve current split
-    if code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL) {
-        app.dissolve_split();
-        return Ok(());
-    }
-
     // Ctrl+Left/Right: switch panel focus in split view
     if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
@@ -834,8 +857,14 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
         return Ok(());
     }
 
-    // F4 = terminate current session (or all sessions in a split group)
-    if code == KeyCode::F(4) {
+    // F4 = dissolve current split group (keeps sessions alive)
+    if code == KeyCode::F(4) && !modifiers.contains(KeyModifiers::SHIFT) {
+        app.dissolve_split();
+        return Ok(());
+    }
+
+    // Shift+F4 = terminate current session (kills sessions and dissolves group)
+    if code == KeyCode::F(4) && modifiers.contains(KeyModifiers::SHIFT) {
         app.terminate_focused_session();
         return Ok(());
     }
@@ -996,11 +1025,13 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
     }
 
     // Record the prompt when the user presses Enter (interactive only)
+    // Skip recording if a sensitive prompt (password/passphrase) is active
     if agent_vec == "interactive" {
         if code == KeyCode::Enter {
+            let is_sensitive = app.interactive_agents[idx].is_sensitive_input_active();
             if let Ok(input) = app.interactive_agents[idx].input_buffer.lock() {
                 let captured = input.trim().to_string();
-                if !captured.is_empty() {
+                if !captured.is_empty() && !is_sensitive {
                     app.interactive_agents[idx].record_prompt(&captured);
                 }
             }
@@ -1050,15 +1081,19 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
                 input.clear();
             }
         } else if code == KeyCode::Tab {
-            let empty = app.terminal_agents[idx]
+            let input_text = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
-                .map(|b| b.trim().is_empty())
-                .unwrap_or(true);
-            if empty {
+                .map(|b| b.trim().to_string())
+                .unwrap_or_default();
+            let is_cd = input_text.is_empty()
+                || input_text == "cd"
+                || input_text.starts_with("cd ")
+                || input_text.starts_with("cd\t");
+            if is_cd {
                 return open_terminal_suggestion_picker(app, idx);
             }
-            // Non-empty: forward Tab to PTY for native autocomplete
+            // Non-cd: forward Tab to PTY for native autocomplete
         } else if let KeyCode::Char(c) = code {
             if !modifiers.contains(KeyModifiers::CONTROL) {
                 if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
@@ -1199,15 +1234,19 @@ fn handle_terminal_warp_key(
             app.terminal_agents[idx].warp_passthrough = false;
         }
         KeyCode::Tab => {
-            let empty = app.terminal_agents[idx]
+            let input_text = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
-                .map(|b| b.trim().is_empty())
-                .unwrap_or(true);
-            if empty {
+                .map(|b| b.trim().to_string())
+                .unwrap_or_default();
+            let is_cd = input_text.is_empty()
+                || input_text == "cd"
+                || input_text.starts_with("cd ")
+                || input_text.starts_with("cd\t");
+            if is_cd {
                 return open_terminal_suggestion_picker(app, idx);
             }
-            // Non-empty: send current input + Tab to PTY for native autocomplete.
+            // Non-cd: send current input + Tab to PTY for native autocomplete.
             let text = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
@@ -1303,12 +1342,13 @@ fn handle_terminal_warp_key(
             app.terminal_agents[idx].warp_cursor = len;
         }
         KeyCode::Up => {
+            let already_browsing = app.terminal_agents[idx].history_index.is_some();
             let input_empty = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
                 .map(|b| b.trim().is_empty())
                 .unwrap_or(true);
-            if input_empty {
+            if already_browsing || input_empty {
                 // Browse session history
                 let session_name = app.terminal_agents[idx].name.clone();
                 let hist = app.terminal_histories.get(&session_name);
@@ -1340,12 +1380,14 @@ fn handle_terminal_warp_key(
             }
         }
         KeyCode::Down => {
+            let already_browsing = app.terminal_agents[idx].history_index.is_some();
             let input_empty = app.terminal_agents[idx]
                 .input_buffer
                 .lock()
                 .map(|b| b.trim().is_empty())
                 .unwrap_or(true);
-            if input_empty && app.terminal_agents[idx].history_index.is_some() {
+            if already_browsing || (input_empty && app.terminal_agents[idx].history_index.is_some())
+            {
                 // Browse session history forward
                 let session_name = app.terminal_agents[idx].name.clone();
                 let hist_len = app
@@ -1551,14 +1593,14 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Enter => {
-            // If on mode field in Resume mode with session picker, open picker instead of launching
+            // If in Resume mode with session picker and no session selected yet,
+            // open the picker regardless of which field is focused.
             let should_pick = app.new_agent_dialog.as_ref().is_some_and(|d| {
                 let is_interactive = matches!(d.task_type, super::app::NewTaskType::Interactive);
-                let mode_field: usize = 1;
                 is_interactive
-                    && d.field == mode_field
                     && matches!(d.task_mode, super::app::NewTaskMode::Resume)
                     && d.has_session_picker()
+                    && d.selected_session.is_none()
             });
             if should_pick {
                 if let Some(dialog) = &mut app.new_agent_dialog {
@@ -2112,8 +2154,21 @@ fn handle_paste(app: &mut App, text: &str) {
                 }
             }
         }
+        Focus::NewAgentDialog | Focus::PromptTemplateDialog => {
+            // Insert pasted text directly into the SimplePromptDialog sections
+            if let Some(dialog) = &mut app.simple_prompt_dialog {
+                if dialog.enabled_sections.len() > dialog.focused_section {
+                    let section_name = dialog.enabled_sections[dialog.focused_section].clone();
+                    // Must match render calculation in dialogs.rs
+                    let field_width = ((app.term_width as usize * 65 / 100).max(40))
+                        .saturating_sub(4)
+                        .max(10);
+                    dialog.insert_text_at_cursor(&section_name, &clean, field_width);
+                }
+            }
+        }
         _ => {
-            // For dialogs or other contexts, simulate typing each char
+            // For other contexts, simulate typing each char
             for c in clean.chars() {
                 let _ = handle_key(app, KeyCode::Char(c), KeyModifiers::NONE);
             }
