@@ -62,11 +62,9 @@ impl Executor {
             return;
         }
         tracing::info!("Run '{}' for '{}' timed out, unlocking", run.id, agent_id);
-        let _ = self.db.update_run_status(
-            &run.id,
-            RunStatus::Timeout,
-            Some("Execution timed out"),
-        );
+        let _ = self
+            .db
+            .update_run_status(&run.id, RunStatus::Timeout, Some("Execution timed out"));
         let _ = self.db.update_agent_last_run(agent_id, false);
     }
 
@@ -188,7 +186,11 @@ impl Executor {
 
         if agent.is_watch() {
             if let Err(e) = self.db.update_agent_triggered(&agent.id) {
-                tracing::error!("Failed to update trigger count for agent '{}': {}", agent.id, e);
+                tracing::error!(
+                    "Failed to update trigger count for agent '{}': {}",
+                    agent.id,
+                    e
+                );
             }
         }
 
@@ -439,10 +441,7 @@ fn append_to_log(
         .append(true)
         .open(path)?;
 
-    writeln!(
-        file,
-        "--- [{trigger}] {agent_id} at {started_at} ---"
-    )?;
+    writeln!(file, "--- [{trigger}] {agent_id} at {started_at} ---")?;
     writeln!(file, "exit_code: {exit_code}")?;
 
     if !stdout.is_empty() {
