@@ -1,0 +1,48 @@
+//! Unit tests for the application layer
+
+use crate::application::ports::StateRepository;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::application::notification_service::{DefaultNotificationService, NotificationService};
+    use crate::db::Database;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_database_state_operations() {
+        // Test basic database state operations
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Database::new(&db_path).unwrap();
+        
+        // Test set and get state
+        assert!(db.set_state("test-key", "test-value").is_ok());
+        let result = db.get_state("test-key").unwrap();
+        assert_eq!(result, Some("test-value".to_string()));
+        
+        // Test getting missing state
+        let result = db.get_state("missing-key").unwrap();
+        assert!(result.is_none());
+        
+        // Test overwriting state
+        assert!(db.set_state("test-key", "new-value").is_ok());
+        let result = db.get_state("test-key").unwrap();
+        assert_eq!(result, Some("new-value".to_string()));
+    }
+
+    #[test]
+    fn test_notification_service_methods() {
+        // Test that notification service trait methods work
+        let service = DefaultNotificationService;
+        
+        // Test task failed notification (returns ())
+        service.notify_task_failed("test-agent", 1, "error occurred");
+        
+        // Test agent failed notification (returns ())
+        service.notify_agent_failed("test-agent", "opencode", 1, "error output");
+        
+        // Test task completed notification
+        service.notify_task_completed("test-agent", true, Some(0));
+    }
+}
