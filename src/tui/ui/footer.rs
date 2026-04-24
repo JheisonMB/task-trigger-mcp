@@ -25,7 +25,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("D", "delete"),
             ("r", "rerun"),
             ("n", "new"),
-            ("q", "quit"),
+            ("F4", "quit"),
         ],
         Focus::NewAgentDialog => vec![
             ("↑↓", "fields"),
@@ -44,23 +44,24 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             let in_split = app.active_split_id.is_some();
             if is_pty {
                 let mut h = vec![
-                    ("F4", "end"),
                     ("F10", "back"),
                     ("Shift+↑↓", "agents"),
                     ("Ctrl+T", "context"),
                 ];
+                if in_split {
+                    h.push(("F4", "dissolve"));
+                    h.push(("Shift+F4", "end"));
+                    h.push(("Shift+←→", "split focus"));
+                } else {
+                    h.push(("F4", "end"));
+                    h.push(("Ctrl+S", "split"));
+                }
                 if matches!(app.selected_agent(), Some(AgentEntry::Terminal(_))) {
                     h.push(("Tab", "catalog"));
-                    h.push(("Ctrl+W", "warp"));
+                    h.push(("Ctrl+W", "wrap"));
                 }
                 if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                     h.push(("Ctrl+B", "prompt"));
-                }
-                if in_split {
-                    h.push(("Shift+←→", "split focus"));
-                    h.push(("Ctrl+X", "dissolve"));
-                } else {
-                    h.push(("Ctrl+S", "split"));
                 }
                 h.push(("Ctrl+N", "new"));
                 h.push(("F1", "legend"));
