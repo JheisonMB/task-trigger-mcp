@@ -8,9 +8,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::VecDeque;
 #[cfg(unix)]
 use std::io;
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -83,7 +83,9 @@ fn line_looks_sensitive_prompt(line: &str) -> bool {
     }
 
     let lower = trimmed.to_ascii_lowercase();
-    SENSITIVE_PROMPT_HINTS.iter().any(|hint| lower.contains(hint))
+    SENSITIVE_PROMPT_HINTS
+        .iter()
+        .any(|hint| lower.contains(hint))
         && (trimmed.ends_with(':') || trimmed.ends_with('?'))
 }
 
@@ -1273,8 +1275,12 @@ mod tests {
 
     #[test]
     fn detects_sensitive_prompts() {
-        assert!(line_looks_sensitive_prompt("Enter passphrase for key '/tmp/id_rsa':"));
-        assert!(line_looks_sensitive_prompt("Password for https://example.com?"));
+        assert!(line_looks_sensitive_prompt(
+            "Enter passphrase for key '/tmp/id_rsa':"
+        ));
+        assert!(line_looks_sensitive_prompt(
+            "Password for https://example.com?"
+        ));
         assert!(!line_looks_sensitive_prompt("$ git push"));
     }
 
