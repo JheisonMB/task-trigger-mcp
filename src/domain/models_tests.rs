@@ -45,17 +45,25 @@ fn test_agent_expired_past() {
 
 #[test]
 fn test_agent_trigger_type_labels() {
-    let cron_agent = sample_agent("c1", Some(Trigger::Cron { schedule_expr: "0 9 * * *".to_string() }));
+    let cron_agent = sample_agent(
+        "c1",
+        Some(Trigger::Cron {
+            schedule_expr: "0 9 * * *".to_string(),
+        }),
+    );
     assert_eq!(cron_agent.trigger_type_label(), "cron");
     assert!(cron_agent.is_cron());
     assert!(!cron_agent.is_watch());
 
-    let watch_agent = sample_agent("w1", Some(Trigger::Watch {
-        path: "/tmp".to_string(),
-        events: vec![WatchEvent::Create],
-        debounce_seconds: 2,
-        recursive: false,
-    }));
+    let watch_agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp".to_string(),
+            events: vec![WatchEvent::Create],
+            debounce_seconds: 2,
+            recursive: false,
+        }),
+    );
     assert_eq!(watch_agent.trigger_type_label(), "watch");
     assert!(!watch_agent.is_cron());
     assert!(watch_agent.is_watch());
@@ -68,16 +76,24 @@ fn test_agent_trigger_type_labels() {
 
 #[test]
 fn test_agent_accessors() {
-    let cron_agent = sample_agent("c1", Some(Trigger::Cron { schedule_expr: "0 9 * * *".to_string() }));
+    let cron_agent = sample_agent(
+        "c1",
+        Some(Trigger::Cron {
+            schedule_expr: "0 9 * * *".to_string(),
+        }),
+    );
     assert_eq!(cron_agent.schedule_expr(), Some("0 9 * * *"));
     assert!(cron_agent.watch_path().is_none());
 
-    let watch_agent = sample_agent("w1", Some(Trigger::Watch {
-        path: "/tmp/watched".to_string(),
-        events: vec![WatchEvent::Create, WatchEvent::Modify],
-        debounce_seconds: 5,
-        recursive: true,
-    }));
+    let watch_agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp/watched".to_string(),
+            events: vec![WatchEvent::Create, WatchEvent::Modify],
+            debounce_seconds: 5,
+            recursive: true,
+        }),
+    );
     assert_eq!(watch_agent.watch_path(), Some("/tmp/watched"));
     assert!(watch_agent.schedule_expr().is_none());
     let events = watch_agent.watch_events().unwrap();
@@ -88,7 +104,9 @@ fn test_agent_accessors() {
 
 #[test]
 fn test_trigger_type_str() {
-    let cron_trigger = Trigger::Cron { schedule_expr: "0 9 * * *".to_string() };
+    let cron_trigger = Trigger::Cron {
+        schedule_expr: "0 9 * * *".to_string(),
+    };
     assert_eq!(cron_trigger.type_str(), "cron");
 
     let watch_trigger = Trigger::Watch {
@@ -267,12 +285,15 @@ fn test_run_status_display() {
 
 #[test]
 fn test_watcher_trigger_accessors() {
-    let agent = sample_agent("w1", Some(Trigger::Watch {
-        path: "/tmp".to_string(),
-        events: vec![WatchEvent::Create],
-        debounce_seconds: 5,
-        recursive: false,
-    }));
+    let agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp".to_string(),
+            events: vec![WatchEvent::Create],
+            debounce_seconds: 5,
+            recursive: false,
+        }),
+    );
     assert_eq!(agent.trigger_count, 0);
     assert!(agent.last_triggered_at.is_none());
 }

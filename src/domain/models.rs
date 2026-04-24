@@ -254,23 +254,16 @@ impl Cli {
 
     pub fn strategy(&self) -> Box<super::cli_strategy::CliStrategy> {
         let home = dirs::home_dir().expect("Could not determine home directory");
-        let config_path = home.join(".canopy/cli_config.json");
-        let registry = super::cli_config::CliRegistry::load(&config_path).unwrap_or_else(|| {
-            panic!(
-                "CLI configuration not found at {}\n\
-                     Run 'canopy setup' to configure and generate the CLI config file.",
-                config_path.display()
-            )
-        });
+        let canopy_dir = home.join(".canopy");
+        let config = super::canopy_config::CanopyConfig::load(&canopy_dir);
 
-        let cli_config = registry.get(self.as_str()).unwrap_or_else(|| {
+        let cli_config = config.get_cli(self.as_str()).unwrap_or_else(|| {
             panic!(
-                "CLI '{}' not found in configuration at {}\n\
+                "CLI '{}' not found in configuration.\n\
                  Available CLIs: {}\n\
                  Run 'canopy setup' to update the configuration.",
                 self.as_str(),
-                config_path.display(),
-                registry.names().join(", ")
+                config.cli_names().join(", ")
             )
         });
 
@@ -286,7 +279,14 @@ impl Cli {
 
     fn load_registry() -> Option<super::cli_config::CliRegistry> {
         let home = dirs::home_dir()?;
-        super::cli_config::CliRegistry::load(&home.join(".canopy/cli_config.json"))
+        let config = super::canopy_config::CanopyConfig::load(&home.join(".canopy"));
+        if config.clis.is_empty() {
+            return None;
+        }
+        Some(super::cli_config::CliRegistry {
+            version: 2,
+            available_clis: config.clis,
+        })
     }
 }
 
