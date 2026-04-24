@@ -347,7 +347,8 @@ fn test_list_runs_limit() {
 #[test]
 fn test_delete_agent_cascades_runs() {
     let db = test_db();
-    db.upsert_agent(&sample_cron_agent("cascade-agent")).unwrap();
+    db.upsert_agent(&sample_cron_agent("cascade-agent"))
+        .unwrap();
     let run = RunLog {
         id: uuid::Uuid::new_v4().to_string(),
         background_agent_id: "cascade-agent".to_string(),
@@ -385,7 +386,9 @@ fn test_update_run_status() {
     };
     db.insert_run(&run).unwrap();
 
-    let ok = db.update_run_status(&run_id, RunStatus::Success, Some("Done")).unwrap();
+    let ok = db
+        .update_run_status(&run_id, RunStatus::Success, Some("Done"))
+        .unwrap();
     assert!(ok);
 
     let updated = db.get_run(&run_id).unwrap().unwrap();

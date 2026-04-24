@@ -263,7 +263,13 @@ impl Database {
         conn.execute(
             "INSERT OR REPLACE INTO groups (id, orientation, session_a, session_b, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, orientation, session_a, session_b, Utc::now().to_rfc3339()],
+            params![
+                id,
+                orientation,
+                session_a,
+                session_b,
+                Utc::now().to_rfc3339()
+            ],
         )?;
         Ok(())
     }
@@ -290,7 +296,10 @@ impl AgentRepository for Database {
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
 
         let (trigger_type, trigger_config) = match &agent.trigger {
-            Some(trigger) => (Some(trigger.type_str().to_string()), Some(serde_json::to_string(trigger)?)),
+            Some(trigger) => (
+                Some(trigger.type_str().to_string()),
+                Some(serde_json::to_string(trigger)?),
+            ),
             None => (None, None),
         };
 
@@ -323,7 +332,8 @@ impl AgentRepository for Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let mut stmt = conn.prepare(&format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1"))?;
+        let mut stmt =
+            conn.prepare(&format!("SELECT {AGENT_COLUMNS} FROM agents WHERE id = ?1"))?;
 
         let row = stmt
             .query_row(params![id], |row| {
@@ -371,7 +381,10 @@ impl AgentRepository for Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute("DELETE FROM runs WHERE background_agent_id = ?1", params![id])?;
+        conn.execute(
+            "DELETE FROM runs WHERE background_agent_id = ?1",
+            params![id],
+        )?;
         conn.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Ok(())
     }
@@ -419,7 +432,8 @@ impl Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let sql = format!("SELECT {AGENT_COLUMNS} FROM agents {where_clause} ORDER BY created_at DESC");
+        let sql =
+            format!("SELECT {AGENT_COLUMNS} FROM agents {where_clause} ORDER BY created_at DESC");
         let mut stmt = conn.prepare(&sql)?;
 
         let rows = stmt.query_map([], |row| {
