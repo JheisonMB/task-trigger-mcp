@@ -66,7 +66,10 @@ impl WatcherEngine {
             events,
             debounce_seconds,
             recursive,
-        } = agent.trigger.as_ref().ok_or_else(|| anyhow::anyhow!("Agent '{}' has no Watch trigger", agent.id))?
+        } = agent
+            .trigger
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' has no Watch trigger", agent.id))?
         else {
             return Err(anyhow::anyhow!("Agent '{}' trigger is not Watch", agent.id));
         };
@@ -157,8 +160,7 @@ impl WatcherEngine {
                     let Some(evt) = our_event else { return };
 
                     let matched = events.contains(&evt)
-                        || (evt == WatchEvent::Modify
-                            && events.contains(&WatchEvent::Create));
+                        || (evt == WatchEvent::Modify && events.contains(&WatchEvent::Create));
                     if !matched {
                         return;
                     }
@@ -197,11 +199,7 @@ impl WatcherEngine {
                             .execute_agent_with_context(&agent, &file_path, &evt_str)
                             .await
                         {
-                            tracing::error!(
-                                "Watcher '{}' execution failed: {}",
-                                agent.id,
-                                e
-                            );
+                            tracing::error!("Watcher '{}' execution failed: {}", agent.id, e);
                         }
                     });
                 },
