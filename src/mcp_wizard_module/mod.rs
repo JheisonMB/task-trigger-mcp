@@ -483,11 +483,11 @@ fn remove_server_from_platform(
 
 // ── Banner ─────────────────────────────────────────────────────────────────
 
+use crate::shared::banner;
+
 fn print_mcp_banner() {
-    println!("\x1b[32m{}\x1b[0m", setup::BANNER);
-    println!("  \x1b[1mAgent Hub — MCP Manager\x1b[0m");
-    println!("  ─────────────────────────────────────────────");
-    println!();
+    banner::print_banner_with_gradient("Agent Hub — MCP Manager");
+    // Removed duplicate line - banner function already prints the separator line
 }
 
 // ── Matrix table ───────────────────────────────────────────────────────────
