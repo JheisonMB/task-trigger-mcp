@@ -44,6 +44,19 @@ impl CronScheduler {
         Arc::clone(&self.notify)
     }
 
+    /// Initialize the last_fired tracking from database to prevent duplicate
+    /// executions after daemon restart.
+    async fn initialize_last_fired(&self) {
+        let mut last_fired = self.last_fired.lock().await;
+        if let Ok(agents) = self.db.list_cron_agents() {
+            for agent in agents {
+                if let Some(last_run_at) = agent.last_run_at {
+                    last_fired.insert(agent.id, last_run_at);
+                }
+            }
+        }
+    }
+
     /// Start the scheduler loop as a background tokio task.
     ///
     /// Returns a `CancellationToken` that can be used to stop the scheduler.
@@ -53,6 +66,8 @@ impl CronScheduler {
 
         tokio::spawn(async move {
             tracing::info!("Internal cron scheduler started");
+            // Initialize from database to prevent duplicate executions after restart
+            scheduler.initialize_last_fired().await;
             scheduler.run_loop().await;
             tracing::info!("Internal cron scheduler stopped");
         });
