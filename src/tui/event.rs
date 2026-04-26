@@ -15,6 +15,8 @@ use ratatui::crossterm::event::{
 use std::path::PathBuf;
 use std::time::Duration;
 
+// For relative path conversion
+
 use super::agent::key_to_bytes;
 use super::app::{AgentEntry, App, Focus, TerminalSearch};
 use super::ui;
@@ -547,20 +549,19 @@ fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) ->
     {
         app.show_copied = true;
         app.copied_at = std::time::Instant::now();
-        
+
         // Also copy plain text to clipboard for better external paste
         if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
             let idx = *idx;
             if let Some(agent) = app.interactive_agents.get(idx) {
                 if let Some(plain_text) = agent.get_plain_text_from_screen() {
                     // Try to copy to clipboard
-                    let _ = arboard::Clipboard::new().and_then(|mut clipboard| {
-                        clipboard.set_text(&plain_text)
-                    });
+                    let _ = arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(&plain_text));
                 }
             }
         }
-        
+
         return Ok(());
     }
 
@@ -2034,23 +2035,42 @@ fn handle_suggestion_picker_key(app: &mut App, code: KeyCode) -> Result<()> {
             }
         }
         KeyCode::Enter => {
-            // For cd mode, resolve full path from the browsed directory
+            // For cd mode, resolve path from the browsed directory
             let resolved = app.suggestion_picker.as_ref().and_then(|p| {
                 if p.mode != super::terminal_history::PickerMode::CdDirectory {
                     return p.selected_text().map(|t| (t.to_string(), false));
                 }
                 let selected = p.selected_text()?;
                 if selected == ".." {
-                    // Parent directory — use the cd_current_dir's parent
-                    let parent = p.cd_current_dir.as_ref()?.parent()?;
-                    return Some((parent.to_string_lossy().to_string(), true));
+                    // Parent directory — use relative path
+                    return Some(("..".to_string(), true));
                 }
                 let cd_dir = p.cd_current_dir.as_ref()?;
-                if let Some(stripped) = selected.strip_prefix("./") {
-                    let full = cd_dir.join(stripped);
-                    Some((full.to_string_lossy().to_string(), true))
+                let base_dir = p.cd_base_dir.as_ref()?;
+                
+                if selected == ".." {
+                    // Parent directory — compute relative path from base
+                    if let Some(relative_path) = pathdiff::diff_paths(cd_dir, base_dir) {
+                        let parent_relative = relative_path
+                            .parent()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or("..");
+                        Some((parent_relative.to_string(), true))
+                    } else {
+                        Some(("..".to_string(), true))
+                    }
+                } else if let Some(stripped) = selected.strip_prefix("./") {
+                    // Use relative path for subdirectories - maintain the ./ prefix for proper relative paths
+                    let relative_path = format!("./{}", stripped);
+                    Some((relative_path, true))
                 } else {
-                    Some((selected.to_string(), true))
+                    // For absolute paths from history, try to make them relative
+                    let cd_dir_str = cd_dir.to_string_lossy();
+                    if let Some(relative_path) = pathdiff::diff_paths(selected, &*cd_dir_str) {
+                        Some((relative_path.to_string_lossy().to_string(), true))
+                    } else {
+                        Some((selected.to_string(), true))
+                    }
                 }
             });
             app.suggestion_picker = None;
@@ -2081,6 +2101,59 @@ fn insert_suggestion_into_terminal(app: &mut App, text: &str, is_cd: bool) {
     let Some(agent) = app.terminal_agents.get_mut(idx) else {
         return;
     };
+
+    // If this is a CD command, update the working directory
+    if is_cd {
+        // Resolve the target directory relative to current working directory
+        let current_dir = PathBuf::from(&agent.working_dir);
+        let target_path = if text == ".." {
+            current_dir
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| current_dir)
+        } else if text.starts_with("../") {
+            // Handle multiple parent directory traversals (e.g., ../../dir)
+            let mut path = current_dir;
+            let parts: Vec<&str> = text.split('/').collect();
+            let mut parent_count = 0;
+
+            // Count how many ".." components we have
+            for part in &parts {
+                if *part == ".." {
+                    parent_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Go up the appropriate number of parent directories
+            for _ in 0..parent_count {
+                if let Some(parent) = path.parent() {
+                    path = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+
+            // Add any remaining path components after the ".."
+            if parts.len() > parent_count {
+                for part in parts.iter().skip(parent_count) {
+                    if !part.is_empty() {
+                        path = path.join(part);
+                    }
+                }
+            }
+
+            path
+        } else {
+            current_dir.join(text)
+        };
+
+        // Update working directory to the resolved absolute path
+        if let Ok(abs_path) = target_path.canonicalize() {
+            agent.update_working_dir(&abs_path.to_string_lossy());
+        }
+    }
 
     if agent.warp_mode {
         // Warp mode: only update the input buffer (PTY has nothing typed yet)
