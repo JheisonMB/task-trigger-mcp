@@ -61,6 +61,21 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = DIM;
     let row_h = 4u16;
     let grp_row_h = 2u16; // groups section: 1 line per group + spacer
+    let dashboard_area = if area.height >= 6 {
+        Some(Rect::new(area.x, area.y + area.height - 6, area.width, 6))
+    } else {
+        None
+    };
+    let content_area = if let Some(dashboard) = dashboard_area {
+        Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height.saturating_sub(dashboard.height),
+        )
+    } else {
+        area
+    };
 
     // Compute section areas dynamically
     let bg_needed = if has_bg {
@@ -86,11 +101,12 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let total_needed = bg_needed + ix_needed + term_needed + grp_needed;
 
     let section_count = has_bg as u16 + has_ix as u16 + has_term as u16 + has_groups as u16;
+    let mut brain_area: Option<Rect> = None;
 
-    let (bg_area, ix_area, term_area, grp_area) = if total_needed <= area.height
+    let (bg_area, ix_area, term_area, grp_area) = if total_needed <= content_area.height
         || section_count == 1
     {
-        let mut remaining = area;
+        let mut remaining = content_area;
         let bg_a = if has_bg {
             let [top, rest] = Layout::vertical([Constraint::Length(bg_needed), Constraint::Min(0)])
                 .areas(remaining);
@@ -117,15 +133,22 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
             None
         };
         let grp_a = if has_groups && remaining.height > 0 {
-            Some(remaining)
+            let [top, rest] =
+                Layout::vertical([Constraint::Length(grp_needed), Constraint::Min(0)])
+                    .areas(remaining);
+            remaining = rest;
+            Some(top)
         } else {
             None
         };
+        if remaining.height > 0 {
+            brain_area = Some(remaining);
+        }
         (bg_a, ix_a, term_a, grp_a)
     } else {
         // Distribute evenly
-        let per = area.height / section_count;
-        let mut remaining = area;
+        let per = content_area.height / section_count;
+        let mut remaining = content_area;
         let bg_a = if has_bg {
             let [top, rest] =
                 Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
@@ -208,6 +231,37 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         let inner = block.inner(grp_area);
         frame.render_widget(block, grp_area);
         draw_groups_list(frame, inner, app);
+    }
+
+    if let Some(brain_area) = brain_area.filter(|area| area.height >= 3 && area.width >= 6) {
+        let rows = brain_area.height as usize;
+        let cols = brain_area.width as usize;
+        let needs_reinit = match &app.sidebar_brain {
+            None => true,
+            Some(brain) => brain.rows != rows || brain.cols != cols,
+        };
+        if needs_reinit {
+            let mut brain = crate::tui::brians_brain::BriansBrain::new(rows, cols);
+            brain.activate();
+            app.sidebar_brain = Some(brain);
+        }
+        if let Some(brain) = app.sidebar_brain.as_mut() {
+            if !brain.active {
+                brain.activate();
+            }
+            brain.step();
+            crate::tui::ui::panel::draw_brians_brain(frame, brain_area, brain);
+        }
+    }
+
+    if let Some(dashboard_area) = dashboard_area {
+        let app_uptime_seconds = app.process_start_time.elapsed().as_secs();
+        crate::tui::ui::system_dashboard::render_system_dashboard(
+            frame,
+            dashboard_area,
+            &app.system_info,
+            app_uptime_seconds,
+        );
     }
 }
 

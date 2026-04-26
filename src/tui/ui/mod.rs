@@ -5,6 +5,7 @@ mod footer;
 mod header;
 mod panel;
 mod sidebar;
+mod system_dashboard;
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
