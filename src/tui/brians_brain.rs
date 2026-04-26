@@ -18,8 +18,13 @@ use std::time::Instant;
 
 // ── Automaton tuning ────────────────────────────────────────────
 
-const MIN_PARTICLE_THRESHOLD: f64 = 0.006;
-const EDGE_NOISE_PROBABILITY: f64 = 0.16;
+const MIN_PARTICLE_THRESHOLD: f64 = 0.010;
+const LOW_ACTIVITY_THRESHOLD: f64 = 0.024;
+const EDGE_NOISE_PROBABILITY: f64 = 0.22;
+const EDGE_PULSE_PROBABILITY: f64 = 0.08;
+const NOISE_PULSE_PROBABILITY: f64 = 0.12;
+const EDGE_PULSE_BURST_MIN: usize = 4;
+const EDGE_PULSE_BURST_MAX: usize = 14;
 
 // ── Glitch tuning ──────────────────────────────────────────────
 
@@ -517,22 +522,48 @@ impl BriansBrain {
         let total_cells = self.rows * self.cols;
         let particle_ratio = self.count_particles() as f64 / total_cells as f64;
         if particle_ratio < MIN_PARTICLE_THRESHOLD {
-            self.inject_edge_noise();
+            self.inject_edge_noise(EDGE_NOISE_PROBABILITY);
+        } else if particle_ratio < LOW_ACTIVITY_THRESHOLD {
+            self.inject_noise_pulse(EDGE_NOISE_PROBABILITY * 0.65);
+        } else if rand::random::<f64>() < NOISE_PULSE_PROBABILITY {
+            self.inject_noise_pulse(EDGE_PULSE_PROBABILITY);
         }
     }
 
-    fn inject_edge_noise(&mut self) {
+    fn inject_noise_pulse(&mut self, probability: f64) {
+        let burst_span = EDGE_PULSE_BURST_MAX - EDGE_PULSE_BURST_MIN + 1;
+        let burst_limit = EDGE_PULSE_BURST_MIN + rand::random::<u32>() as usize % burst_span.max(1);
+        let mut injected = 0usize;
+        for _ in 0..2 {
+            injected += self.inject_edge_noise_until(probability, burst_limit - injected);
+            if injected >= burst_limit {
+                break;
+            }
+        }
+    }
+
+    fn inject_edge_noise(&mut self, probability: f64) {
+        let _ = self.inject_edge_noise_until(probability, usize::MAX);
+    }
+
+    fn inject_edge_noise_until(&mut self, probability: f64, max_injections: usize) -> usize {
+        let mut injected = 0usize;
         for r in 0..self.rows {
             for c in 0..self.cols {
                 if self.is_edge_cell(r, c)
                     && self.grid[r][c] == CellState::Off
-                    && rand::random::<f64>() < EDGE_NOISE_PROBABILITY
+                    && rand::random::<f64>() < probability
                 {
                     self.grid[r][c] = CellState::On;
                     self.green_grid[r][c] = NOISE_GREEN;
+                    injected += 1;
+                    if injected >= max_injections {
+                        return injected;
+                    }
                 }
             }
         }
+        injected
     }
 
     fn count_on_neighbors(&self, row: usize, col: usize) -> usize {

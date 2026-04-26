@@ -46,7 +46,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
                 Duration::from_millis(50)
             }
             Focus::Home if app.brain.as_ref().is_some_and(|b| b.active) => {
-                Duration::from_millis(110)
+                Duration::from_millis(200)
             }
             _ => Duration::from_secs(1),
         };

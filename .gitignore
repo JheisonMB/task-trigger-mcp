@@ -10,6 +10,7 @@
 .qwen/
 .agents/
 .codex/
+.codex
 skills-lock.json
 
 ### Rust ###

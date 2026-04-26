@@ -47,7 +47,11 @@ fn create_system_dashboard_lines(
         Line::from(vec![
             Span::styled("cpu: ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("{:.0}%", system_info.cpu_usage_percent()),
+                if let Some(temp) = system_info.cpu_temperature_celsius() {
+                    format!("{:.0}% {:.0}C", system_info.cpu_usage_percent(), temp)
+                } else {
+                    format!("{:.0}%", system_info.cpu_usage_percent())
+                },
                 Style::default().fg(DIM),
             ),
         ]),
@@ -85,10 +89,24 @@ fn create_system_dashboard_lines(
             Line::from(vec![
                 Span::styled("gpu: ", Style::default().fg(Color::White)),
                 if let Some(gpu) = &system_info.gpu_info {
-                    let gpu_text = if gpu.vendor.eq_ignore_ascii_case("system") {
+                    let metrics = match (gpu.usage, gpu.temperature) {
+                        (Some(usage), Some(temp)) => Some(format!("{usage:.0}% {temp:.0}C")),
+                        (Some(usage), None) => Some(format!("{usage:.0}%")),
+                        (None, Some(temp)) => Some(format!("{temp:.0}C")),
+                        (None, None) => None,
+                    };
+                    let gpu_text = if let Some(metrics) = metrics {
+                        if gpu.vendor.eq_ignore_ascii_case("system")
+                            || (gpu.vendor.is_empty() && gpu.name.is_empty())
+                        {
+                            metrics
+                        } else {
+                            format!("{} {}", compact_gpu_name(gpu), metrics)
+                        }
+                    } else if gpu.vendor.eq_ignore_ascii_case("system") || gpu.vendor.is_empty() {
                         gpu.name.clone()
                     } else {
-                        format!("{} {}", gpu.vendor, gpu.name)
+                        compact_gpu_name(gpu)
                     };
                     Span::styled(gpu_text, Style::default().fg(DIM))
                 } else {
@@ -99,6 +117,17 @@ fn create_system_dashboard_lines(
     }
 
     lines
+}
+
+fn compact_gpu_name(gpu: &crate::system::GpuInfo) -> String {
+    if gpu.name.is_empty() {
+        return gpu.vendor.clone();
+    }
+    if gpu.vendor.is_empty() || gpu.name.starts_with(&gpu.vendor) {
+        gpu.name.clone()
+    } else {
+        format!("{} {}", gpu.vendor, gpu.name)
+    }
 }
 
 #[cfg(test)]
