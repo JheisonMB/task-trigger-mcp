@@ -467,24 +467,18 @@ fn render_vt_screen_with_mask(
 // ── Canopy banner ───────────────────────────────────────────────
 
 fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
-    const BANNER: &str = r#"
-  ██████   ██████   ████████    ██████  ████████  █████ ████
- ███░░███ ░░░░░███ ░░███░░███  ███░░███░░███░░███░░███ ░███
-░███ ░░░   ███████  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███
-░███  ███ ███░░███  ░███ ░███ ░███ ░███ ░███ ░███ ░███ ░███
-░░██████ ░░████████ ████ █████░░██████  ░███████  ░░███████
- ░░░░░░   ░░░░░░░░ ░░░░ ░░░░░  ░░░░░░   ░███░░░    ░░░░░███
-                                        ░███       ███ ░███
-                                        █████     ░░██████
-                                       ░░░░░       ░░░░░░
-"#;
-
-    let lines: Vec<Line> = BANNER
-        .lines()
-        .map(|l| {
+    let banner = crate::shared::banner::BANNER.trim_matches('\n');
+    let banner_lines: Vec<&str> = banner.lines().collect();
+    let lines: Vec<Line> = banner_lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let (r, g, b) = crate::shared::banner::gradient_rgb(i, banner_lines.len());
             Line::from(Span::styled(
-                l.to_string(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                (*l).to_string(),
+                Style::default()
+                    .fg(Color::Rgb(r, g, b))
+                    .add_modifier(Modifier::BOLD),
             ))
         })
         .collect();
@@ -519,10 +513,14 @@ pub(crate) fn draw_brians_brain(
 
     if !brain.active {
         // Pre-activation: render banner overlay with glitch effects.
-        let accent_dim = Color::Rgb(80, 140, 80);
         let glitch_color = Color::Rgb(50, 220, 50);
         let (vx, vy) = brain.vibration;
-        for br in brain.visible_overlay() {
+        let overlay = brain.visible_overlay();
+        let total_rows = overlay.len();
+        for (row_idx, br) in overlay.into_iter().enumerate() {
+            let (r, g, b) = crate::shared::banner::gradient_rgb(row_idx, total_rows);
+            let accent = Color::Rgb(r, g, b);
+            let accent_dim = Color::Rgb(r.saturating_sub(40), g.saturating_sub(40), b);
             let render_row = br.row as i32 + vy as i32;
             if render_row < 0 || render_row as u16 >= area.height {
                 continue;
@@ -538,7 +536,7 @@ pub(crate) fn draw_brians_brain(
                 match kind {
                     BannerCellKind::Block => {
                         buf_cell.set_symbol("█");
-                        buf_cell.set_style(Style::default().fg(ACCENT));
+                        buf_cell.set_style(Style::default().fg(accent));
                     }
                     BannerCellKind::Shade => {
                         buf_cell.set_symbol("░");

@@ -1,6 +1,6 @@
 //! Unit tests for daemon module
 
-use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
+use crate::application::ports::StateRepository;
 use crate::daemon::process::is_process_running;
 use crate::db::Database;
 use tempfile::tempdir;
@@ -21,7 +21,7 @@ mod tests {
         assert!(result);
 
         // Test with non-existent process (likely to be false)
-        let result = is_process_running(999999);
+        let _result = is_process_running(999999);
         // We can't assert !result because the process might exist
         // Just verify the function doesn't panic
     }

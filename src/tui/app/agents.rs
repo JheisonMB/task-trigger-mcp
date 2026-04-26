@@ -63,13 +63,9 @@ impl App {
 
         if let Some(ref mut brain) = self.brain {
             if brain.should_activate() {
-                brain.activate();
+                brain.reset();
             }
-            if brain.active {
-                brain.step();
-            } else {
-                brain.tick();
-            }
+            brain.tick();
         }
     }
 
