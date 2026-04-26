@@ -294,7 +294,6 @@ impl SystemInfo {
             format!("{}s", seconds)
         }
     }
-
 }
 
 fn detect_host_platform() -> HostPlatform {
