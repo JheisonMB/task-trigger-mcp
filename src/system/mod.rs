@@ -248,14 +248,6 @@ impl SystemInfo {
         self.cpu_usage
     }
 
-    pub fn memory_usage_percent(&self) -> f32 {
-        if self.memory_total > 0 {
-            (self.memory_used as f32 / self.memory_total as f32) * 100.0
-        } else {
-            0.0
-        }
-    }
-
     pub fn memory_used_gb(&self) -> f32 {
         bytes_to_gigabytes(self.memory_used)
     }
@@ -303,9 +295,6 @@ impl SystemInfo {
         }
     }
 
-    pub fn canopy_uptime() -> String {
-        "0m".to_string()
-    }
 }
 
 fn detect_host_platform() -> HostPlatform {
@@ -402,7 +391,11 @@ mod tests {
     #[test]
     fn test_memory_calculations() {
         let info = SystemInfo::new();
-        let percent = info.memory_usage_percent();
+        let percent = if info.memory_total > 0 {
+            (info.memory_used as f32 / info.memory_total as f32) * 100.0
+        } else {
+            0.0
+        };
         assert!((0.0..=100.0).contains(&percent));
 
         let used_gb = info.memory_used_gb();
@@ -416,9 +409,6 @@ mod tests {
         let info = SystemInfo::new();
         let formatted = info.format_uptime();
         assert!(!formatted.is_empty());
-
-        let canopy_uptime = SystemInfo::canopy_uptime();
-        assert!(!canopy_uptime.is_empty());
     }
 
     #[test]
