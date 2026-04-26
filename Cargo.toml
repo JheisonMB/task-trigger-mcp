@@ -92,6 +92,9 @@ rand = "0.10"
 arboard = "3.6"
 toml = "1.1.2"
 
+# Path manipulation for relative paths
+pathdiff = "0.2"
+
 # Auto-update dependencies
 flate2 = "1.0"
 tar = "0.4"
