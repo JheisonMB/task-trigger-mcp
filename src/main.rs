@@ -18,6 +18,7 @@ mod executor;
 mod mcp_wizard_module;
 mod scheduler;
 mod setup_module;
+mod shared;
 mod skills_module;
 mod tui;
 mod watchers;
