@@ -1092,7 +1092,12 @@ impl InteractiveAgent {
 
     /// Get plain text from a specific selection area.
     /// Used when user selects text with mouse.
-    pub fn get_plain_text_from_selection(&self, start_row: usize, end_row: usize) -> Option<String> {
+    #[allow(dead_code)]
+    pub fn get_plain_text_from_selection(
+        &self,
+        start_row: usize,
+        end_row: usize,
+    ) -> Option<String> {
         let vt = self.vt.lock().ok()?;
         let screen = vt.screen();
         let (rows, cols) = screen.size();
@@ -1107,7 +1112,7 @@ impl InteractiveAgent {
         for row in start_row..=end_row {
             let mut line = String::new();
             for col in 0..cols {
-                if let Some(cell) = screen.cell(row as u16, col as u16) {
+                if let Some(cell) = screen.cell(row as u16, col) {
                     line.push_str(cell.contents());
                 }
             }
@@ -1195,6 +1200,11 @@ impl InteractiveAgent {
                 self.write_to_pty(&bytes)
             }
         }
+    }
+
+    /// Update the working directory. Used when CD command is executed.
+    pub fn update_working_dir(&mut self, new_dir: &str) {
+        self.working_dir = new_dir.to_string();
     }
 }
 
