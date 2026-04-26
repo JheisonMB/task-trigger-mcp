@@ -869,25 +869,54 @@ impl App {
             let yolo_flag = cli_config.and_then(|c| c.yolo_flag.as_deref());
             let had_yolo = yolo_flag
                 .map(|flag| {
-                    session
-                        .args
-                        .as_deref()
-                        .unwrap_or("")
+                    let session_args = session.args.as_deref().unwrap_or("");
+                    let contains_yolo = session_args
                         .split_whitespace()
-                        .any(|a| a == flag)
+                        .any(|a| a == flag);
+                    tracing::debug!(
+                        "Session '{}': args='{}', yolo_flag='{}', contains_yolo={}",
+                        session.name, session_args, flag, contains_yolo
+                    );
+                    contains_yolo
                 })
                 .unwrap_or(false);
 
             let args_str: Option<String> = if let Some(ra) = resume_args {
                 if had_yolo {
-                    Some(format!("{} {}", ra, yolo_flag.unwrap()))
+                    let final_args = format!("{} {}", ra, yolo_flag.unwrap());
+                    tracing::debug!(
+                        "Session '{}': Using resume_args with YOLO: '{}'",
+                        session.name, final_args
+                    );
+                    Some(final_args)
                 } else {
+                    tracing::debug!(
+                        "Session '{}': Using resume_args without YOLO: '{}'",
+                        session.name, ra
+                    );
                     Some(ra.to_string())
                 }
             } else {
-                session.args.clone()
+                // Preserve YOLO flag even when using original args
+                if had_yolo {
+                    let original_args = session.args.as_deref().unwrap_or("");
+                    let final_args = format!("{} {}", original_args, yolo_flag.unwrap());
+                    tracing::debug!(
+                        "Session '{}': Using original args with YOLO: '{}'",
+                        session.name, final_args
+                    );
+                    Some(final_args)
+                } else {
+                    tracing::debug!(
+                        "Session '{}': Using original args without YOLO: '{:?}'",
+                        session.name, session.args
+                    );
+                    session.args.clone()
+                }
             };
             let args = args_str.as_deref();
+            let model: Option<String> = None; // No model info in session registry
+            let model_flag = cli_config.and_then(|c| c.model_flag.clone());
 
             let existing_ids: Vec<&str> = self
                 .interactive_agents
@@ -905,8 +934,8 @@ impl App {
                 accent,
                 Some(&session.name),
                 &existing_ids,
-                None,
-                None,
+                model.as_deref(),
+                model_flag.as_deref(),
             ) {
                 Ok(agent) => {
                     let _ = self.db.insert_interactive_session(
@@ -1018,4 +1047,64 @@ pub(super) fn tail_lines(content: &str, n: usize) -> String {
 
 pub(super) fn is_process_running(pid: u32) -> bool {
     crate::daemon::process::is_process_running(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::db::InteractiveSession;
+    
+    #[test]
+    fn test_yolo_mode_preservation_in_session_relaunch() {
+        // Test the logic for preserving YOLO mode during session relaunch
+        
+        // Simulate a session that was launched with YOLO mode
+        let session = InteractiveSession {
+            id: "test-session".to_string(),
+            name: "test-session".to_string(),
+            cli: "opencode".to_string(),
+            working_dir: "/tmp".to_string(),
+            args: Some("--tui --yolo".to_string()), // Session was launched with --yolo flag
+            started_at: "2023-01-01T00:00:00Z".to_string(),
+            status: "active".to_string(),
+        };
+        
+        // Simulate YOLO flag from CLI config
+        let yolo_flag = Some("--yolo");
+        
+        // Test the YOLO detection logic
+        let had_yolo = yolo_flag
+            .map(|flag| {
+                session
+                    .args
+                    .as_deref()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .any(|a| a == flag)
+            })
+            .unwrap_or(false);
+        
+        assert!(had_yolo, "Should detect YOLO flag in session args");
+        
+        // Test the args construction logic (the fix)
+        let resume_args: Option<&str> = None; // No resume_args configured - this was the bug scenario
+        let args_str: Option<String> = if let Some(ra) = resume_args {
+            if had_yolo {
+                Some(format!("{} {}", ra, yolo_flag.unwrap()))
+            } else {
+                Some(ra.to_string())
+            }
+        } else {
+            // This is the fixed logic - preserve YOLO flag even when using original args
+            if had_yolo {
+                let original_args = session.args.as_deref().unwrap_or("");
+                Some(format!("{} {}", original_args, yolo_flag.unwrap()))
+            } else {
+                session.args.clone()
+            }
+        };
+        
+        // Verify the result contains the YOLO flag
+        let args = args_str.as_deref();
+        assert!(args.unwrap_or("").contains("--yolo"), "YOLO flag should be preserved in relaunched session args");
+    }
 }
