@@ -159,6 +159,7 @@ pub fn from_global_catalog(input: &str, data_dir: &Path, _cwd: &str) -> Suggesti
         items,
         selected: 0,
         scroll_offset: 0,
+        cd_base_dir: None,
         cd_current_dir: None,
     }
 }
@@ -239,6 +240,8 @@ pub struct SuggestionPicker {
     pub selected: usize,
     /// Scroll offset for windowed rendering (first visible item index).
     pub scroll_offset: usize,
+    /// For cd mode: the base directory from which navigation started.
+    pub cd_base_dir: Option<PathBuf>,
     /// For cd mode: the current directory being browsed.
     pub cd_current_dir: Option<PathBuf>,
 }
@@ -288,6 +291,7 @@ impl SuggestionPicker {
             items,
             selected: 0,
             scroll_offset: 0,
+            cd_base_dir: None,
             cd_current_dir: None,
         }
     }
@@ -345,6 +349,7 @@ impl SuggestionPicker {
             items,
             selected: 0,
             scroll_offset: 0,
+            cd_base_dir: Some(PathBuf::from(cwd)),
             cd_current_dir: Some(PathBuf::from(cwd)),
         }
     }
@@ -439,11 +444,28 @@ impl SuggestionPicker {
         let Some(cwd_path) = self.cd_current_dir.as_ref() else {
             return;
         };
+        let Some(base_path) = self.cd_base_dir.as_ref() else {
+            return;
+        };
         let cwd = cwd_path.to_string_lossy().to_string();
         let mut items = Vec::new();
 
-        // Show current directory as header hint
-        self.input = abbreviate_path(&cwd);
+        // Compute relative path from base directory for display
+        if let Some(relative_path) = pathdiff::diff_paths(&cwd, base_path) {
+            let relative_str = relative_path.to_string_lossy().to_string();
+            // Convert to relative path format (./subdir or ../parent)
+            let display_path = if relative_str.starts_with("..") {
+                relative_str
+            } else if relative_str == "." {
+                ".".to_string()
+            } else {
+                format!("./{}", relative_str)
+            };
+            self.input = display_path;
+        } else {
+            // Fallback to abbreviated path if relative path computation fails
+            self.input = abbreviate_path(&cwd);
+        }
 
         // Add parent entry if not at root
         if cwd_path
