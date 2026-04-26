@@ -197,18 +197,21 @@ impl Executor {
             }
         }
 
-        if result.success {
-            self.notification_service.notify_task_completed(
-                &agent.id,
-                true,
-                Some(result.exit_code),
-            );
-        } else {
-            self.notification_service.notify_task_failed(
-                &agent.id,
-                result.exit_code,
-                &format!("Agent failed with exit code {}", result.exit_code),
-            );
+        let agent_still_exists = self.db.get_agent(&agent.id).ok().flatten().is_some();
+        if agent_still_exists {
+            if result.success {
+                self.notification_service.notify_task_completed(
+                    &agent.id,
+                    true,
+                    Some(result.exit_code),
+                );
+            } else {
+                self.notification_service.notify_task_failed(
+                    &agent.id,
+                    result.exit_code,
+                    &format!("Agent failed with exit code {}", result.exit_code),
+                );
+            }
         }
 
         Ok(result.exit_code)
@@ -312,19 +315,22 @@ impl Executor {
             );
         }
 
-        if result.success {
-            self.notification_service.notify_task_completed(
-                &agent.id,
-                true,
-                Some(result.exit_code),
-            );
-        } else {
-            self.notification_service.notify_agent_failed(
-                &agent.id,
-                agent.cli.as_str(),
-                result.exit_code,
-                &format!("Watcher agent failed with exit code {}", result.exit_code),
-            );
+        let agent_still_exists = self.db.get_agent(&agent.id).ok().flatten().is_some();
+        if agent_still_exists {
+            if result.success {
+                self.notification_service.notify_task_completed(
+                    &agent.id,
+                    true,
+                    Some(result.exit_code),
+                );
+            } else {
+                self.notification_service.notify_agent_failed(
+                    &agent.id,
+                    agent.cli.as_str(),
+                    result.exit_code,
+                    &format!("Watcher agent failed with exit code {}", result.exit_code),
+                );
+            }
         }
 
         Ok(result.exit_code)

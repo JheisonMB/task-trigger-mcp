@@ -2035,43 +2035,11 @@ fn handle_suggestion_picker_key(app: &mut App, code: KeyCode) -> Result<()> {
             }
         }
         KeyCode::Enter => {
-            // For cd mode, resolve path from the browsed directory
             let resolved = app.suggestion_picker.as_ref().and_then(|p| {
                 if p.mode != super::terminal_history::PickerMode::CdDirectory {
                     return p.selected_text().map(|t| (t.to_string(), false));
                 }
-                let selected = p.selected_text()?;
-                if selected == ".." {
-                    // Parent directory — use relative path
-                    return Some(("..".to_string(), true));
-                }
-                let cd_dir = p.cd_current_dir.as_ref()?;
-                let base_dir = p.cd_base_dir.as_ref()?;
-                
-                if selected == ".." {
-                    // Parent directory — compute relative path from base
-                    if let Some(relative_path) = pathdiff::diff_paths(cd_dir, base_dir) {
-                        let parent_relative = relative_path
-                            .parent()
-                            .and_then(|p| p.to_str())
-                            .unwrap_or("..");
-                        Some((parent_relative.to_string(), true))
-                    } else {
-                        Some(("..".to_string(), true))
-                    }
-                } else if let Some(stripped) = selected.strip_prefix("./") {
-                    // Use relative path for subdirectories - maintain the ./ prefix for proper relative paths
-                    let relative_path = format!("./{}", stripped);
-                    Some((relative_path, true))
-                } else {
-                    // For absolute paths from history, try to make them relative
-                    let cd_dir_str = cd_dir.to_string_lossy();
-                    if let Some(relative_path) = pathdiff::diff_paths(selected, &*cd_dir_str) {
-                        Some((relative_path.to_string_lossy().to_string(), true))
-                    } else {
-                        Some((selected.to_string(), true))
-                    }
-                }
+                resolve_cd_picker_selection(p).map(|text| (text, true))
             });
             app.suggestion_picker = None;
 
@@ -2085,6 +2053,30 @@ fn handle_suggestion_picker_key(app: &mut App, code: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn resolve_cd_picker_selection(
+    picker: &super::terminal_history::SuggestionPicker,
+) -> Option<String> {
+    let selected = picker.selected_text()?;
+    let cd_dir = picker.cd_current_dir.as_ref()?;
+    let base_dir = picker.cd_base_dir.as_ref()?;
+
+    let absolute_target = if selected == ".." {
+        cd_dir.parent()?.to_path_buf()
+    } else if let Some(stripped) = selected.strip_prefix("./") {
+        cd_dir.join(stripped)
+    } else {
+        PathBuf::from(selected)
+    };
+
+    let relative = pathdiff::diff_paths(&absolute_target, base_dir).unwrap_or(absolute_target);
+    let text = relative.to_string_lossy().to_string();
+    if text.is_empty() {
+        Some(".".to_string())
+    } else {
+        Some(text)
+    }
 }
 
 /// Insert the selected suggestion into the terminal's input.
@@ -2360,4 +2352,51 @@ fn handle_terminal_search_key(app: &mut App, code: KeyCode) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_cd_picker_selection;
+    use crate::tui::terminal_history::{PickerMode, SuggestionItem, SuggestionPicker};
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_cd_picker_selection_keeps_downstream_path() {
+        let picker = SuggestionPicker {
+            input: "./alpha".to_string(),
+            mode: PickerMode::CdDirectory,
+            items: vec![SuggestionItem {
+                text: "./beta".to_string(),
+                label: "./beta".to_string(),
+                count: 0,
+            }],
+            selected: 0,
+            scroll_offset: 0,
+            cd_base_dir: Some(PathBuf::from("/repo")),
+            cd_current_dir: Some(PathBuf::from("/repo/alpha")),
+        };
+
+        let resolved = resolve_cd_picker_selection(&picker).unwrap();
+        assert_eq!(resolved, "alpha/beta");
+    }
+
+    #[test]
+    fn test_cd_picker_selection_keeps_parent_path_relative_to_base() {
+        let picker = SuggestionPicker {
+            input: "./alpha/beta".to_string(),
+            mode: PickerMode::CdDirectory,
+            items: vec![SuggestionItem {
+                text: "..".to_string(),
+                label: "../".to_string(),
+                count: 0,
+            }],
+            selected: 0,
+            scroll_offset: 0,
+            cd_base_dir: Some(PathBuf::from("/repo")),
+            cd_current_dir: Some(PathBuf::from("/repo/alpha/beta")),
+        };
+
+        let resolved = resolve_cd_picker_selection(&picker).unwrap();
+        assert_eq!(resolved, "alpha");
+    }
 }

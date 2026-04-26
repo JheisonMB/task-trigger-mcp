@@ -63,21 +63,21 @@ impl App {
         if self.notifications_enabled {
             for finished_id in &prev_ids {
                 if !self.active_runs.contains_key(finished_id.as_str()) {
-                    // Check if the task completed successfully by looking at the run status
-                    if let Some(run) = self.db.get_run(finished_id).ok().flatten() {
+                    if self.db.get_agent(finished_id).ok().flatten().is_none() {
+                        continue;
+                    }
+                    if let Some(run) = self
+                        .db
+                        .list_runs(finished_id, 1)
+                        .ok()
+                        .and_then(|mut runs| runs.drain(..).next())
+                    {
                         let success =
                             matches!(run.status, crate::domain::models::RunStatus::Success);
                         self.notification_service.notify_task_completed(
                             finished_id,
                             success,
                             run.exit_code,
-                        );
-                    } else {
-                        // Fallback if we can't get run details
-                        self.notification_service.notify_task_completed(
-                            finished_id,
-                            true, // Assume success if we can't determine
-                            None,
                         );
                     }
                 }

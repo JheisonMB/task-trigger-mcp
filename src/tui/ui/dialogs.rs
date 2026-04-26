@@ -1344,6 +1344,7 @@ fn generate_bottom_border(width: u16, style: Style) -> Line<'static> {
 fn draw_at_picker_dropdown(
     frame: &mut Frame,
     dialog_area: ratatui::layout::Rect,
+    anchor_area: ratatui::layout::Rect,
     accent: Color,
     dialog: &SimplePromptDialog,
 ) {
@@ -1352,21 +1353,33 @@ fn draw_at_picker_dropdown(
     };
 
     const MAX_VISIBLE: usize = 8;
-    let n = picker.entries.len().clamp(1, MAX_VISIBLE);
-    let drop_h = n as u16 + 2; // entries + top/bottom border
-
-    // Try to place the dropdown right below the dialog; flip above if no room.
     let screen_h = frame.area().height;
-    let drop_y = if dialog_area.y + dialog_area.height + drop_h <= screen_h {
-        dialog_area.y + dialog_area.height
-    } else if dialog_area.y >= drop_h {
-        dialog_area.y - drop_h
+    let available_below = screen_h.saturating_sub(anchor_area.y + anchor_area.height);
+    let available_above = anchor_area.y.saturating_sub(dialog_area.y);
+
+    let prefer_below = available_below >= 3 || available_below >= available_above;
+    let available_space = if prefer_below {
+        available_below
     } else {
-        return; // no room at all
+        available_above
+    };
+    let visible_items = picker
+        .entries
+        .len()
+        .clamp(1, MAX_VISIBLE)
+        .min(available_space.saturating_sub(2) as usize);
+    if visible_items == 0 {
+        return;
+    }
+    let drop_h = visible_items as u16 + 2;
+    let drop_y = if prefer_below {
+        anchor_area.y + anchor_area.height
+    } else {
+        anchor_area.y.saturating_sub(drop_h)
     };
 
     let drop_area = ratatui::layout::Rect {
-        x: dialog_area.x,
+        x: anchor_area.x.saturating_sub(1).max(dialog_area.x),
         y: drop_y,
         width: dialog_area.width,
         height: drop_h,
@@ -1403,7 +1416,7 @@ fn draw_at_picker_dropdown(
         .entries
         .iter()
         .skip(scroll)
-        .take(MAX_VISIBLE)
+        .take(visible_items)
         .enumerate()
         .map(|(i, entry)| {
             let abs_idx = i + scroll;
@@ -1590,6 +1603,7 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     // sections_available_h = inner height minus hint(1) + blank(1).
     let sections_top = inner.y + 2;
     let sections_available_h = inner.height.saturating_sub(2);
+    let mut picker_anchor_area: Option<ratatui::layout::Rect> = None;
 
     // Work backwards from focused_section to find the first section that fits.
     let start_idx = {
@@ -1697,6 +1711,9 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             width: inner.width.saturating_sub(2),
             height: instruction_display_height,
         };
+        if is_instruction_focused {
+            picker_anchor_area = Some(content_area);
+        }
         frame.render_widget(instruction_paragraph, content_area);
         y_pos += instruction_display_height;
 
@@ -1852,6 +1869,9 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             width: inner.width.saturating_sub(2),
             height: content_height,
         };
+        if is_focused {
+            picker_anchor_area = Some(content_area);
+        }
         frame.render_widget(content_paragraph, content_area);
         y_pos += content_height;
 
@@ -1902,7 +1922,8 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
     // Draw @ file picker dropdown if active
     if dialog.at_picker.is_some() {
-        draw_at_picker_dropdown(frame, area, accent, dialog);
+        let anchor = picker_anchor_area.unwrap_or(inner);
+        draw_at_picker_dropdown(frame, area, anchor, accent, dialog);
     }
 
     // Draw picker modal if open
