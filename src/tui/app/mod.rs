@@ -106,12 +106,14 @@ pub struct App {
     pub new_agent_dialog: Option<NewAgentDialog>,
     pub quit_confirm: bool,
 
-    // Brian's Brain automaton
-    pub brain: Option<super::brians_brain::BriansBrain>,
+    // Banner glitch animation (panel home screen)
+    pub banner_glitch: Option<super::banner_glitch::BannerGlitch>,
+    // Brian's Brain automaton (sidebar decoration)
     pub sidebar_brain: Option<super::brians_brain::BriansBrain>,
 
-    // System monitoring
+    // System monitoring (updated asynchronously to avoid UI freezes)
     pub system_info: crate::system::SystemInfo,
+    system_info_rx: std::sync::mpsc::Receiver<crate::system::SystemInfo>,
     pub last_system_update: std::time::Instant,
     pub process_start_time: std::time::Instant,
 
@@ -279,6 +281,18 @@ impl TerminalSearch {
 
 impl App {
     pub fn new(db: Arc<Database>, data_dir: &Path) -> Result<Self> {
+        let (system_info_tx, system_info_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let initial = crate::system::SystemInfo::new();
+            let _ = system_info_tx.send(initial);
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                let mut info = crate::system::SystemInfo::default();
+                info.update();
+                let _ = system_info_tx.send(info);
+            }
+        });
+
         let mut app = Self {
             db,
             data_dir: data_dir.to_path_buf(),
@@ -304,7 +318,7 @@ impl App {
             running: true,
             new_agent_dialog: None,
             quit_confirm: false,
-            brain: None,
+            banner_glitch: None,
             sidebar_brain: None,
             sidebar_click_map: Vec::new(),
             sidebar_visible: true,
@@ -328,8 +342,9 @@ impl App {
             suggestion_picker: None,
             terminal_histories: HashMap::new(),
             terminal_search: None,
-            system_info: crate::system::SystemInfo::new(),
-            last_system_update: std::time::Instant::now(),
+            system_info: crate::system::SystemInfo::default(),
+            system_info_rx,
+            last_system_update: std::time::Instant::now() - std::time::Duration::from_secs(10),
             process_start_time: std::time::Instant::now(),
         };
         app.refresh()?;
@@ -344,16 +359,17 @@ impl App {
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
         self.poll_terminal_agents();
-        self.tick_brians_brain();
+        self.tick_banner_glitch();
+        self.ensure_sidebar_brain();
         self.refresh_log();
         self.auto_hide_sidebar();
         self.dismiss_copied();
         self.update_whimsg_context();
         self.resize_interactive_agents();
 
-        // Update system info periodically (every 5 seconds)
-        if self.last_system_update.elapsed().as_secs() >= 5 {
-            self.system_info.update();
+        // Non-blocking check for updated system info from background thread
+        while let Ok(info) = self.system_info_rx.try_recv() {
+            self.system_info = info;
             self.last_system_update = std::time::Instant::now();
         }
 

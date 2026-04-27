@@ -92,8 +92,10 @@ impl SystemInfo {
     }
 
     pub fn update(&mut self) {
-        let mut system = System::new_all();
-        system.refresh_all();
+        // Lightweight refresh: only CPU and memory, not all processes
+        let mut system = System::new();
+        system.refresh_cpu_usage();
+        system.refresh_memory();
 
         self.cpu_usage = system.global_cpu_usage();
         self.cpu_temperature = None;
@@ -122,7 +124,9 @@ impl SystemInfo {
         if let Some(memory_total) = host_metrics.memory_total {
             self.memory_total = memory_total;
         }
-        self.gpu_info = host_metrics.gpu_info;
+        if let Some(gpu) = host_metrics.gpu_info {
+            self.gpu_info = Some(gpu);
+        }
     }
 
     fn read_component_metrics(&self) -> HostMetrics {

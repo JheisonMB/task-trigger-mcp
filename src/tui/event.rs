@@ -42,12 +42,15 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             {
                 Duration::from_millis(100)
             }
-            Focus::Home if app.brain.as_ref().is_some_and(|b| !b.active) => {
+            Focus::Home
+                if app
+                    .banner_glitch
+                    .as_ref()
+                    .is_some_and(|g| g.vibration != (0, 0)) =>
+            {
                 Duration::from_millis(50)
             }
-            Focus::Home if app.brain.as_ref().is_some_and(|b| b.active) => {
-                Duration::from_millis(200)
-            }
+            Focus::Home => Duration::from_millis(200),
             _ => Duration::from_secs(1),
         };
 
@@ -707,12 +710,7 @@ fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Re
             }
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
-        _ => {
-            // Any unbound key resets the brain animation back to the banner
-            if app.brain.as_ref().is_some_and(|b| b.active) {
-                app.dismiss_brain();
-            }
-        }
+        _ => {}
     }
     Ok(())
 }

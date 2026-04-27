@@ -40,7 +40,7 @@ fn recent_output_snippet(agent: &InteractiveAgent, n: usize) -> String {
 }
 
 impl App {
-    pub fn tick_brians_brain(&mut self) {
+    pub fn tick_banner_glitch(&mut self) {
         if self.focus != Focus::Home {
             return;
         }
@@ -53,25 +53,62 @@ impl App {
             return;
         }
 
-        let needs_reinit = match &self.brain {
+        let needs_reinit = match &self.banner_glitch {
             None => true,
             Some(b) => b.rows != rows || b.cols != cols,
         };
         if needs_reinit {
-            self.brain = Some(super::super::brians_brain::BriansBrain::new(rows, cols));
+            self.banner_glitch = Some(super::super::banner_glitch::BannerGlitch::new(rows, cols));
         }
 
-        if let Some(ref mut brain) = self.brain {
-            if brain.should_activate() {
-                brain.reset();
-            }
-            brain.tick();
+        if let Some(ref mut glitch) = self.banner_glitch {
+            glitch.tick();
+        }
+    }
+
+    pub fn ensure_sidebar_brain(&mut self) {
+        // The exact sidebar brain dimensions depend on layout (agent card count, etc.)
+        // so we compute them the same way sidebar.rs does.
+        let (_tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+        let sidebar_w = 29u16;
+        let sidebar_h = th.saturating_sub(2); // minus header + footer
+
+        // Approximate: inner width = sidebar - 2 borders
+        let inner_w = sidebar_w.saturating_sub(2) as usize;
+        // Dashboard takes 6 rows if sidebar is tall enough
+        let dashboard_h = if sidebar_h >= 6 { 6 } else { 0 };
+        let content_h = sidebar_h.saturating_sub(dashboard_h) as usize;
+
+        // The brain gets whatever space is left after agent cards.
+        // We can't know the exact amount without rendering, so use the full
+        // content height as a max bound. The sidebar clips to brain_area anyway.
+        let rows = content_h;
+        let cols = inner_w;
+
+        if cols < 6 || rows < 3 {
+            return;
+        }
+
+        let needs_reinit = match &self.sidebar_brain {
+            None => true,
+            Some(b) => b.rows != rows || b.cols != cols,
+        };
+        if needs_reinit {
+            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 250);
+            // Allow immediate first step
+            brain.last_step = std::time::Instant::now()
+                - std::time::Duration::from_millis(brain.step_interval_ms);
+            self.sidebar_brain = Some(brain);
+        }
+
+        if let Some(ref mut brain) = self.sidebar_brain {
+            brain.step();
         }
     }
 
     pub fn dismiss_brain(&mut self) {
-        if let Some(ref mut brain) = self.brain {
-            brain.reset();
+        if let Some(ref mut glitch) = self.banner_glitch {
+            *glitch = super::super::banner_glitch::BannerGlitch::new(glitch.rows, glitch.cols);
         }
     }
 
