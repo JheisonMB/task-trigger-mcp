@@ -106,10 +106,10 @@ pub struct App {
     pub new_agent_dialog: Option<NewAgentDialog>,
     pub quit_confirm: bool,
 
-    // Banner glitch animation (panel home screen)
-    pub banner_glitch: Option<super::banner_glitch::BannerGlitch>,
     // Brian's Brain automaton (sidebar decoration)
     pub sidebar_brain: Option<super::brians_brain::BriansBrain>,
+    // Brian's Brain for home banner background
+    pub home_brain: Option<super::brians_brain::BriansBrain>,
 
     // System monitoring (updated asynchronously to avoid UI freezes)
     pub system_info: crate::system::SystemInfo,
@@ -324,8 +324,8 @@ impl App {
             running: true,
             new_agent_dialog: None,
             quit_confirm: false,
-            banner_glitch: None,
             sidebar_brain: None,
+            home_brain: None,
             sidebar_click_map: Vec::new(),
             sidebar_visible: true,
             term_width: 0,

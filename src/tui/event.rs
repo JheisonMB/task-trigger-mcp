@@ -42,7 +42,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             {
                 Duration::from_millis(100)
             }
-            Focus::Home if app.banner_glitch.is_some() => Duration::from_millis(50),
+            Focus::Home if app.home_brain.is_some() => Duration::from_millis(50),
             Focus::Home => Duration::from_millis(200),
             _ => Duration::from_secs(1),
         };
@@ -680,28 +680,22 @@ fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Re
         KeyCode::F(1) => {
             app.show_legend = true;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if !app.agents.is_empty() {
-                app.dismiss_brain();
-                app.selected = 0;
-                app.log_scroll = 0;
-                app.focus = Focus::Preview;
-            }
+        KeyCode::Down | KeyCode::Char('j') if !app.agents.is_empty() => {
+            app.dismiss_brain();
+            app.selected = 0;
+            app.log_scroll = 0;
+            app.focus = Focus::Preview;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if !app.agents.is_empty() {
-                app.dismiss_brain();
-                app.selected = app.agents.len().saturating_sub(1);
-                app.log_scroll = 0;
-                app.focus = Focus::Preview;
-            }
+        KeyCode::Up | KeyCode::Char('k') if !app.agents.is_empty() => {
+            app.dismiss_brain();
+            app.selected = app.agents.len().saturating_sub(1);
+            app.log_scroll = 0;
+            app.focus = Focus::Preview;
         }
-        KeyCode::Enter => {
-            if !app.agents.is_empty() {
-                app.dismiss_brain();
-                app.log_scroll = 0;
-                app.focus = Focus::Preview;
-            }
+        KeyCode::Enter if !app.agents.is_empty() => {
+            app.dismiss_brain();
+            app.log_scroll = 0;
+            app.focus = Focus::Preview;
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
         _ => {}
@@ -1842,11 +1836,9 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Left => {
                         dialog.go_up();
                     }
-                    KeyCode::Backspace => {
-                        if !dialog.dir_filter.is_empty() {
-                            dialog.dir_filter.pop();
-                            dialog.dir_selected = 0;
-                        }
+                    KeyCode::Backspace if !dialog.dir_filter.is_empty() => {
+                        dialog.dir_filter.pop();
+                        dialog.dir_selected = 0;
                     }
                     KeyCode::Char(c) if c != ' ' => {
                         dialog.dir_filter.push(c);

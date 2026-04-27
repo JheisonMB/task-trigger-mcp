@@ -14,7 +14,6 @@ use super::{
 use crate::shared::banner::BANNER_GRADIENT;
 use crate::tui::agent::ScreenSnapshot;
 use crate::tui::app::{relative_time, AgentEntry, App, Focus};
-use crate::tui::banner_glitch::BannerCellKind;
 use crate::tui::brians_brain::CellState;
 
 pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -63,6 +62,9 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     match app.focus {
         Focus::Home => {
+            if let Some(brain) = app.home_brain.as_ref() {
+                draw_brians_brain(frame, inner, brain);
+            }
             draw_canopy_banner_glitch(frame, inner, app);
             return;
         }
@@ -458,37 +460,24 @@ fn render_vt_screen_with_mask(
     }
 }
 
-// ── Canopy banner with dynamic field ───────────────────────────
+// ── Canopy banner over Brian's Brain ───────────────────────────
 
 fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(ref glitch) = app.banner_glitch else {
-        draw_canopy_banner(frame, area);
-        return;
+    let banner = crate::shared::banner::BANNER.trim_matches('\n');
+    let banner_lines: Vec<&str> = banner.lines().collect();
+    let total = banner_lines.len() as u16;
+
+    let top_pad = if area.height > total {
+        (area.height - total) / 2
+    } else {
+        0
     };
 
-    let buf = frame.buffer_mut();
+    let wave_offset = (app.animation_tick as f32 * 0.02) % 1.0;
 
-    for row in 0..area.height as usize {
-        for col in 0..area.width as usize {
-            let (ch, gray) = glitch.field_at(row, col);
-            let x = area.x + col as u16;
-            let y = area.y + row as u16;
-            let buf_cell = &mut buf[(x, y)];
-            let mut sym = [0u8; 4];
-            let glyph = ch.encode_utf8(&mut sym);
-            buf_cell.set_symbol(glyph);
-            buf_cell.set_style(Style::default().fg(Color::Rgb(gray, gray, gray)));
-        }
-    }
-
-    let (overlay, wave_offset) = glitch.visible_overlay();
-    let total_rows = overlay.len();
-
-    for (row_idx, br) in overlay.into_iter().enumerate() {
-        // Continuous mirrored gradient per line:
-        // light -> dark -> light with sub-step interpolation for smooth flow.
-        let row_pos = if total_rows > 1 {
-            row_idx as f32 / (total_rows - 1) as f32
+    for (i, line) in banner_lines.iter().enumerate() {
+        let row_pos = if total > 1 {
+            i as f32 / (total - 1) as f32
         } else {
             0.0
         };
@@ -499,26 +488,31 @@ fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
             g.saturating_sub(40),
             b.saturating_sub(40),
         );
-        if br.row >= area.height as usize {
-            continue;
+
+        let y = area.y + top_pad + i as u16;
+        if y >= area.y + area.height {
+            break;
         }
-        for &(c, kind) in &br.cells {
-            if c >= area.width as usize {
+
+        let line_start_x = area.x + area.width / 2 - (line.chars().count() as u16 / 2);
+
+        for (col_idx, ch) in line.chars().enumerate() {
+            let x = line_start_x + col_idx as u16;
+            if x >= area.x + area.width {
+                break;
+            }
+            if x < area.x {
                 continue;
             }
-            let x = area.x + c as u16;
-            let y = area.y + br.row as u16;
-            let buf_cell = &mut buf[(x, y)];
-            match kind {
-                BannerCellKind::Block => {
-                    buf_cell.set_symbol("█");
-                    buf_cell.set_style(Style::default().fg(accent));
-                }
-                BannerCellKind::Shade => {
-                    buf_cell.set_symbol("░");
-                    buf_cell.set_style(Style::default().fg(accent_dim));
-                }
-            }
+
+            let buf_cell = &mut frame.buffer_mut()[(x, y)];
+            let symbol = match ch {
+                '█' => "█",
+                '░' => "░",
+                _ => continue,
+            };
+            buf_cell.set_symbol(symbol);
+            buf_cell.set_style(Style::default().fg(if ch == '█' { accent } else { accent_dim }));
         }
     }
 }
@@ -550,40 +544,6 @@ fn sample_mirrored_gradient(phase: f32) -> (u8, u8, u8) {
 
     let lerp = |a: u8, b: u8| -> u8 { ((a as f32) + (b as f32 - a as f32) * t).round() as u8 };
     (lerp(r0, r1), lerp(g0, g1), lerp(b0, b1))
-}
-
-fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
-    let banner = crate::shared::banner::BANNER.trim_matches('\n');
-    let banner_lines: Vec<&str> = banner.lines().collect();
-    let total = banner_lines.len();
-    let mut styled_lines = Vec::new();
-    for (i, line) in banner_lines.iter().enumerate() {
-        let gradient_index = (i * BANNER_GRADIENT.len()) / total.max(1);
-        let (r, g, b) = BANNER_GRADIENT[gradient_index.min(BANNER_GRADIENT.len() - 1)];
-        styled_lines.push(Line::from(Span::styled(
-            (*line).to_string(),
-            Style::default()
-                .fg(Color::Rgb(r, g, b))
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-
-    let total_banner = styled_lines.len() as u16;
-    let top_pad = if area.height > total_banner {
-        (area.height - total_banner) / 2
-    } else {
-        0
-    };
-
-    let banner_area = Rect::new(
-        area.x,
-        area.y + top_pad,
-        area.width,
-        total_banner.min(area.height),
-    );
-
-    let banner = Paragraph::new(styled_lines).alignment(ratatui::layout::Alignment::Center);
-    frame.render_widget(banner, banner_area);
 }
 
 // ── Brian's Brain automaton (sidebar) ─────────────────────────

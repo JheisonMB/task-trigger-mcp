@@ -6,7 +6,6 @@
 
 mod agent;
 mod app;
-mod banner_glitch;
 mod brians_brain;
 pub(crate) mod context_transfer;
 mod event;

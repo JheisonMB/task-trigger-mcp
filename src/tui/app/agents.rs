@@ -41,8 +41,8 @@ fn recent_output_snippet(agent: &InteractiveAgent, n: usize) -> String {
 
 impl App {
     pub fn notify_mouse_move(&mut self) {
-        if let Some(ref mut glitch) = self.banner_glitch {
-            glitch.notify_mouse();
+        if let Some(ref mut brain) = self.home_brain {
+            brain.notify_mouse();
         }
         if let Some(ref mut brain) = self.sidebar_brain {
             brain.notify_mouse();
@@ -54,24 +54,44 @@ impl App {
             return;
         }
 
-        let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-        let cols = tw.saturating_sub(26) as usize;
-        let rows = th.saturating_sub(4) as usize;
+        let (pw, ph) = self.last_panel_inner;
+        let panel_cols = pw as usize;
+        let panel_rows = ph as usize;
 
-        if cols == 0 || rows == 0 {
-            return;
+        if panel_cols < 6 || panel_rows < 3 {
+            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+            let fallback_cols = (tw / 2).saturating_sub(2) as usize;
+            let fallback_rows = th.saturating_sub(3) as usize;
+            if fallback_cols < 6 || fallback_rows < 3 {
+                return;
+            }
+            let needs_reinit = match &self.home_brain {
+                None => true,
+                Some(b) => b.rows != fallback_rows || b.cols != fallback_cols,
+            };
+            if needs_reinit {
+                let mut brain =
+                    super::super::brians_brain::BriansBrain::new(fallback_rows, fallback_cols, 80);
+                brain.last_step = std::time::Instant::now()
+                    - std::time::Duration::from_millis(brain.step_interval_ms);
+                self.home_brain = Some(brain);
+            }
+        } else {
+            let needs_reinit = match &self.home_brain {
+                None => true,
+                Some(b) => b.rows != panel_rows || b.cols != panel_cols,
+            };
+            if needs_reinit {
+                let mut brain =
+                    super::super::brians_brain::BriansBrain::new(panel_rows, panel_cols, 80);
+                brain.last_step = std::time::Instant::now()
+                    - std::time::Duration::from_millis(brain.step_interval_ms);
+                self.home_brain = Some(brain);
+            }
         }
 
-        let needs_reinit = match &self.banner_glitch {
-            None => true,
-            Some(b) => b.rows != rows || b.cols != cols,
-        };
-        if needs_reinit {
-            self.banner_glitch = Some(super::super::banner_glitch::BannerGlitch::new(rows, cols));
-        }
-
-        if let Some(ref mut glitch) = self.banner_glitch {
-            glitch.tick();
+        if let Some(ref mut brain) = self.home_brain {
+            brain.step();
         }
     }
 
@@ -116,8 +136,8 @@ impl App {
     }
 
     pub fn dismiss_brain(&mut self) {
-        if let Some(ref mut glitch) = self.banner_glitch {
-            *glitch = super::super::banner_glitch::BannerGlitch::new(glitch.rows, glitch.cols);
+        if let Some(ref mut brain) = self.home_brain {
+            *brain = super::super::brians_brain::BriansBrain::new(brain.rows, brain.cols, 80);
         }
     }
 
