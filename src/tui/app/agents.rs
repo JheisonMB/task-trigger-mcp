@@ -94,7 +94,7 @@ impl App {
             Some(b) => b.rows != rows || b.cols != cols,
         };
         if needs_reinit {
-            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 250);
+            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 100);
             // Allow immediate first step
             brain.last_step = std::time::Instant::now()
                 - std::time::Duration::from_millis(brain.step_interval_ms);

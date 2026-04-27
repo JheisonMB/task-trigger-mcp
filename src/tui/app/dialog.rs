@@ -1852,7 +1852,7 @@ mod tests {
         // This verifies that the agent name tracking and position finding works
 
         // Simulate agent entries with names
-        let agent_names = vec!["session-1", "session-2", "new-session", "session-3"];
+        let agent_names = ["session-1", "session-2", "new-session", "session-3"];
 
         // Simulate finding the position of the new agent (like our fix does)
         let new_agent_name = "new-session";
