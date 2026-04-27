@@ -246,6 +246,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
             dashboard_area,
             &app.system_info,
             app_uptime_seconds,
+            app.temperature_unit,
         );
     }
 }

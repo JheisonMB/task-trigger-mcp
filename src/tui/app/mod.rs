@@ -145,6 +145,8 @@ pub struct App {
     prev_active_run_ids: std::collections::HashSet<String>,
     /// Tick counter for animation (increments every refresh)
     pub animation_tick: u32,
+    /// Preferred unit for sysinfo temperature labels.
+    pub temperature_unit: crate::domain::canopy_config::TemperatureUnit,
     /// Terminal autocomplete suggestion picker (shown on Tab).
     pub suggestion_picker: Option<super::terminal_history::SuggestionPicker>,
     /// Per-session terminal histories (loaded on demand, cached in memory).
@@ -281,6 +283,10 @@ impl TerminalSearch {
 
 impl App {
     pub fn new(db: Arc<Database>, data_dir: &Path) -> Result<Self> {
+        let home = dirs::home_dir().unwrap_or_default();
+        let canopy_dir = home.join(".canopy");
+        let canopy_config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
+
         let (system_info_tx, system_info_rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let initial = crate::system::SystemInfo::new();
@@ -339,6 +345,7 @@ impl App {
             notification_service: Arc::new(DefaultNotificationService),
             prev_active_run_ids: std::collections::HashSet::new(),
             animation_tick: 0,
+            temperature_unit: canopy_config.temperature_unit,
             suggestion_picker: None,
             terminal_histories: HashMap::new(),
             terminal_search: None,

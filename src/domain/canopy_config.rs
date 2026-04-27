@@ -20,6 +20,19 @@ pub struct CanopyConfig {
     /// Available CLIs detected during setup.
     #[serde(default)]
     pub clis: Vec<CliConfig>,
+
+    /// Temperature unit used by sysinfo widgets.
+    #[serde(default)]
+    pub temperature_unit: TemperatureUnit,
+}
+
+/// Preferred unit for temperature display.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TemperatureUnit {
+    #[default]
+    Celsius,
+    Fahrenheit,
 }
 
 fn default_mcp_root() -> String {
@@ -76,6 +89,7 @@ mod tests {
         let config = CanopyConfig::default();
         assert!(!config.is_configured());
         assert!(config.clis.is_empty());
+        assert_eq!(config.temperature_unit, TemperatureUnit::Celsius);
     }
 
     #[test]
@@ -86,12 +100,14 @@ mod tests {
         let mut config = CanopyConfig::default();
         config.mark_configured();
         config.mcp_filesystem_root = "/custom/path".to_string();
+        config.temperature_unit = TemperatureUnit::Fahrenheit;
 
         config.save(&canopy_dir).unwrap();
 
         let loaded = CanopyConfig::load(&canopy_dir);
         assert!(loaded.is_configured());
         assert_eq!(loaded.mcp_filesystem_root, "/custom/path");
+        assert_eq!(loaded.temperature_unit, TemperatureUnit::Fahrenheit);
     }
 
     #[test]

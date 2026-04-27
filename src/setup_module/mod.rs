@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use inquire::MultiSelect;
+use inquire::Select;
 use serde::Deserialize;
 use std::io::{self, Write};
 use std::path::Path;
@@ -378,6 +379,17 @@ pub fn run_setup() -> Result<()> {
         }
     ));
 
+    // ── Step 2.2: Temperature unit preference ────────────────────
+    wiz.render()?;
+    let temperature_unit = select_temperature_unit()?;
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m Temperature unit: {}",
+        match temperature_unit {
+            crate::domain::canopy_config::TemperatureUnit::Celsius => "Celsius (°C)",
+            crate::domain::canopy_config::TemperatureUnit::Fahrenheit => "Fahrenheit (°F)",
+        }
+    ));
+
     // ── Step 2.5: Verify MCP runtime dependencies ─────────────
     wiz.render()?;
     let dep_msg = ensure_mcp_dependencies();
@@ -439,6 +451,7 @@ pub fn run_setup() -> Result<()> {
     let mut config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
     config.mark_configured();
     config.clis = cli_registry.available_clis;
+    config.temperature_unit = temperature_unit;
     let config_step = match config.save(&canopy_dir) {
         Ok(_) => format!(
             "\x1b[32m✓\x1b[0m Config: {} CLI(s) saved to config.toml",
@@ -663,6 +676,20 @@ fn select_platforms<'a>(detected: &[&'a Platform]) -> Result<Vec<&'a Platform>> 
         .iter()
         .filter_map(|name| detected.iter().find(|p| p.name == *name).copied())
         .collect())
+}
+
+fn select_temperature_unit() -> Result<crate::domain::canopy_config::TemperatureUnit> {
+    let options = ["Celsius (°C)", "Fahrenheit (°F)"];
+    let selected = Select::new("Temperature unit for sysinfo:", options.to_vec())
+        .with_starting_cursor(0)
+        .with_help_message("enter: confirm | ↑↓: navigate")
+        .prompt()
+        .map_err(|e| anyhow::anyhow!("Temperature selection cancelled: {}", e))?;
+
+    Ok(match selected {
+        "Fahrenheit (°F)" => crate::domain::canopy_config::TemperatureUnit::Fahrenheit,
+        _ => crate::domain::canopy_config::TemperatureUnit::Celsius,
+    })
 }
 
 fn upsert_json_key(path: &Path, keys: &[&str], value: &serde_json::Value) -> Result<bool> {

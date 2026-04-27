@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use super::DIM;
+use crate::domain::canopy_config::TemperatureUnit;
 use crate::system::SystemInfo;
 
 /// Render the system dashboard in the sidebar
@@ -16,13 +17,15 @@ pub fn render_system_dashboard(
     area: Rect,
     system_info: &SystemInfo,
     app_uptime_seconds: u64,
+    temperature_unit: TemperatureUnit,
 ) {
     // Only render if we have enough space
     if area.height < 6 {
         return;
     }
 
-    let dashboard = create_system_dashboard_lines(system_info, app_uptime_seconds);
+    let dashboard =
+        create_system_dashboard_lines(system_info, app_uptime_seconds, temperature_unit);
 
     frame.render_widget(
         Paragraph::new(dashboard)
@@ -41,6 +44,7 @@ pub fn render_system_dashboard(
 fn create_system_dashboard_lines(
     system_info: &SystemInfo,
     app_uptime_seconds: u64,
+    temperature_unit: TemperatureUnit,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         // CPU line
@@ -48,7 +52,11 @@ fn create_system_dashboard_lines(
             Span::styled("cpu: ", Style::default().fg(Color::White)),
             Span::styled(
                 if let Some(temp) = system_info.cpu_temperature_celsius() {
-                    format!("{:.0}% {:.0}C", system_info.cpu_usage_percent(), temp)
+                    format!(
+                        "{:.0}% {}",
+                        system_info.cpu_usage_percent(),
+                        format_temperature(temp, temperature_unit)
+                    )
                 } else {
                     format!("{:.0}%", system_info.cpu_usage_percent())
                 },
@@ -95,9 +103,12 @@ fn create_system_dashboard_lines(
                 Span::styled("gpu: ", Style::default().fg(Color::White)),
                 if let Some(gpu) = &system_info.gpu_info {
                     let metrics = match (gpu.usage, gpu.temperature) {
-                        (Some(usage), Some(temp)) => Some(format!("{usage:.0}% {temp:.0}C")),
+                        (Some(usage), Some(temp)) => Some(format!(
+                            "{usage:.0}% {}",
+                            format_temperature(temp, temperature_unit)
+                        )),
                         (Some(usage), None) => Some(format!("{usage:.0}%")),
-                        (None, Some(temp)) => Some(format!("{temp:.0}C")),
+                        (None, Some(temp)) => Some(format_temperature(temp, temperature_unit)),
                         (None, None) => None,
                     };
                     let gpu_text = metrics.unwrap_or_else(|| "n/a".to_string());
@@ -112,6 +123,16 @@ fn create_system_dashboard_lines(
     lines
 }
 
+fn format_temperature(temp_celsius: f32, unit: TemperatureUnit) -> String {
+    match unit {
+        TemperatureUnit::Celsius => format!("{temp_celsius:.0}°C"),
+        TemperatureUnit::Fahrenheit => {
+            let temp_f = temp_celsius * 9.0 / 5.0 + 32.0;
+            format!("{temp_f:.0}°F")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,7 +141,7 @@ mod tests {
     #[test]
     fn test_dashboard_creation() {
         let info = SystemInfo::new();
-        let lines = create_system_dashboard_lines(&info, 120); // 120 seconds uptime
+        let lines = create_system_dashboard_lines(&info, 120, TemperatureUnit::Celsius); // 120 seconds uptime
 
         // Should have 4 or 5 lines depending on whether GPU info is available
         assert!(
