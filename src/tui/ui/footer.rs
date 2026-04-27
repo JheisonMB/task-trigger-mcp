@@ -14,7 +14,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Home => vec![
             ("↑↓", "select"),
             ("n", "new"),
-            ("F4", "quit"),
+            ("F10", "preview"),
             ("F1", "legend"),
         ],
         Focus::Preview => vec![
@@ -22,10 +22,10 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("Enter", "focus"),
             ("e", "edit"),
             ("d", "toggle"),
-            ("D", "delete"),
+            ("F4", "delete"),
             ("r", "rerun"),
             ("n", "new"),
-            ("F4", "quit"),
+            ("Esc", "home"),
         ],
         Focus::NewAgentDialog => vec![
             ("↑↓", "fields"),
@@ -44,7 +44,8 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             let in_split = app.active_split_id.is_some();
             if is_pty {
                 let mut h = vec![
-                    ("F10", "back"),
+                    ("F10", "preview"),
+                    ("Esc", "home"),
                     ("Shift+↑↓", "agents"),
                     ("Ctrl+T", "context"),
                 ];
@@ -68,7 +69,8 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             } else {
                 vec![
                     ("↑↓/jk", "scroll"),
-                    ("Esc", "back"),
+                    ("F10", "preview"),
+                    ("Esc", "home"),
                     ("Ctrl+N", "new"),
                     ("F1", "legend"),
                 ]

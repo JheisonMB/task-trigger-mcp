@@ -673,7 +673,11 @@ fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Re
     }
 
     match code {
-        KeyCode::F(4) => app.running = false,
+        KeyCode::F(10) if !app.agents.is_empty() => {
+            app.dismiss_brain();
+            app.log_scroll = 0;
+            app.focus = Focus::Preview;
+        }
         KeyCode::Esc => {
             app.quit_confirm = true;
         }
@@ -744,7 +748,12 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
             let _ = app.delete_selected();
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
-        KeyCode::F(4) => app.running = false,
+        KeyCode::F(4) => {
+            let _ = app.delete_selected();
+        }
+        KeyCode::F(10) => {
+            // Already in preview; no-op
+        }
         KeyCode::F(1) => {
             app.show_legend = true;
         }
