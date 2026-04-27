@@ -8,8 +8,10 @@ use std::time::Instant;
 // ── Wave tuning ──────────────────────────────────────────────
 
 const WAVE_SPEED_MS: u64 = 30; // ms per wave step
+const WAVE_BOOST_SPEED_MS: u64 = 10; // faster wave during mouse activity
 const GLITCH_INTERVAL_MIN_MS: u64 = 8000; // min time between glitches
 const GLITCH_INTERVAL_MAX_MS: u64 = 15000; // max time between glitches
+const MOUSE_BOOST_DURATION_MS: u64 = 750; // how long mouse boost lasts
 
 // ── Glitch tuning ──────────────────────────────────────────────
 
@@ -74,7 +76,7 @@ pub struct BannerGlitch {
     banner_base: Vec<BannerRow>,
     phase: Phase,
     phase_started: Instant,
-    wave_offset: f32, // 0.0 to 1.0, cycles for wave animation
+    wave_offset: f32,
     next_glitch_at: Instant,
     glitch_cycle: usize,
     total_glitch_cycles: usize,
@@ -85,6 +87,8 @@ pub struct BannerGlitch {
     border_noise: Vec<(usize, usize)>,
     next_between_ms: u64,
     pub vibration: (i16, i16),
+    /// Mouse movement speeds up wave temporarily until this time.
+    mouse_boost_until: Instant,
 }
 
 impl BannerGlitch {
@@ -121,6 +125,7 @@ impl BannerGlitch {
             border_noise: Vec::new(),
             next_between_ms: 0,
             vibration: (0, 0),
+            mouse_boost_until: Instant::now(),
         }
     }
 
@@ -157,11 +162,21 @@ impl BannerGlitch {
         rows_data
     }
 
+    pub fn notify_mouse(&mut self) {
+        self.mouse_boost_until =
+            Instant::now() + std::time::Duration::from_millis(MOUSE_BOOST_DURATION_MS);
+    }
+
     pub fn tick(&mut self) {
         match self.phase {
             Phase::Wave => {
-                // Advance wave
-                self.wave_offset += WAVE_SPEED_MS as f32 / 1000.0;
+                // Advance wave — faster during mouse activity
+                let speed = if Instant::now() < self.mouse_boost_until {
+                    WAVE_BOOST_SPEED_MS
+                } else {
+                    WAVE_SPEED_MS
+                };
+                self.wave_offset += speed as f32 / 1000.0;
                 if self.wave_offset >= 1.0 {
                     self.wave_offset -= 1.0;
                 }

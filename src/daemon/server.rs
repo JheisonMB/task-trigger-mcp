@@ -13,6 +13,7 @@ use crate::scheduler::cron_scheduler::CronScheduler;
 use crate::watchers::WatcherEngine;
 
 pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
+    crate::domain::notification::clear_stale_notifications();
     init_tracing();
 
     let port = crate::resolve_port(port_override);

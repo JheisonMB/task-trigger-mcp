@@ -40,6 +40,15 @@ fn recent_output_snippet(agent: &InteractiveAgent, n: usize) -> String {
 }
 
 impl App {
+    pub fn notify_mouse_move(&mut self) {
+        if let Some(ref mut glitch) = self.banner_glitch {
+            glitch.notify_mouse();
+        }
+        if let Some(ref mut brain) = self.sidebar_brain {
+            brain.notify_mouse();
+        }
+    }
+
     pub fn tick_banner_glitch(&mut self) {
         if self.focus != Focus::Home {
             return;
@@ -94,7 +103,7 @@ impl App {
             Some(b) => b.rows != rows || b.cols != cols,
         };
         if needs_reinit {
-            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 100);
+            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 180);
             // Allow immediate first step
             brain.last_step = std::time::Instant::now()
                 - std::time::Duration::from_millis(brain.step_interval_ms);

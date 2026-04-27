@@ -41,7 +41,14 @@ pub struct BriansBrain {
     pub step_interval_ms: u64,
     /// Timestamp of last step.
     pub last_step: Instant,
+    /// Mouse movement temporarily speeds up the automaton until this time.
+    mouse_boost_until: Instant,
 }
+
+/// How long mouse boost lasts (ms).
+const MOUSE_BOOST_DURATION_MS: u64 = 750;
+/// Step interval during mouse boost.
+const MOUSE_BOOST_STEP_MS: u64 = 80;
 
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize, step_interval_ms: u64) -> Self {
@@ -71,13 +78,24 @@ impl BriansBrain {
             cols,
             step_interval_ms,
             last_step: Instant::now(),
+            mouse_boost_until: Instant::now(),
         }
+    }
+
+    pub fn notify_mouse(&mut self) {
+        self.mouse_boost_until =
+            Instant::now() + std::time::Duration::from_millis(MOUSE_BOOST_DURATION_MS);
     }
 
     pub fn step(&mut self) {
         // Throttle steps to avoid CPU spikes / UI freezes
-        if self.step_interval_ms > 0 {
-            if self.last_step.elapsed() < std::time::Duration::from_millis(self.step_interval_ms) {
+        let effective_interval = if Instant::now() < self.mouse_boost_until {
+            MOUSE_BOOST_STEP_MS
+        } else {
+            self.step_interval_ms
+        };
+        if effective_interval > 0 {
+            if self.last_step.elapsed() < std::time::Duration::from_millis(effective_interval) {
                 return;
             }
             self.last_step = Instant::now();

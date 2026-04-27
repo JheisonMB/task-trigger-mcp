@@ -472,9 +472,10 @@ fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
     let total_rows = overlay.len();
 
     for (row_idx, br) in overlay.into_iter().enumerate() {
-        // Wave-based gradient: offset shifts the gradient vertically
-        let wave_phase = (row_idx as f32 / total_rows.max(1) as f32 + wave_offset) % 1.0;
-        let (r, g, b) = wave_gradient_rgb(wave_phase);
+        // Use wizard gradient colors with wave offset to scroll the gradient vertically
+        let shifted_index =
+            ((row_idx as f32 + wave_offset * total_rows as f32) as usize) % total_rows.max(1);
+        let (r, g, b) = crate::shared::banner::gradient_rgb(shifted_index, total_rows);
         let accent = Color::Rgb(r, g, b);
         let accent_dim = Color::Rgb(r.saturating_sub(40), g.saturating_sub(40), b);
         let render_row = br.row as i32 + vy as i32;
@@ -506,19 +507,6 @@ fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
-}
-
-/// Wave-based gradient: cycles through green shades based on phase (0.0-1.0)
-fn wave_gradient_rgb(phase: f32) -> (u8, u8, u8) {
-    // Green wave: oscillates between dark green (20, 80, 20) and bright green (50, 200, 50)
-    let base = 20u8;
-    let range = 180u8;
-    // Use sine wave for smooth transition
-    let intensity = ((phase * std::f32::consts::PI * 2.0).sin() + 1.0) / 2.0;
-    let g = base + ((range as f32 * intensity) as u8);
-    let r = (g as f32 * 0.25) as u8;
-    let b = (g as f32 * 0.25) as u8;
-    (r, g, b)
 }
 
 fn draw_canopy_banner(frame: &mut Frame, area: Rect) {

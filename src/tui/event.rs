@@ -60,6 +60,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
                     handle_key(app, key.code, key.modifiers)?;
                 }
                 Event::Mouse(mouse) => {
+                    app.notify_mouse_move();
                     handle_mouse(app, mouse.kind, mouse.modifiers)?;
                 }
                 Event::Resize(_, _) => {
