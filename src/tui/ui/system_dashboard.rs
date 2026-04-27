@@ -60,9 +60,14 @@ fn create_system_dashboard_lines(
             Span::styled("mem: ", Style::default().fg(Color::White)),
             Span::styled(
                 format!(
-                    "{:.1}/{:.1}GB",
+                    "{:.1}/{:.1}GB ({:.0}%)",
                     system_info.memory_used_gb(),
-                    system_info.memory_total_gb()
+                    system_info.memory_total_gb(),
+                    if system_info.memory_total > 0 {
+                        (system_info.memory_used as f32 / system_info.memory_total as f32) * 100.0
+                    } else {
+                        0.0
+                    }
                 ),
                 Style::default().fg(DIM),
             ),
@@ -95,19 +100,7 @@ fn create_system_dashboard_lines(
                         (None, Some(temp)) => Some(format!("{temp:.0}C")),
                         (None, None) => None,
                     };
-                    let gpu_text = if let Some(metrics) = metrics {
-                        if gpu.vendor.eq_ignore_ascii_case("system")
-                            || (gpu.vendor.is_empty() && gpu.name.is_empty())
-                        {
-                            metrics
-                        } else {
-                            format!("{} {}", compact_gpu_name(gpu), metrics)
-                        }
-                    } else if gpu.vendor.eq_ignore_ascii_case("system") || gpu.vendor.is_empty() {
-                        gpu.name.clone()
-                    } else {
-                        compact_gpu_name(gpu)
-                    };
+                    let gpu_text = metrics.unwrap_or_else(|| "n/a".to_string());
                     Span::styled(gpu_text, Style::default().fg(DIM))
                 } else {
                     Span::styled("integrated", Style::default().fg(DIM))
@@ -117,17 +110,6 @@ fn create_system_dashboard_lines(
     }
 
     lines
-}
-
-fn compact_gpu_name(gpu: &crate::system::GpuInfo) -> String {
-    if gpu.name.is_empty() {
-        return gpu.vendor.clone();
-    }
-    if gpu.vendor.is_empty() || gpu.name.starts_with(&gpu.vendor) {
-        gpu.name.clone()
-    } else {
-        format!("{} {}", gpu.vendor, gpu.name)
-    }
 }
 
 #[cfg(test)]
@@ -140,12 +122,27 @@ mod tests {
         let info = SystemInfo::new();
         let lines = create_system_dashboard_lines(&info, 120); // 120 seconds uptime
 
-        // Should have 4 lines (CPU, mem, uptime, canopy) since GPU is None
-        assert_eq!(lines.len(), 4);
-        assert!(lines[0].to_string().contains("cpu:"));
-        assert!(lines[1].to_string().contains("mem:"));
-        assert!(lines[2].to_string().contains("uptime:"));
-        assert!(lines[3].to_string().contains("canopy:"));
-        assert!(lines[3].to_string().contains("2m")); // Should show 2 minutes
+        // Should have 4 or 5 lines depending on whether GPU info is available
+        assert!(
+            lines.len() >= 4,
+            "Expected at least 4 lines, got {}",
+            lines.len()
+        );
+        assert!(
+            lines.len() <= 5,
+            "Expected at most 5 lines, got {}",
+            lines.len()
+        );
+        // Check key lines exist regardless of GPU line position
+        let all_text: String = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all_text.contains("cpu:"), "Missing cpu line");
+        assert!(all_text.contains("mem:"), "Missing mem line");
+        assert!(all_text.contains("uptime:"), "Missing uptime line");
+        assert!(all_text.contains("canopy:"), "Missing canopy line");
+        assert!(all_text.contains("2m"), "Should show 2 minutes uptime");
     }
 }
