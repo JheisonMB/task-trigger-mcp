@@ -553,9 +553,8 @@ pub(crate) fn draw_brians_brain(
     area: Rect,
     brain: &crate::tui::brians_brain::BriansBrain,
 ) {
-    const BRAIN_ON_GLYPHS: [&str; 5] = ["⠂", "⠆", "⠖", "⠶", "⣿"];
-    const BRAIN_DYING_GLYPHS: [&str; 4] = ["·", "⠂", "⠆", "⠒"];
-
+    const BRAIN_ON_GLYPHS: [&str; 5] = ["⠆", "⠒", "⠶", "⡷", "⣿"];
+    const BRAIN_DYING_GLYPHS: [&str; 4] = ["⠖", "⠒", "⠂", "·"];
     let buf = frame.buffer_mut();
 
     for (r, row) in brain.grid.iter().enumerate() {
