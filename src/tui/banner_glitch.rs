@@ -16,8 +16,8 @@ const REVEAL_ROW_DELAY_MS: u64 = 55;
 
 // ── Field tuning (sparse, circular, dark gray) ─────────────────────
 
-// Fewer, more spaced-out glyphs - sparse density
-const FIELD_GLYPHS: [char; 5] = [' ', '.', '·', '⠂', '⠆'];
+// Fewer, more spaced-out glyphs - sparse density (no dot-only chars)
+const FIELD_GLYPHS: [char; 5] = [' ', '░', '▒', '⠂', '⠆'];
 
 fn hash01(x: i32, y: i32, t: i32) -> f32 {
     let mut n = (x as u32).wrapping_mul(374_761_393)
