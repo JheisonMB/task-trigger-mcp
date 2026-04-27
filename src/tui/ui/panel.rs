@@ -13,6 +13,7 @@ use super::{
 };
 use crate::tui::agent::ScreenSnapshot;
 use crate::tui::app::{relative_time, AgentEntry, App, Focus};
+use crate::tui::banner_glitch::BannerCellKind;
 use crate::tui::brians_brain::CellState;
 
 pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -61,11 +62,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     match app.focus {
         Focus::Home => {
-            if let Some(ref brain) = app.brain {
-                draw_brians_brain(frame, inner, brain);
-                return;
-            }
-            draw_canopy_banner(frame, inner);
+            draw_canopy_banner_glitch(frame, inner, app);
             return;
         }
 
@@ -159,11 +156,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             let prev = app.new_agent_dialog.as_ref().and_then(|d| d.prev_focus);
             match prev {
                 Some(Focus::Home) | None => {
-                    if let Some(ref brain) = app.brain {
-                        draw_brians_brain(frame, inner, brain);
-                    } else {
-                        draw_canopy_banner(frame, inner);
-                    }
+                    draw_canopy_banner_glitch(frame, inner, app);
                     return;
                 }
                 _ => {}
@@ -464,7 +457,69 @@ fn render_vt_screen_with_mask(
     }
 }
 
-// ── Canopy banner ───────────────────────────────────────────────
+// ── Canopy banner with glitch overlay ──────────────────────────
+
+fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(ref glitch) = app.banner_glitch else {
+        draw_canopy_banner(frame, area);
+        return;
+    };
+
+    let buf = frame.buffer_mut();
+    let glitch_color = Color::Rgb(50, 220, 50);
+    let (vx, vy) = glitch.vibration;
+    let (overlay, wave_offset) = glitch.visible_overlay();
+    let total_rows = overlay.len();
+
+    for (row_idx, br) in overlay.into_iter().enumerate() {
+        // Wave-based gradient: offset shifts the gradient vertically
+        let wave_phase = (row_idx as f32 / total_rows.max(1) as f32 + wave_offset) % 1.0;
+        let (r, g, b) = wave_gradient_rgb(wave_phase);
+        let accent = Color::Rgb(r, g, b);
+        let accent_dim = Color::Rgb(r.saturating_sub(40), g.saturating_sub(40), b);
+        let render_row = br.row as i32 + vy as i32;
+        if render_row < 0 || render_row as u16 >= area.height {
+            continue;
+        }
+        for &(c, kind) in &br.cells {
+            let render_col = c as i32 + vx as i32;
+            if render_col < 0 || render_col as u16 >= area.width {
+                continue;
+            }
+            let x = area.x + render_col as u16;
+            let y = area.y + render_row as u16;
+            let buf_cell = &mut buf[(x, y)];
+            match kind {
+                BannerCellKind::Block => {
+                    buf_cell.set_symbol("█");
+                    buf_cell.set_style(Style::default().fg(accent));
+                }
+                BannerCellKind::Shade => {
+                    buf_cell.set_symbol("░");
+                    buf_cell.set_style(Style::default().fg(accent_dim));
+                }
+                BannerCellKind::Glitch(ch) => {
+                    let s: String = std::iter::once(ch).collect();
+                    buf_cell.set_symbol(&s);
+                    buf_cell.set_style(Style::default().fg(glitch_color));
+                }
+            }
+        }
+    }
+}
+
+/// Wave-based gradient: cycles through green shades based on phase (0.0-1.0)
+fn wave_gradient_rgb(phase: f32) -> (u8, u8, u8) {
+    // Green wave: oscillates between dark green (20, 80, 20) and bright green (50, 200, 50)
+    let base = 20u8;
+    let range = 180u8;
+    // Use sine wave for smooth transition
+    let intensity = ((phase * std::f32::consts::PI * 2.0).sin() + 1.0) / 2.0;
+    let g = base + ((range as f32 * intensity) as u8);
+    let r = (g as f32 * 0.25) as u8;
+    let b = (g as f32 * 0.25) as u8;
+    (r, g, b)
+}
 
 fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
     let banner = crate::shared::banner::BANNER.trim_matches('\n');
@@ -501,60 +556,15 @@ fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
     frame.render_widget(banner, banner_area);
 }
 
-// ── Brian's Brain automaton ─────────────────────────────────────
+// ── Brian's Brain automaton (sidebar) ─────────────────────────
 
 pub(crate) fn draw_brians_brain(
     frame: &mut Frame,
     area: Rect,
     brain: &crate::tui::brians_brain::BriansBrain,
 ) {
-    use crate::tui::brians_brain::BannerCellKind;
     let buf = frame.buffer_mut();
 
-    if !brain.active {
-        // Pre-activation: render banner overlay with glitch effects.
-        let glitch_color = Color::Rgb(50, 220, 50);
-        let (vx, vy) = brain.vibration;
-        let overlay = brain.visible_overlay();
-        let total_rows = overlay.len();
-        for (row_idx, br) in overlay.into_iter().enumerate() {
-            let (r, g, b) = crate::shared::banner::gradient_rgb(row_idx, total_rows);
-            let accent = Color::Rgb(r, g, b);
-            let accent_dim = Color::Rgb(r.saturating_sub(40), g.saturating_sub(40), b);
-            let render_row = br.row as i32 + vy as i32;
-            if render_row < 0 || render_row as u16 >= area.height {
-                continue;
-            }
-            for &(c, kind) in &br.cells {
-                let render_col = c as i32 + vx as i32;
-                if render_col < 0 || render_col as u16 >= area.width {
-                    continue;
-                }
-                let x = area.x + render_col as u16;
-                let y = area.y + render_row as u16;
-                let buf_cell = &mut buf[(x, y)];
-                match kind {
-                    BannerCellKind::Block => {
-                        buf_cell.set_symbol("█");
-                        buf_cell.set_style(Style::default().fg(accent));
-                    }
-                    BannerCellKind::Shade => {
-                        buf_cell.set_symbol("░");
-                        buf_cell.set_style(Style::default().fg(accent_dim));
-                    }
-                    BannerCellKind::Glitch(ch) => {
-                        // Render as single-char string
-                        let s: String = std::iter::once(ch).collect();
-                        buf_cell.set_symbol(&s);
-                        buf_cell.set_style(Style::default().fg(glitch_color));
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    // Active automaton: use per-cell green from green_grid.
     for (r, row) in brain.grid.iter().enumerate() {
         if r as u16 >= area.height {
             break;

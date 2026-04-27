@@ -234,22 +234,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(brain_area) = brain_area.filter(|area| area.height >= 3 && area.width >= 6) {
-        let rows = brain_area.height as usize;
-        let cols = brain_area.width as usize;
-        let needs_reinit = match &app.sidebar_brain {
-            None => true,
-            Some(brain) => brain.rows != rows || brain.cols != cols,
-        };
-        if needs_reinit {
-            let mut brain = crate::tui::brians_brain::BriansBrain::new(rows, cols);
-            brain.activate();
-            app.sidebar_brain = Some(brain);
-        }
-        if let Some(brain) = app.sidebar_brain.as_mut() {
-            if !brain.active {
-                brain.activate();
-            }
-            brain.step();
+        if let Some(brain) = app.sidebar_brain.as_ref() {
             crate::tui::ui::panel::draw_brians_brain(frame, brain_area, brain);
         }
     }
