@@ -42,14 +42,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             {
                 Duration::from_millis(100)
             }
-            Focus::Home
-                if app
-                    .banner_glitch
-                    .as_ref()
-                    .is_some_and(|g| g.vibration != (0, 0)) =>
-            {
-                Duration::from_millis(50)
-            }
+            Focus::Home if app.banner_glitch.is_some() => Duration::from_millis(50),
             Focus::Home => Duration::from_millis(200),
             _ => Duration::from_secs(1),
         };
