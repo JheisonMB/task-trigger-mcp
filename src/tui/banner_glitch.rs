@@ -1,49 +1,42 @@
-//! Banner animation with gradient wave and occasional glitch.
-//!
-//! The banner displays with a smooth vertical gradient wave that scrolls up/down.
-//! Periodically, a digital-corruption glitch effect interrupts the wave.
+//! Animated home banner with fluid ASCII/Braille background field.
 
 use std::time::Instant;
 
-// ── Wave tuning ──────────────────────────────────────────────
+// ── Animation tuning ──────────────────────────────────────────────
 
-const WAVE_SPEED_MS: u64 = 30; // ms per wave step
-const WAVE_BOOST_SPEED_MS: u64 = 10; // faster wave during mouse activity
-const GLITCH_INTERVAL_MIN_MS: u64 = 8000; // min time between glitches
-const GLITCH_INTERVAL_MAX_MS: u64 = 15000; // max time between glitches
-const MOUSE_BOOST_DURATION_MS: u64 = 750; // how long mouse boost lasts
+const WAVE_SPEED_MS: u64 = 18;
+const SHIMMER_SPEED_MS: u64 = 11;
+const WAVE_CYCLE_STEPS: f32 = 768.0;
+const SHIMMER_CYCLE_STEPS: f32 = 1024.0;
 
-// ── Glitch tuning ──────────────────────────────────────────────
+// ── Reveal tuning (row-by-row typing) ─────────────────────────────
 
-const MIN_GLITCH_CYCLES: usize = 2;
-const MAX_GLITCH_CYCLES: usize = 4;
-const DISINTEGRATE_MS: u64 = 400;
+const REVEAL_CHAR_STEP_MS: u64 = 6;
+const REVEAL_ROW_DELAY_MS: u64 = 55;
 
-// ── Types ──────────────────────────────────────────────────────
+// ── Field tuning ───────────────────────────────────────────────────
 
-/// Appearance of a single cell in the banner overlay.
-#[derive(Clone, Copy)]
-pub enum BannerCellKind {
-    /// Full block `█`.
-    Block,
-    /// Light shade `░`.
-    Shade,
-    /// Corrupted — shows a `0` or `1`.
-    Glitch(char),
+const FIELD_GLYPHS: [char; 8] = [' ', '.', '·', '⠂', '⠆', '⠖', '⠶', '⣿'];
+
+fn hash01(x: i32, y: i32, t: i32) -> f32 {
+    let mut n = (x as u32).wrapping_mul(374_761_393)
+        ^ (y as u32).wrapping_mul(668_265_263)
+        ^ (t as u32).wrapping_mul(2_147_483_647);
+    n ^= n >> 13;
+    n = n.wrapping_mul(1_274_126_177);
+    ((n >> 8) & 0xFF_FFFF) as f32 / 0xFF_FFFF as f32
 }
 
-/// Banner row data for the overlay.
+#[derive(Clone, Copy)]
+pub enum BannerCellKind {
+    Block,
+    Shade,
+}
+
 #[derive(Clone)]
 pub struct BannerRow {
     pub row: usize,
     pub cells: Vec<(usize, BannerCellKind)>,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-enum Phase {
-    Wave,
-    GlitchDisintegrating,
-    GlitchBetweenCycles,
 }
 
 const BANNER: &[&str] = &[
@@ -58,74 +51,26 @@ const BANNER: &[&str] = &[
     r"                                       ░░░░░       ░░░░░░",
 ];
 
-fn shuffle<T>(v: &mut [T]) {
-    let n = v.len();
-    for i in (1..n).rev() {
-        let j = rand::random::<u32>() as usize % (i + 1);
-        v.swap(i, j);
-    }
-}
-
-fn rand_between(lo: u64, hi: u64) -> u64 {
-    lo + rand::random::<u32>() as u64 % (hi - lo + 1)
-}
-
 pub struct BannerGlitch {
     pub rows: usize,
     pub cols: usize,
     banner_base: Vec<BannerRow>,
-    phase: Phase,
-    phase_started: Instant,
-    wave_offset: f32,
-    next_glitch_at: Instant,
-    glitch_cycle: usize,
-    total_glitch_cycles: usize,
-    corrupt_candidates: Vec<(usize, usize)>,
-    corrupt_count: usize,
-    peak_corrupt: usize,
-    corrupt_chars: Vec<char>,
-    border_noise: Vec<(usize, usize)>,
-    next_between_ms: u64,
-    pub vibration: (i16, i16),
-    /// Mouse movement speeds up wave temporarily until this time.
-    mouse_boost_until: Instant,
+    wave_phase: f32,
+    shimmer_phase: f32,
+    reveal_started: Instant,
+    mouse_energy: f32,
 }
 
 impl BannerGlitch {
     pub fn new(rows: usize, cols: usize) -> Self {
-        let overlay = Self::make_banner_overlay(rows, cols);
-        let mut candidates: Vec<(usize, usize)> = overlay
-            .iter()
-            .flat_map(|row| row.cells.iter().map(move |&(col, _)| (row.row, col)))
-            .collect();
-        shuffle(&mut candidates);
-        let corrupt_chars = candidates
-            .iter()
-            .map(|_| if rand::random::<bool>() { '1' } else { '0' })
-            .collect();
-
         Self {
             rows,
             cols,
-            banner_base: overlay,
-            phase: Phase::Wave,
-            phase_started: Instant::now(),
-            wave_offset: 0.0,
-            next_glitch_at: Instant::now()
-                + std::time::Duration::from_millis(rand_between(
-                    GLITCH_INTERVAL_MIN_MS,
-                    GLITCH_INTERVAL_MAX_MS,
-                )),
-            glitch_cycle: 0,
-            total_glitch_cycles: 0,
-            corrupt_candidates: candidates,
-            corrupt_count: 0,
-            peak_corrupt: 0,
-            corrupt_chars,
-            border_noise: Vec::new(),
-            next_between_ms: 0,
-            vibration: (0, 0),
-            mouse_boost_until: Instant::now(),
+            banner_base: Self::make_banner_overlay(rows, cols),
+            wave_phase: 0.0,
+            shimmer_phase: 0.0,
+            reveal_started: Instant::now(),
+            mouse_energy: 0.0,
         }
     }
 
@@ -163,215 +108,79 @@ impl BannerGlitch {
     }
 
     pub fn notify_mouse(&mut self) {
-        self.mouse_boost_until =
-            Instant::now() + std::time::Duration::from_millis(MOUSE_BOOST_DURATION_MS);
+        self.mouse_energy = (self.mouse_energy + 0.35).min(1.0);
     }
 
     pub fn tick(&mut self) {
-        match self.phase {
-            Phase::Wave => {
-                // Advance wave — faster during mouse activity
-                let speed = if Instant::now() < self.mouse_boost_until {
-                    WAVE_BOOST_SPEED_MS
-                } else {
-                    WAVE_SPEED_MS
-                };
-                self.wave_offset += speed as f32 / 1000.0;
-                if self.wave_offset >= 1.0 {
-                    self.wave_offset -= 1.0;
-                }
-
-                // Check if it's time for glitch
-                if Instant::now() >= self.next_glitch_at {
-                    self.start_glitch();
-                }
-            }
-            Phase::GlitchDisintegrating => {
-                let elapsed = self.phase_started.elapsed().as_millis() as u64;
-                let progress = (elapsed as f64 / DISINTEGRATE_MS as f64).min(1.0);
-                self.corrupt_count =
-                    ((progress * self.peak_corrupt as f64) as usize).min(self.peak_corrupt);
-
-                let max_shake = 1i16;
-                self.vibration = (
-                    (rand::random::<i16>() % (max_shake * 2 + 1)) - max_shake,
-                    (rand::random::<i16>() % (max_shake * 2 + 1)) - max_shake,
-                );
-
-                if elapsed % 60 < 16 {
-                    self.inject_border_noise_incremental(3 + (progress * 8.0) as usize);
-                }
-
-                if elapsed >= DISINTEGRATE_MS {
-                    self.corrupt_count = 0;
-                    self.vibration = (0, 0);
-                    self.border_noise.clear();
-                    self.glitch_cycle += 1;
-                    if self.glitch_cycle >= self.total_glitch_cycles {
-                        self.end_glitch();
-                    } else {
-                        self.next_between_ms = rand_between(300, 800);
-                        self.phase = Phase::GlitchBetweenCycles;
-                        self.phase_started = Instant::now();
-                    }
-                }
-            }
-            Phase::GlitchBetweenCycles => {
-                if self.phase_started.elapsed().as_millis() as u64 >= self.next_between_ms {
-                    self.start_corruption_cycle();
-                }
-            }
-        }
+        let wave_step = WAVE_SPEED_MS as f32 / WAVE_CYCLE_STEPS;
+        let shimmer_step = SHIMMER_SPEED_MS as f32 / SHIMMER_CYCLE_STEPS;
+        self.wave_phase = (self.wave_phase + wave_step) % 1.0;
+        self.shimmer_phase = (self.shimmer_phase + shimmer_step) % 1.0;
+        self.mouse_energy *= 0.9;
     }
 
-    fn start_glitch(&mut self) {
-        self.total_glitch_cycles = MIN_GLITCH_CYCLES
-            + rand::random::<u32>() as usize % (MAX_GLITCH_CYCLES - MIN_GLITCH_CYCLES + 1);
-        self.glitch_cycle = 0;
-        self.start_corruption_cycle();
-    }
-
-    fn start_corruption_cycle(&mut self) {
-        shuffle(&mut self.corrupt_candidates);
-        for ch in self.corrupt_chars.iter_mut() {
-            *ch = if rand::random::<bool>() { '1' } else { '0' };
-        }
-        let total = self.corrupt_candidates.len();
-        let frac = 0.25 + rand::random::<f64>() * 0.25;
-        self.peak_corrupt = ((total as f64 * frac) as usize).max(1);
-        self.corrupt_count = 0;
-        self.border_noise.clear();
-        self.phase = Phase::GlitchDisintegrating;
-        self.phase_started = Instant::now();
-    }
-
-    fn end_glitch(&mut self) {
-        self.phase = Phase::Wave;
-        self.phase_started = Instant::now();
-        self.corrupt_count = 0;
-        self.vibration = (0, 0);
-        self.border_noise.clear();
-        self.next_glitch_at = Instant::now()
-            + std::time::Duration::from_millis(rand_between(
-                GLITCH_INTERVAL_MIN_MS,
-                GLITCH_INTERVAL_MAX_MS,
-            ));
-    }
-
-    fn inject_border_noise_incremental(&mut self, count: usize) {
-        if self.banner_base.is_empty() {
-            return;
-        }
-        let min_row = self.banner_base.iter().map(|r| r.row).min().unwrap_or(0);
-        let max_row = self.banner_base.iter().map(|r| r.row).max().unwrap_or(0);
-        let min_col = self
-            .banner_base
-            .iter()
-            .flat_map(|r| r.cells.iter().map(|&(c, _)| c))
-            .min()
-            .unwrap_or(0);
-        let max_col = self
-            .banner_base
-            .iter()
-            .flat_map(|r| r.cells.iter().map(|&(c, _)| c))
-            .max()
-            .unwrap_or(0);
-
-        let margin = 3usize;
-        for _ in 0..count {
-            let side = rand::random::<u32>() % 4;
-            let (r, c) = match side {
-                0 => {
-                    let r = min_row.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % (margin + 1);
-                    let span = max_col.saturating_sub(min_col) + 2 * margin + 1;
-                    let c = min_col.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % span.max(1);
-                    (r, c)
-                }
-                1 => {
-                    let r = max_row + 1 + rand::random::<u32>() as usize % margin.max(1);
-                    let span = max_col.saturating_sub(min_col) + 2 * margin + 1;
-                    let c = min_col.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % span.max(1);
-                    (r, c)
-                }
-                2 => {
-                    let span = max_row.saturating_sub(min_row) + 2 * margin + 1;
-                    let r = min_row.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % span.max(1);
-                    let c = min_col.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % (margin + 1);
-                    (r, c)
-                }
-                _ => {
-                    let span = max_row.saturating_sub(min_row) + 2 * margin + 1;
-                    let r = min_row.saturating_sub(margin)
-                        + rand::random::<u32>() as usize % span.max(1);
-                    let c = max_col + 1 + rand::random::<u32>() as usize % margin.max(1);
-                    (r, c)
-                }
-            };
-            if r < self.rows && c < self.cols {
-                self.border_noise.push((r, c));
-            }
-        }
-    }
-
-    /// Build the overlay for rendering. Returns banner rows with glitch corruption
-    /// and the current wave offset for gradient calculation.
     pub fn visible_overlay(&self) -> (Vec<BannerRow>, f32) {
-        let corrupted: std::collections::HashSet<(usize, usize)> = self.corrupt_candidates
-            [..self.corrupt_count]
-            .iter()
-            .cloned()
-            .collect();
-
-        let corrupt_map: std::collections::HashMap<(usize, usize), char> = self.corrupt_candidates
-            [..self.corrupt_count]
+        let elapsed_ms = self.reveal_started.elapsed().as_millis() as u64;
+        let rows = self
+            .banner_base
             .iter()
             .enumerate()
-            .map(|(i, &pos)| (pos, self.corrupt_chars[i]))
-            .collect();
-
-        let mut rows: Vec<BannerRow> = self
-            .banner_base
-            .iter()
-            .map(|row| {
-                let cells = row
-                    .cells
-                    .iter()
-                    .map(|&(col, kind)| {
-                        if corrupted.contains(&(row.row, col)) {
-                            let ch = corrupt_map.get(&(row.row, col)).copied().unwrap_or('0');
-                            (col, BannerCellKind::Glitch(ch))
-                        } else {
-                            (col, kind)
-                        }
-                    })
-                    .collect();
-                BannerRow {
-                    row: row.row,
-                    cells,
+            .filter_map(|(row_idx, row)| {
+                let row_start_ms = row_idx as u64 * REVEAL_ROW_DELAY_MS;
+                if elapsed_ms < row_start_ms {
+                    return None;
                 }
+
+                let row_elapsed_ms = elapsed_ms - row_start_ms;
+                let visible_cells =
+                    ((row_elapsed_ms / REVEAL_CHAR_STEP_MS) as usize + 1).min(row.cells.len());
+                if visible_cells == 0 {
+                    return None;
+                }
+
+                Some(BannerRow {
+                    row: row.row,
+                    cells: row.cells.iter().take(visible_cells).copied().collect(),
+                })
             })
             .collect();
 
-        if !self.border_noise.is_empty() {
-            let mut by_row: std::collections::HashMap<usize, Vec<(usize, BannerCellKind)>> =
-                std::collections::HashMap::new();
-            for &(r, c) in &self.border_noise {
-                let ch = if rand::random::<bool>() { '1' } else { '0' };
-                by_row
-                    .entry(r)
-                    .or_default()
-                    .push((c, BannerCellKind::Glitch(ch)));
-            }
-            for (r, cells) in by_row {
-                rows.push(BannerRow { row: r, cells });
-            }
-        }
+        (rows, self.wave_phase)
+    }
 
-        (rows, self.wave_offset)
+    pub fn field_at(&self, row: usize, col: usize) -> (char, u8) {
+        let x = col as f32;
+        let y = row as f32;
+        let t = self.wave_phase * std::f32::consts::TAU;
+        let s = self.shimmer_phase * std::f32::consts::TAU;
+
+        // Slowly changing flow direction to avoid static diagonal repetition.
+        let flow_x = (t * 0.21).sin() * 1.8 + (s * 0.37).cos() * 1.2;
+        let flow_y = (t * 0.17).cos() * 1.6 - (s * 0.29).sin() * 1.0;
+        let px = x + flow_x;
+        let py = y + flow_y;
+
+        // Domain warp: nested waves emulate liquid/curl-like advection.
+        let warp_x = (py * 0.14 + t * 0.9).sin() * 2.1 + (px * 0.05 - s * 0.7).cos() * 1.3;
+        let warp_y = (px * 0.12 - t * 1.1).cos() * 2.0 + (py * 0.06 + s * 0.8).sin() * 1.4;
+        let qx = px + warp_x;
+        let qy = py + warp_y;
+
+        // Multi-frequency field with incommensurate frequencies for less predictability.
+        let low = (qx * 0.09 + qy * 0.05 + t * 0.8).sin() * 0.45;
+        let mid = (qx * 0.17 - qy * 0.11 - t * 1.2).cos() * 0.32;
+        let high = ((qx * 0.31 + qy * 0.27) + s * 1.8).sin() * 0.18;
+
+        let cell_noise = hash01(col as i32, row as i32, (self.wave_phase * 600.0) as i32);
+        let noise = (cell_noise - 0.5) * 0.18;
+        let mouse_swirl = ((qx * 0.38 - qy * 0.21) + t * 2.5).sin() * 0.24 * self.mouse_energy;
+
+        let value = (low + mid + high + noise + mouse_swirl + 1.0) * 0.5;
+        let density = value.clamp(0.0, 1.0).powf(1.15);
+
+        let idx = (density * (FIELD_GLYPHS.len() - 1) as f32).round() as usize;
+        let glyph = FIELD_GLYPHS[idx.min(FIELD_GLYPHS.len() - 1)];
+        let gray = (48.0 + density * 120.0) as u8;
+        (glyph, gray)
     }
 }

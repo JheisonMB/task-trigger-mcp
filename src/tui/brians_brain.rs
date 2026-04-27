@@ -6,7 +6,10 @@
 //!
 //! Includes automatic particle count validation and noise injection to prevent
 //! the automaton from stabilizing with too few particles.
+//!
+//! Colors use the canopy banner green gradient palette.
 
+use crate::shared::banner::BANNER_GRADIENT;
 use std::time::Instant;
 
 // ── Automaton tuning (tuned: slower, less intrusive noise) ───────
@@ -19,10 +22,9 @@ const NOISE_PULSE_PROBABILITY: f64 = 0.05;
 const EDGE_PULSE_BURST_MIN: usize = 1;
 const EDGE_PULSE_BURST_MAX: usize = 6;
 
-/// Base green channel for the banner seeded cells.
-const BANNER_GREEN: u8 = 175;
-/// Green channel for edge-noise injected cells.
-const NOISE_GREEN: u8 = 220;
+// Canopy banner green gradient indices for automaton coloring
+const BANNER_GREEN_IDX: usize = 3; // Mid-range green
+const NOISE_GREEN_IDX: usize = 2; // Brighter green for edge effects
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CellState {
@@ -46,9 +48,9 @@ pub struct BriansBrain {
 }
 
 /// How long mouse boost lasts (ms).
-const MOUSE_BOOST_DURATION_MS: u64 = 750;
+const MOUSE_BOOST_DURATION_MS: u64 = 1000;
 /// Step interval during mouse boost.
-const MOUSE_BOOST_STEP_MS: u64 = 80;
+const MOUSE_BOOST_STEP_MS: u64 = 30;
 
 impl BriansBrain {
     pub fn new(rows: usize, cols: usize, step_interval_ms: u64) -> Self {
@@ -56,17 +58,19 @@ impl BriansBrain {
         let mut green_grid = vec![vec![0u8; cols]; rows];
 
         // Seed with random scattered On cells along edges and a few inside
+        // Use canopy banner greens for the automaton colors
         for r in 0..rows {
             for c in 0..cols {
                 if (r == 0 || r == rows - 1 || c == 0 || c == cols - 1)
                     && rand::random::<f64>() < 0.15
                 {
                     grid[r][c] = CellState::On;
-                    green_grid[r][c] = NOISE_GREEN;
+                    // Use a bright canopy green for edge cells
+                    green_grid[r][c] = BANNER_GRADIENT[NOISE_GREEN_IDX].1;
                 } else if rand::random::<f64>() < 0.02 {
                     grid[r][c] = CellState::On;
-                    green_grid[r][c] =
-                        BANNER_GREEN.saturating_add((rand::random::<u8>() % 30).wrapping_sub(15));
+                    // Use mid-range canopy greens for interior cells
+                    green_grid[r][c] = BANNER_GRADIENT[3 + (r % 3)].1;
                 }
             }
         }
@@ -149,7 +153,7 @@ impl BriansBrain {
             let drift = (rand::random::<i16>() % 11) - 5;
             (avg + drift).clamp(100, 255) as u8
         } else {
-            BANNER_GREEN
+            BANNER_GRADIENT[BANNER_GREEN_IDX].1
         }
     }
 
@@ -202,7 +206,7 @@ impl BriansBrain {
                     && rand::random::<f64>() < probability
                 {
                     self.grid[r][c] = CellState::On;
-                    self.green_grid[r][c] = NOISE_GREEN;
+                    self.green_grid[r][c] = BANNER_GRADIENT[NOISE_GREEN_IDX].1;
                     injected += 1;
                     if injected >= max_injections {
                         return injected;

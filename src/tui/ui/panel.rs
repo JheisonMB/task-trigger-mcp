@@ -11,6 +11,7 @@ use ratatui::Frame;
 use super::{
     ACCENT, DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING,
 };
+use crate::shared::banner::BANNER_GRADIENT;
 use crate::tui::agent::ScreenSnapshot;
 use crate::tui::app::{relative_time, AgentEntry, App, Focus};
 use crate::tui::banner_glitch::BannerCellKind;
@@ -457,7 +458,7 @@ fn render_vt_screen_with_mask(
     }
 }
 
-// ── Canopy banner with glitch overlay ──────────────────────────
+// ── Canopy banner with dynamic field ───────────────────────────
 
 fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
     let Some(ref glitch) = app.banner_glitch else {
@@ -466,29 +467,47 @@ fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     let buf = frame.buffer_mut();
-    let glitch_color = Color::Rgb(50, 220, 50);
-    let (vx, vy) = glitch.vibration;
+
+    for row in 0..area.height as usize {
+        for col in 0..area.width as usize {
+            let (ch, gray) = glitch.field_at(row, col);
+            let x = area.x + col as u16;
+            let y = area.y + row as u16;
+            let buf_cell = &mut buf[(x, y)];
+            let mut sym = [0u8; 4];
+            let glyph = ch.encode_utf8(&mut sym);
+            buf_cell.set_symbol(glyph);
+            buf_cell.set_style(Style::default().fg(Color::Rgb(gray, gray, gray)));
+        }
+    }
+
     let (overlay, wave_offset) = glitch.visible_overlay();
     let total_rows = overlay.len();
 
     for (row_idx, br) in overlay.into_iter().enumerate() {
-        // Use wizard gradient colors with wave offset to scroll the gradient vertically
-        let shifted_index =
-            ((row_idx as f32 + wave_offset * total_rows as f32) as usize) % total_rows.max(1);
-        let (r, g, b) = crate::shared::banner::gradient_rgb(shifted_index, total_rows);
+        // Continuous mirrored gradient per line:
+        // light -> dark -> light with sub-step interpolation for smooth flow.
+        let row_pos = if total_rows > 1 {
+            row_idx as f32 / (total_rows - 1) as f32
+        } else {
+            0.0
+        };
+        let (r, g, b) = sample_mirrored_gradient((row_pos + wave_offset) % 1.0);
         let accent = Color::Rgb(r, g, b);
-        let accent_dim = Color::Rgb(r.saturating_sub(40), g.saturating_sub(40), b);
-        let render_row = br.row as i32 + vy as i32;
-        if render_row < 0 || render_row as u16 >= area.height {
+        let accent_dim = Color::Rgb(
+            r.saturating_sub(40),
+            g.saturating_sub(40),
+            b.saturating_sub(40),
+        );
+        if br.row >= area.height as usize {
             continue;
         }
         for &(c, kind) in &br.cells {
-            let render_col = c as i32 + vx as i32;
-            if render_col < 0 || render_col as u16 >= area.width {
+            if c >= area.width as usize {
                 continue;
             }
-            let x = area.x + render_col as u16;
-            let y = area.y + render_row as u16;
+            let x = area.x + c as u16;
+            let y = area.y + br.row as u16;
             let buf_cell = &mut buf[(x, y)];
             match kind {
                 BannerCellKind::Block => {
@@ -499,34 +518,57 @@ fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
                     buf_cell.set_symbol("░");
                     buf_cell.set_style(Style::default().fg(accent_dim));
                 }
-                BannerCellKind::Glitch(ch) => {
-                    let s: String = std::iter::once(ch).collect();
-                    buf_cell.set_symbol(&s);
-                    buf_cell.set_style(Style::default().fg(glitch_color));
-                }
             }
         }
     }
 }
 
+fn sample_mirrored_gradient(phase: f32) -> (u8, u8, u8) {
+    let len = BANNER_GRADIENT.len();
+    if len == 0 {
+        return (255, 255, 255);
+    }
+    if len == 1 {
+        return BANNER_GRADIENT[0];
+    }
+
+    // Mirror map 0..1 -> 0..1..0, so neighbors always follow the same gradient order.
+    let mirrored = if phase < 0.5 {
+        phase * 2.0
+    } else {
+        (1.0 - phase) * 2.0
+    };
+
+    let max_idx = (len - 1) as f32;
+    let scaled = mirrored * max_idx;
+    let i0 = scaled.floor() as usize;
+    let i1 = (i0 + 1).min(len - 1);
+    let t = (scaled - i0 as f32).clamp(0.0, 1.0);
+
+    let (r0, g0, b0) = BANNER_GRADIENT[i0];
+    let (r1, g1, b1) = BANNER_GRADIENT[i1];
+
+    let lerp = |a: u8, b: u8| -> u8 { ((a as f32) + (b as f32 - a as f32) * t).round() as u8 };
+    (lerp(r0, r1), lerp(g0, g1), lerp(b0, b1))
+}
+
 fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
     let banner = crate::shared::banner::BANNER.trim_matches('\n');
     let banner_lines: Vec<&str> = banner.lines().collect();
-    let lines: Vec<Line> = banner_lines
-        .iter()
-        .enumerate()
-        .map(|(i, l)| {
-            let (r, g, b) = crate::shared::banner::gradient_rgb(i, banner_lines.len());
-            Line::from(Span::styled(
-                (*l).to_string(),
-                Style::default()
-                    .fg(Color::Rgb(r, g, b))
-                    .add_modifier(Modifier::BOLD),
-            ))
-        })
-        .collect();
+    let total = banner_lines.len();
+    let mut styled_lines = Vec::new();
+    for (i, line) in banner_lines.iter().enumerate() {
+        let gradient_index = (i * BANNER_GRADIENT.len()) / total.max(1);
+        let (r, g, b) = BANNER_GRADIENT[gradient_index.min(BANNER_GRADIENT.len() - 1)];
+        styled_lines.push(Line::from(Span::styled(
+            (*line).to_string(),
+            Style::default()
+                .fg(Color::Rgb(r, g, b))
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
 
-    let total_banner = lines.len() as u16;
+    let total_banner = styled_lines.len() as u16;
     let top_pad = if area.height > total_banner {
         (area.height - total_banner) / 2
     } else {
@@ -540,7 +582,7 @@ fn draw_canopy_banner(frame: &mut Frame, area: Rect) {
         total_banner.min(area.height),
     );
 
-    let banner = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
+    let banner = Paragraph::new(styled_lines).alignment(ratatui::layout::Alignment::Center);
     frame.render_widget(banner, banner_area);
 }
 
@@ -551,6 +593,9 @@ pub(crate) fn draw_brians_brain(
     area: Rect,
     brain: &crate::tui::brians_brain::BriansBrain,
 ) {
+    const BRAIN_ON_GLYPHS: [&str; 5] = ["⠂", "⠆", "⠖", "⠶", "⣿"];
+    const BRAIN_DYING_GLYPHS: [&str; 4] = ["·", "⠂", "⠆", "⠒"];
+
     let buf = frame.buffer_mut();
 
     for (r, row) in brain.grid.iter().enumerate() {
@@ -565,10 +610,19 @@ pub(crate) fn draw_brians_brain(
             let y = area.y + r as u16;
             let g = brain.green_grid[r][c];
             let (ch, color) = match cell {
-                CellState::On => ("█", Color::Rgb(0, g, 0)),
+                CellState::On => {
+                    let idx = ((g as usize * (BRAIN_ON_GLYPHS.len() - 1)) / 255)
+                        .min(BRAIN_ON_GLYPHS.len() - 1);
+                    (BRAIN_ON_GLYPHS[idx], Color::Rgb(0, g, 0))
+                }
                 CellState::Dying => {
                     let dim_g = (g as u16 * 6 / 10) as u8;
-                    ("░", Color::Rgb(dim_g / 3, dim_g, dim_g / 3))
+                    let idx = ((dim_g as usize * (BRAIN_DYING_GLYPHS.len() - 1)) / 255)
+                        .min(BRAIN_DYING_GLYPHS.len() - 1);
+                    (
+                        BRAIN_DYING_GLYPHS[idx],
+                        Color::Rgb(dim_g / 3, dim_g, dim_g / 3),
+                    )
                 }
                 CellState::Off => (" ", Color::Reset),
             };
