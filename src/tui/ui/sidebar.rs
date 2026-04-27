@@ -47,25 +47,12 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let has_term = !term_indices.is_empty();
     let has_groups = !app.split_groups.is_empty();
 
-    if !has_bg && !has_ix && !has_term && !has_groups {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(DIM));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let msg = Paragraph::new("  No agents registered").style(Style::default().fg(DIM));
-        frame.render_widget(msg, inner);
-        return;
-    }
-
-    let border_color = DIM;
-    let row_h = 4u16;
-    let grp_row_h = 2u16; // groups section: 1 line per group + spacer
     let dashboard_area = if area.height >= 6 {
         Some(Rect::new(area.x, area.y + area.height - 6, area.width, 6))
     } else {
         None
     };
+
     let content_area = if let Some(dashboard) = dashboard_area {
         Rect::new(
             area.x,
@@ -77,29 +64,55 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         area
     };
 
-    // Compute section areas dynamically
+    if !has_bg && !has_ix && !has_term && !has_groups {
+        let brain_area = Rect::new(
+            area.x,
+            area.y,
+            area.width,
+            area.height
+                .saturating_sub(dashboard_area.map(|d| d.height).unwrap_or(0)),
+        );
+        if brain_area.height >= 3 && brain_area.width >= 6 {
+            if let Some(brain) = app.sidebar_brain.as_ref() {
+                crate::tui::ui::panel::draw_brians_brain(frame, brain_area, brain);
+            }
+        }
+        if let Some(dashboard_area) = dashboard_area {
+            let app_uptime_seconds = app.process_start_time.elapsed().as_secs();
+            crate::tui::ui::system_dashboard::render_system_dashboard(
+                frame,
+                dashboard_area,
+                &app.system_info,
+                app_uptime_seconds,
+                app.temperature_unit,
+            );
+        }
+        return;
+    }
+
     let bg_needed = if has_bg {
-        bg_indices.len() as u16 * row_h + 2
+        bg_indices.len() as u16 * 4 + 2
     } else {
         0
     };
     let ix_needed = if has_ix {
-        ix_indices.len() as u16 * row_h + 2
+        ix_indices.len() as u16 * 4 + 2
     } else {
         0
     };
     let term_needed = if has_term {
-        term_indices.len() as u16 * row_h + 2
+        term_indices.len() as u16 * 4 + 2
     } else {
         0
     };
     let grp_needed = if has_groups {
-        app.split_groups.len() as u16 * grp_row_h + 2
+        app.split_groups.len() as u16 * 2 + 2
     } else {
         0
     };
     let total_needed = bg_needed + ix_needed + term_needed + grp_needed;
 
+    let border_color = DIM;
     let section_count = has_bg as u16 + has_ix as u16 + has_term as u16 + has_groups as u16;
     let mut brain_area: Option<Rect> = None;
 
