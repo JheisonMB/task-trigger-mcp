@@ -543,14 +543,23 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     let kind = mouse.kind;
     let modifiers = mouse.modifiers;
     
-    // Normal Left click (no Shift) — copy current line from terminal
+    // Normal Left click (no Shift) — copy line from PTY at click position
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
         && !modifiers.contains(KeyModifiers::SHIFT)
     {
         if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
             let idx = *idx;
             if let Some(agent) = app.interactive_agents.get(idx) {
-                if let Some(line_text) = agent.get_current_line_text() {
+                // Calculate relative position within PTY area
+                // Assume click is within the right panel (where PTY is rendered)
+                let sidebar_width = if app.sidebar_visible { 29 } else { 0 };
+                let header_height = 1; // Header is 1 line
+                
+                // Calculate relative position within PTY area
+                let pty_col = mouse.column.saturating_sub(sidebar_width);
+                let pty_row = mouse.row.saturating_sub(header_height);
+                
+                if let Some(line_text) = agent.get_clean_pty_line_at_position(pty_col, pty_row) {
                     // Try to copy to clipboard
                     let _ = arboard::Clipboard::new()
                         .and_then(|mut clipboard| clipboard.set_text(&line_text));
