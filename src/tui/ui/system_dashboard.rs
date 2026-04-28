@@ -32,6 +32,18 @@ fn format_megabytes_smart(mb: u64) -> String {
     }
 }
 
+/// Format uptime in human-readable form: Xm, Xh Xm, or Xd Xh.
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let mins = (seconds % 3_600) / 60;
+    match (days, hours, mins) {
+        (0, 0, m) => format!("{m}m"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
 /// Render the system dashboard in the sidebar
 pub fn render_system_dashboard(
     frame: &mut Frame,
@@ -40,19 +52,23 @@ pub fn render_system_dashboard(
     app_uptime_seconds: u64,
     temperature_unit: TemperatureUnit,
 ) {
-    // Only render if we have enough space
-    if area.height < 6 {
+    // Only render if we have enough space (3 content lines + 2 borders)
+    if area.height < 5 {
         return;
     }
 
+    let max_lines = area.height.saturating_sub(2) as usize;
     let dashboard =
-        create_system_dashboard_lines(system_info, app_uptime_seconds, temperature_unit);
+        create_system_dashboard_lines(system_info, app_uptime_seconds, temperature_unit, max_lines);
 
     frame.render_widget(
         Paragraph::new(dashboard)
             .block(
                 Block::default()
-                    .title(Span::styled(" sysinfo ", Style::default().fg(DIM)))
+                    .title(
+                        Line::from(Span::styled(" sysinfo ", Style::default().fg(DIM)))
+                            .alignment(ratatui::layout::Alignment::Right),
+                    )
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(DIM)),
             )
@@ -66,6 +82,7 @@ fn create_system_dashboard_lines(
     system_info: &SystemInfo,
     app_uptime_seconds: u64,
     temperature_unit: TemperatureUnit,
+    max_lines: usize,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         // CPU line
@@ -100,23 +117,18 @@ fn create_system_dashboard_lines(
                 Style::default().fg(DIM),
             ),
         ]),
-        // Uptime line
-        Line::from(vec![
-            Span::styled("uptime: ", Style::default().fg(Color::White)),
-            Span::styled(system_info.format_uptime(), Style::default().fg(DIM)),
-        ]),
         // Canopy runtime line
         Line::from(vec![
-            Span::styled("canopy: ", Style::default().fg(Color::White)),
+            Span::styled("uptime: ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("{}m", app_uptime_seconds / 60),
+                format_uptime(app_uptime_seconds),
                 Style::default().fg(DIM),
             ),
         ]),
     ];
 
-    // Only add GPU line if GPU info is available
-    if system_info.gpu_info.is_some() {
+    // Only add GPU line if GPU info is available and we have room
+    if system_info.gpu_info.is_some() && max_lines >= 5 {
         lines.insert(
             2,
             Line::from(vec![
@@ -171,6 +183,7 @@ fn create_system_dashboard_lines(
         );
     }
 
+    lines.truncate(max_lines);
     lines
 }
 
@@ -192,17 +205,17 @@ mod tests {
     #[test]
     fn test_dashboard_creation() {
         let info = SystemInfo::new();
-        let lines = create_system_dashboard_lines(&info, 120, TemperatureUnit::Celsius); // 120 seconds uptime
+        let lines = create_system_dashboard_lines(&info, 120, TemperatureUnit::Celsius, 5); // 120 seconds uptime
 
-        // Should have 4 or 5 lines depending on whether GPU info is available
+        // Should have 3 or 4 lines depending on whether GPU info is available
         assert!(
-            lines.len() >= 4,
-            "Expected at least 4 lines, got {}",
+            lines.len() >= 3,
+            "Expected at least 3 lines, got {}",
             lines.len()
         );
         assert!(
-            lines.len() <= 5,
-            "Expected at most 5 lines, got {}",
+            lines.len() <= 4,
+            "Expected at most 4 lines, got {}",
             lines.len()
         );
         // Check key lines exist regardless of GPU line position
@@ -213,8 +226,7 @@ mod tests {
             .join("\n");
         assert!(all_text.contains("cpu:"), "Missing cpu line");
         assert!(all_text.contains("mem:"), "Missing mem line");
-        assert!(all_text.contains("uptime:"), "Missing uptime line");
-        assert!(all_text.contains("canopy:"), "Missing canopy line");
+        assert!(all_text.contains("uptime:"), "Missing canopy uptime line");
         assert!(all_text.contains("2m"), "Should show 2 minutes uptime");
     }
 }

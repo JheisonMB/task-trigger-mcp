@@ -358,22 +358,6 @@ impl SystemInfo {
         None
     }
 
-    pub fn format_uptime(&self) -> String {
-        let seconds = self.system_uptime;
-        let minutes = seconds / 60;
-        let hours = minutes / 60;
-        let days = hours / 24;
-
-        if days > 0 {
-            format!("{}d {}h", days, hours % 24)
-        } else if hours > 0 {
-            format!("{}h {}m", hours, minutes % 60)
-        } else if minutes > 0 {
-            format!("{}m", minutes)
-        } else {
-            format!("{}s", seconds)
-        }
-    }
 }
 
 fn detect_host_platform() -> HostPlatform {
@@ -535,13 +519,6 @@ mod tests {
         assert!((0.0..=100.0).contains(&percent));
 
         assert!(info.memory_total >= info.memory_used);
-    }
-
-    #[test]
-    fn test_uptime_formatting() {
-        let info = SystemInfo::new();
-        let formatted = info.format_uptime();
-        assert!(!formatted.is_empty());
     }
 
     #[test]

@@ -47,8 +47,15 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let has_term = !term_indices.is_empty();
     let has_groups = !app.split_groups.is_empty();
 
-    let dashboard_area = if area.height >= 6 {
-        Some(Rect::new(area.x, area.y + area.height - 6, area.width, 6))
+    // Responsive dashboard height: 5 without GPU, 6 with GPU (content + 2 borders)
+    let dashboard_height = if app.system_info.gpu_info.is_some() { 6 } else { 5 };
+    let dashboard_area = if area.height >= dashboard_height {
+        Some(Rect::new(
+            area.x,
+            area.y + area.height - dashboard_height,
+            area.width,
+            dashboard_height,
+        ))
     } else {
         None
     };
