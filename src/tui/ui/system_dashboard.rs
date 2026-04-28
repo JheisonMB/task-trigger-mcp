@@ -11,6 +11,27 @@ use super::DIM;
 use crate::domain::canopy_config::TemperatureUnit;
 use crate::system::SystemInfo;
 
+/// Format bytes smartly: show in MB if < 1 GB, otherwise in GB, with 2 decimals
+fn format_bytes_smart(bytes: u64) -> String {
+    let gb = bytes as f32 / 1_073_741_824.0;
+    if gb < 1.0 {
+        let mb = bytes as f32 / 1_048_576.0;
+        format!("{:.2}MB", mb)
+    } else {
+        format!("{:.2}GB", gb)
+    }
+}
+
+/// Format megabytes smartly: show in MB if < 1024 MB, otherwise in GB, with 2 decimals
+fn format_megabytes_smart(mb: u64) -> String {
+    let gb = mb as f32 / 1024.0;
+    if gb < 1.0 {
+        format!("{:.2}MB", mb)
+    } else {
+        format!("{:.2}GB", gb)
+    }
+}
+
 /// Render the system dashboard in the sidebar
 pub fn render_system_dashboard(
     frame: &mut Frame,
@@ -68,14 +89,13 @@ fn create_system_dashboard_lines(
             Span::styled("mem: ", Style::default().fg(Color::White)),
             Span::styled(
                 format!(
-                    "{:.1}/{:.1}GB ({:.0}%)",
-                    system_info.memory_used_gb(),
-                    system_info.memory_total_gb(),
+                    "{:.0}% {}",
                     if system_info.memory_total > 0 {
                         (system_info.memory_used as f32 / system_info.memory_total as f32) * 100.0
                     } else {
                         0.0
-                    }
+                    },
+                    format_bytes_smart(system_info.memory_used)
                 ),
                 Style::default().fg(DIM),
             ),
@@ -102,14 +122,35 @@ fn create_system_dashboard_lines(
             Line::from(vec![
                 Span::styled("gpu: ", Style::default().fg(Color::White)),
                 if let Some(gpu) = &system_info.gpu_info {
-                    let metrics = match (gpu.usage, gpu.temperature) {
-                        (Some(usage), Some(temp)) => Some(format!(
-                            "{usage:.0}% {}",
-                            format_temperature(temp, temperature_unit)
-                        )),
-                        (Some(usage), None) => Some(format!("{usage:.0}%")),
-                        (None, Some(temp)) => Some(format_temperature(temp, temperature_unit)),
-                        (None, None) => None,
+                    // Format VRAM if available (similar to memory format: percentage first, then used size)
+                    let vram_text = if let (Some(vram_used), Some(vram_total)) = (gpu.vram_used, gpu.vram_total) {
+                        if vram_total > 0 {
+                            let vram_percent = (vram_used as f32 / vram_total as f32) * 100.0;
+                            Some(format!("{:.0}% {}", vram_percent, format_megabytes_smart(vram_used)))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
+                    // Combine usage, temperature, and VRAM
+                    let metrics = match (gpu.usage, gpu.temperature, vram_text) {
+                        (Some(usage), Some(temp), Some(vram)) => 
+                            Some(format!("{usage:.0}% {} | {vram}", format_temperature(temp, temperature_unit))),
+                        (Some(usage), Some(temp), None) => 
+                            Some(format!("{usage:.0}% {}", format_temperature(temp, temperature_unit))),
+                        (Some(usage), None, Some(vram)) => 
+                            Some(format!("{usage:.0}% | {vram}")),
+                        (Some(usage), None, None) => 
+                            Some(format!("{usage:.0}%")),
+                        (None, Some(temp), Some(vram)) => 
+                            Some(format!("{} | {vram}", format_temperature(temp, temperature_unit))),
+                        (None, Some(temp), None) => 
+                            Some(format_temperature(temp, temperature_unit)),
+                        (None, None, Some(vram)) => 
+                            Some(vram),
+                        (None, None, None) => None,
                     };
                     let gpu_text = metrics.unwrap_or_else(|| "n/a".to_string());
                     Span::styled(gpu_text, Style::default().fg(DIM))
