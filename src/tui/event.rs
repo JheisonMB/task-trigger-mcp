@@ -782,9 +782,6 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
         KeyCode::Char('r') => {
             let _ = app.rerun_selected();
         }
-        KeyCode::Char('D') => {
-            let _ = app.delete_selected();
-        }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
         KeyCode::F(4) => {
             let _ = app.delete_selected();
