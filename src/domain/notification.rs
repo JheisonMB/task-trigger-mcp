@@ -8,10 +8,10 @@
 //!
 //! Windows requires an AppUserModelId (AUMID) to be registered in the current
 //! user's registry before `ToastNotificationManager::History` can resolve it.
-//! Without registration, `GetHistory()` returns `0x80070490` (element not found).
+//! Without registration, `GetHistory()` returns `0x80070490`.
 //!
 //! `register_aumid()` is called once at startup (WSL only) to write:
-//!   `HKCU\Software\Classes\AppUserModelId\Canopy`
+//!   `Registry::HKEY_CURRENT_USER\Software\Classes\AppUserModelId\Canopy`
 //! with `DisplayName` and optional `IconUri`.
 
 use std::process::Command;
@@ -58,10 +58,12 @@ fn applescript_escape(s: &str) -> String {
 /// Register the Canopy AppUserModelId in the Windows registry so that
 /// `ToastNotificationManager::History` can resolve it without `0x80070490`.
 ///
-/// Writes to `HKCU\Software\Classes\AppUserModelId\Canopy` with:
+/// Writes to `HKCU:\Software\Classes\AppUserModelId\Canopy` with:
 ///   - `DisplayName` = "Canopy"
 ///   - `IconUri`     = path to the current executable (best-effort)
 ///
+/// Uses the `Registry::` provider path to avoid accidentally creating a
+/// filesystem directory (`HKCU/`) in the current working directory.
 /// Safe to call multiple times — overwrites existing values idempotently.
 /// Only runs on WSL; no-op on other platforms.
 pub fn register_aumid() {
@@ -69,15 +71,18 @@ pub fn register_aumid() {
         return;
     }
     std::thread::spawn(|| {
-        // Resolve icon path from the current executable
         let icon_uri = std::env::current_exe()
             .ok()
             .map(|p| ps_escape(&p.to_string_lossy()))
             .unwrap_or_default();
 
+        // Use full Registry:: provider path to guarantee PowerShell targets
+        // the Windows registry, never the filesystem.  `-Path` uses the
+        // provider-qualified form so there is no ambiguity regardless of
+        // the current working directory or PSDrive availability.
         let script = format!(
             concat!(
-                "$key = 'HKCU\\Software\\Classes\\AppUserModelId\\{}'; ",
+                "$key = 'Registry::HKEY_CURRENT_USER\\Software\\Classes\\AppUserModelId\\{}'; ",
                 "New-Item -Path $key -Force | Out-Null; ",
                 "New-ItemProperty -Path $key -Name 'DisplayName' -Value '{}' ",
                 "-PropertyType String -Force | Out-Null; ",

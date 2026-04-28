@@ -6,17 +6,24 @@
 
 use serde::Deserialize;
 use std::process::Command;
-use sysinfo::{Components, System};
+use sysinfo::{Components, Disks, System};
 
 /// System information and metrics
 #[derive(Debug, Default)]
 pub struct SystemInfo {
     pub cpu_usage: f32,
+    pub cpu_cores: usize,
     pub cpu_temperature: Option<f32>,
+    pub cpu_frequency_mhz: Option<u64>,
     pub memory_used: u64,
     pub memory_total: u64,
     pub system_uptime: u64,
     pub process_count: usize,
+    pub disk_used: u64,
+    pub disk_total: u64,
+    pub swap_used: u64,
+    pub swap_total: u64,
+    pub load_average: Option<f64>,
     pub gpu_info: Option<GpuInfo>,
 }
 
@@ -92,18 +99,30 @@ impl SystemInfo {
     }
 
     pub fn update(&mut self) {
-        // Lightweight refresh: only CPU and memory, not all processes
         let mut system = System::new();
         system.refresh_cpu_usage();
         system.refresh_memory();
+        system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
         self.cpu_usage = system.global_cpu_usage();
+        self.cpu_cores = system.cpus().len();
         self.cpu_temperature = None;
+        system.refresh_cpu_frequency();
+        self.cpu_frequency_mhz = system.cpus().first().map(|c| c.frequency());
         self.memory_used = system.used_memory();
         self.memory_total = system.total_memory();
         self.system_uptime = System::uptime();
         self.process_count = system.processes().len();
         self.gpu_info = None;
+
+        let disks = Disks::new_with_refreshed_list();
+        let (disk_total, disk_used) = get_main_disk(&disks);
+        self.disk_total = disk_total;
+        self.disk_used = disk_used;
+
+        self.swap_used = system.used_swap();
+        self.swap_total = system.total_swap();
+        self.load_average = get_load_average();
 
         let component_metrics = self.read_component_metrics();
         self.cpu_temperature = component_metrics.cpu_temperature;
@@ -493,6 +512,42 @@ fn is_gpu_temperature_label(label: &str) -> bool {
 
 fn bytes_to_megabytes(bytes: u64) -> u64 {
     bytes / 1024 / 1024
+}
+
+fn get_main_disk(disks: &Disks) -> (u64, u64) {
+    // Prefer the disk containing the current working directory, fallback to root
+    let target = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "/".to_string());
+
+    // Find the disk whose mount point is the longest prefix of target
+    let mut best: Option<&sysinfo::Disk> = None;
+    let mut best_len = 0;
+    for disk in disks.iter() {
+        let mp = disk.mount_point().to_str().unwrap_or("");
+        if target.starts_with(mp) && mp.len() > best_len {
+            best = Some(disk);
+            best_len = mp.len();
+        }
+    }
+
+    if let Some(disk) = best {
+        let total = disk.total_space();
+        let used = total - disk.available_space();
+        (total, used)
+    } else {
+        (0, 0)
+    }
+}
+
+fn get_load_average() -> Option<f64> {
+    if cfg!(target_os = "linux") || cfg!(target_os = "macos") {
+        let avg = System::load_average();
+        Some(avg.one)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

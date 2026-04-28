@@ -91,7 +91,7 @@ impl App {
 
     pub(super) fn refresh_log(&mut self) {
         let Some(agent) = self.agents.get(self.selected) else {
-            self.log_content = String::from("No agent selected");
+            self.log_content = String::new();
             return;
         };
 

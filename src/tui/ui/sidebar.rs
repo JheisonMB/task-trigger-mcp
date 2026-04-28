@@ -47,12 +47,16 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let has_term = !term_indices.is_empty();
     let has_groups = !app.split_groups.is_empty();
 
-    // Responsive dashboard height: 5 without GPU, 6 with GPU (content + 2 borders)
-    let dashboard_height = if app.system_info.gpu_info.is_some() {
-        6
-    } else {
-        5
-    };
+    // Responsive dashboard height based on how many lines the dashboard will render.
+    // Base lines: cpu + mem + disk + load/procs = 4. +1 for gpu, +1 for swap if used.
+    let mut dashboard_content_lines = 4u16;
+    if app.system_info.gpu_info.is_some() {
+        dashboard_content_lines += 1;
+    }
+    if app.system_info.swap_used > 0 {
+        dashboard_content_lines += 1;
+    }
+    let dashboard_height = dashboard_content_lines + 2; // +2 for borders
     let dashboard_area = if area.height >= dashboard_height {
         Some(Rect::new(
             area.x,
@@ -89,12 +93,10 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
             }
         }
         if let Some(dashboard_area) = dashboard_area {
-            let app_uptime_seconds = app.process_start_time.elapsed().as_secs();
             crate::tui::ui::system_dashboard::render_system_dashboard(
                 frame,
                 dashboard_area,
                 &app.system_info,
-                app_uptime_seconds,
                 app.temperature_unit,
             );
         }
@@ -264,12 +266,10 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(dashboard_area) = dashboard_area {
-        let app_uptime_seconds = app.process_start_time.elapsed().as_secs();
         crate::tui::ui::system_dashboard::render_system_dashboard(
             frame,
             dashboard_area,
             &app.system_info,
-            app_uptime_seconds,
             app.temperature_unit,
         );
     }

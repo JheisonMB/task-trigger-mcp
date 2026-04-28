@@ -19,6 +19,17 @@ fn first_n_chars(s: &str, n: usize) -> &str {
 
 const SPINNER: [&str; 8] = ["⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾"];
 
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let mins = (seconds % 3_600) / 60;
+    match (days, hours, mins) {
+        (0, 0, m) => format!("{m}m"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
 fn gradient_wave_color(char_idx: usize, shift: usize) -> Color {
     let len = BANNER_GRADIENT.len();
     if len == 0 {
@@ -71,6 +82,8 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
         ("█", color)
     };
 
+    let uptime_str = format_uptime(app.process_start_time.elapsed().as_secs());
+
     let wf = app.whimsg.tick();
     let mut spans: Vec<Span> = Vec::new();
     // Leading padding so the title/whimsg block isn't flush against the left border
@@ -104,7 +117,23 @@ pub(super) fn draw_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let left = Paragraph::new(Line::from(spans));
     frame.render_widget(left, area);
 
-    // Daemon status: single character one cell from the right edge
+    // Uptime (subtle) + daemon status on the right edge
+    let uptime_len = uptime_str.chars().count() as u16;
+    let total_right_width = uptime_len + 1 + 1; // uptime + space + spinner
+    if area.width > total_right_width + 2 {
+        let uptime_area = Rect::new(
+            area.x + area.width - total_right_width - 1,
+            area.y,
+            uptime_len,
+            1,
+        );
+        let uptime = Paragraph::new(Line::from(Span::styled(
+            uptime_str,
+            Style::default().fg(Color::Rgb(80, 80, 90)),
+        )));
+        frame.render_widget(uptime, uptime_area);
+    }
+
     if area.width > 3 {
         let status = Paragraph::new(Line::from(Span::styled(
             status_char,

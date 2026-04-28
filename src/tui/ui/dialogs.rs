@@ -476,11 +476,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                let short_label = if label.len() > 36 {
-                    format!("{}…", &label[..36])
-                } else {
-                    label.clone()
-                };
+                let short_label = truncate_str(label, 36);
                 lines.push(Line::from(vec![
                     Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
                     Span::styled(truncate_str(id, 18), style),

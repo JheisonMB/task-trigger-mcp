@@ -28,23 +28,17 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
     while app.running {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Tick speed adapts to what needs frequent repaints
+        // Tick speed adapts to what needs frequent repaints.
+        // All interactive states use 50ms for responsive PTY rendering.
+        // Home without brain uses 200ms (nothing animating).
         let tick = match app.focus {
             Focus::Agent
             | Focus::NewAgentDialog
             | Focus::ContextTransfer
             | Focus::PromptTemplateDialog => Duration::from_millis(50),
-            Focus::Preview
-                if matches!(
-                    app.selected_agent(),
-                    Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
-                ) =>
-            {
-                Duration::from_millis(100)
-            }
+            Focus::Preview => Duration::from_millis(100),
             Focus::Home if app.home_brain.is_some() => Duration::from_millis(50),
             Focus::Home => Duration::from_millis(200),
-            _ => Duration::from_secs(1),
         };
 
         if event::poll(tick)? {

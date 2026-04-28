@@ -11,6 +11,32 @@ use super::DIM;
 use crate::domain::canopy_config::TemperatureUnit;
 use crate::system::SystemInfo;
 
+// ── Alert colors ────────────────────────────────────────────────
+
+const WARN: Color = Color::Rgb(255, 193, 7); // amber
+const DANGER: Color = Color::Rgb(229, 57, 53); // red
+
+/// Pick an alert color based on value thresholds.
+fn alert_color(value: f32, yellow: f32, red: f32) -> Color {
+    if value >= red {
+        DANGER
+    } else if value >= yellow {
+        WARN
+    } else {
+        DIM
+    }
+}
+
+/// Pick an alert color for temperatures (Celsius).
+fn temp_alert_color(temp_c: f32) -> Color {
+    alert_color(temp_c, 70.0, 85.0)
+}
+
+/// Pick an alert color for GPU temperatures (Celsius).
+fn gpu_temp_alert_color(temp_c: f32) -> Color {
+    alert_color(temp_c, 75.0, 90.0)
+}
+
 /// Format bytes smartly: show in MB if < 1 GB, otherwise in GB, with 2 decimals
 fn format_bytes_smart(bytes: u64) -> String {
     let gb = bytes as f32 / 1_073_741_824.0;
@@ -32,16 +58,15 @@ fn format_megabytes_smart(mb: u64) -> String {
     }
 }
 
-/// Format uptime in human-readable form: Xm, Xh Xm, or Xd Xh.
-fn format_uptime(seconds: u64) -> String {
-    let days = seconds / 86_400;
-    let hours = (seconds % 86_400) / 3_600;
-    let mins = (seconds % 3_600) / 60;
-    match (days, hours, mins) {
-        (0, 0, m) => format!("{m}m"),
-        (0, h, m) => format!("{h}h {m}m"),
-        (d, h, _) => format!("{d}d {h}h"),
-    }
+/// Format CPU frequency: GHz if >= 1000 MHz, otherwise MHz
+fn format_cpu_frequency(mhz: Option<u64>) -> Option<String> {
+    mhz.map(|f| {
+        if f >= 1000 {
+            format!("{:.2}GHz", f as f32 / 1000.0)
+        } else {
+            format!("{f}MHz")
+        }
+    })
 }
 
 /// Render the system dashboard in the sidebar
@@ -49,7 +74,6 @@ pub fn render_system_dashboard(
     frame: &mut Frame,
     area: Rect,
     system_info: &SystemInfo,
-    app_uptime_seconds: u64,
     temperature_unit: TemperatureUnit,
 ) {
     // Only render if we have enough space (3 content lines + 2 borders)
@@ -58,8 +82,7 @@ pub fn render_system_dashboard(
     }
 
     let max_lines = area.height.saturating_sub(2) as usize;
-    let dashboard =
-        create_system_dashboard_lines(system_info, app_uptime_seconds, temperature_unit, max_lines);
+    let dashboard = create_system_dashboard_lines(system_info, temperature_unit, max_lines);
 
     frame.render_widget(
         Paragraph::new(dashboard)
@@ -80,104 +103,172 @@ pub fn render_system_dashboard(
 /// Create the lines for the system dashboard
 fn create_system_dashboard_lines(
     system_info: &SystemInfo,
-    app_uptime_seconds: u64,
     temperature_unit: TemperatureUnit,
     max_lines: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        // CPU line
-        Line::from(vec![
-            Span::styled("cpu: ", Style::default().fg(Color::White)),
-            Span::styled(
-                if let Some(temp) = system_info.cpu_temperature_celsius() {
-                    format!(
-                        "{:.0}% {}",
-                        system_info.cpu_usage_percent(),
-                        format_temperature(temp, temperature_unit)
-                    )
-                } else {
-                    format!("{:.0}%", system_info.cpu_usage_percent())
-                },
-                Style::default().fg(DIM),
-            ),
-        ]),
-        // Memory line
-        Line::from(vec![
-            Span::styled("mem: ", Style::default().fg(Color::White)),
-            Span::styled(
-                format!(
-                    "{:.0}% {}",
-                    if system_info.memory_total > 0 {
-                        (system_info.memory_used as f32 / system_info.memory_total as f32) * 100.0
-                    } else {
-                        0.0
-                    },
-                    format_bytes_smart(system_info.memory_used)
-                ),
-                Style::default().fg(DIM),
-            ),
-        ]),
-        // Canopy runtime line
-        Line::from(vec![
-            Span::styled("uptime: ", Style::default().fg(Color::White)),
-            Span::styled(format_uptime(app_uptime_seconds), Style::default().fg(DIM)),
-        ]),
+    let cpu_usage = system_info.cpu_usage_percent();
+    let cpu_color = alert_color(cpu_usage, 70.0, 90.0);
+
+    // Build CPU line: usage (alert) + cores + freq (dim) + temp (alert)
+    let mut cpu_spans = vec![
+        Span::styled("cpu: ", Style::default().fg(Color::White)),
+        Span::styled(format!("{cpu_usage:.0}%"), Style::default().fg(cpu_color)),
     ];
+    if system_info.cpu_cores > 0 {
+        cpu_spans.push(Span::styled(
+            format!(" {}c", system_info.cpu_cores),
+            Style::default().fg(DIM),
+        ));
+    }
+    if let Some(freq) = format_cpu_frequency(system_info.cpu_frequency_mhz) {
+        cpu_spans.push(Span::styled(format!(" {freq}"), Style::default().fg(DIM)));
+    }
+    if let Some(temp_c) = system_info.cpu_temperature_celsius() {
+        let temp_str = format_temperature(temp_c, temperature_unit);
+        cpu_spans.push(Span::styled(
+            format!(" {temp_str}"),
+            Style::default().fg(temp_alert_color(temp_c)),
+        ));
+    }
+    let mut lines = vec![Line::from(cpu_spans)];
 
-    // Only add GPU line if GPU info is available and we have room
-    if system_info.gpu_info.is_some() && max_lines >= 5 {
-        lines.insert(
-            2,
-            Line::from(vec![
-                Span::styled("gpu: ", Style::default().fg(Color::White)),
-                if let Some(gpu) = &system_info.gpu_info {
-                    // Format VRAM if available (similar to memory format: percentage first, then used size)
-                    let vram_text = if let (Some(vram_used), Some(vram_total)) =
-                        (gpu.vram_used, gpu.vram_total)
-                    {
-                        if vram_total > 0 {
-                            let vram_percent = (vram_used as f32 / vram_total as f32) * 100.0;
-                            Some(format!(
-                                "{:.0}% {}",
-                                vram_percent,
-                                format_megabytes_smart(vram_used)
-                            ))
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
+    // GPU line right after CPU if available
+    if let Some(gpu) = &system_info.gpu_info {
+        let usage_pct = gpu.usage.unwrap_or(0.0);
+        let gpu_usage_color = alert_color(usage_pct, 70.0, 90.0);
 
-                    // Combine usage, temperature, and VRAM
-                    let metrics = match (gpu.usage, gpu.temperature, vram_text) {
-                        (Some(usage), Some(temp), Some(vram)) => Some(format!(
-                            "{usage:.0}% {} | {vram}",
-                            format_temperature(temp, temperature_unit)
-                        )),
-                        (Some(usage), Some(temp), None) => Some(format!(
-                            "{usage:.0}% {}",
-                            format_temperature(temp, temperature_unit)
-                        )),
-                        (Some(usage), None, Some(vram)) => Some(format!("{usage:.0}% | {vram}")),
-                        (Some(usage), None, None) => Some(format!("{usage:.0}%")),
-                        (None, Some(temp), Some(vram)) => Some(format!(
-                            "{} | {vram}",
-                            format_temperature(temp, temperature_unit)
-                        )),
-                        (None, Some(temp), None) => {
-                            Some(format_temperature(temp, temperature_unit))
-                        }
-                        (None, None, Some(vram)) => Some(vram),
-                        (None, None, None) => None,
-                    };
-                    let gpu_text = metrics.unwrap_or_else(|| "n/a".to_string());
-                    Span::styled(gpu_text, Style::default().fg(DIM))
-                } else {
-                    Span::styled("integrated", Style::default().fg(DIM))
-                },
-            ]),
-        );
+        let vram_text = if let (Some(vram_used), Some(vram_total)) = (gpu.vram_used, gpu.vram_total)
+        {
+            if vram_total > 0 {
+                let vram_percent = (vram_used as f32 / vram_total as f32) * 100.0;
+                Some(format!(
+                    "{:.0}% {}",
+                    vram_percent,
+                    format_megabytes_smart(vram_used)
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut spans = vec![Span::styled("gpu: ", Style::default().fg(Color::White))];
+
+        if let Some(usage) = gpu.usage {
+            spans.push(Span::styled(
+                format!("{usage:.0}%"),
+                Style::default().fg(gpu_usage_color),
+            ));
+        }
+        if let Some(temp) = gpu.temperature {
+            let sep = if gpu.usage.is_some() { " " } else { "" };
+            spans.push(Span::styled(
+                format!("{sep}{}", format_temperature(temp, temperature_unit)),
+                Style::default().fg(gpu_temp_alert_color(temp)),
+            ));
+        }
+        if let Some(ref vram) = vram_text {
+            if gpu.usage.is_some() || gpu.temperature.is_some() {
+                spans.push(Span::styled(" · ", Style::default().fg(Color::White)));
+            }
+            spans.push(Span::styled(vram.to_string(), Style::default().fg(DIM)));
+        }
+        if gpu.usage.is_none() && gpu.temperature.is_none() && vram_text.is_none() {
+            spans.push(Span::styled("n/a", Style::default().fg(DIM)));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    // Memory line
+    let mem_pct = if system_info.memory_total > 0 {
+        (system_info.memory_used as f32 / system_info.memory_total as f32) * 100.0
+    } else {
+        0.0
+    };
+    lines.push(Line::from(vec![
+        Span::styled("mem: ", Style::default().fg(Color::White)),
+        Span::styled(
+            format!("{mem_pct:.0}%"),
+            Style::default().fg(alert_color(mem_pct, 70.0, 90.0)),
+        ),
+        Span::styled(
+            format!(" {}", format_bytes_smart(system_info.memory_used)),
+            Style::default().fg(DIM),
+        ),
+    ]));
+
+    // Disk line
+    let disk_pct = if system_info.disk_total > 0 {
+        (system_info.disk_used as f32 / system_info.disk_total as f32) * 100.0
+    } else {
+        0.0
+    };
+    lines.push(Line::from(vec![
+        Span::styled("disk: ", Style::default().fg(Color::White)),
+        Span::styled(
+            format!("{disk_pct:.0}%"),
+            Style::default().fg(alert_color(disk_pct, 80.0, 95.0)),
+        ),
+        Span::styled(
+            format!(" {}", format_bytes_smart(system_info.disk_used)),
+            Style::default().fg(DIM),
+        ),
+    ]));
+
+    // Swap line only if actually being used
+    if system_info.swap_used > 0 {
+        let swap_pct = if system_info.swap_total > 0 {
+            (system_info.swap_used as f32 / system_info.swap_total as f32) * 100.0
+        } else {
+            0.0
+        };
+        // Swap is always yellow at minimum; red if >50%
+        let swap_color = if swap_pct >= 50.0 { DANGER } else { WARN };
+        lines.push(Line::from(vec![
+            Span::styled("swap: ", Style::default().fg(Color::White)),
+            Span::styled(format!("{swap_pct:.0}%"), Style::default().fg(swap_color)),
+            Span::styled(
+                format!(" {}", format_bytes_smart(system_info.swap_used)),
+                Style::default().fg(DIM),
+            ),
+        ]));
+    }
+
+    // Load average + process count merged into one line
+    // Color is based on load per core: <0.7 green, <1.0 yellow, >=1.0 red
+    if let Some(load) = system_info.load_average {
+        let cores = system_info.cpu_cores.max(1) as f64;
+        let load_per_core = load / cores;
+        let load_color = if load_per_core >= 1.0 {
+            DANGER
+        } else if load_per_core >= 0.7 {
+            WARN
+        } else {
+            DIM
+        };
+        lines.push(Line::from(vec![
+            Span::styled("load: ", Style::default().fg(Color::White)),
+            Span::styled(format!("{load:.2}"), Style::default().fg(load_color)),
+            Span::styled(
+                format!(" ({:.0}%)", load_per_core * 100.0),
+                Style::default().fg(DIM),
+            ),
+            Span::styled(" · ", Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{} procs", system_info.process_count),
+                Style::default().fg(DIM),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("procs: ", Style::default().fg(Color::White)),
+            Span::styled(
+                format!("{}", system_info.process_count),
+                Style::default().fg(DIM),
+            ),
+        ]));
     }
 
     lines.truncate(max_lines);
@@ -202,20 +293,15 @@ mod tests {
     #[test]
     fn test_dashboard_creation() {
         let info = SystemInfo::new();
-        let lines = create_system_dashboard_lines(&info, 120, TemperatureUnit::Celsius, 5); // 120 seconds uptime
+        let lines = create_system_dashboard_lines(&info, TemperatureUnit::Celsius, 10);
 
-        // Should have 3 or 4 lines depending on whether GPU info is available
+        // Should have at least the 3 base lines (cpu, mem, disk)
         assert!(
             lines.len() >= 3,
             "Expected at least 3 lines, got {}",
             lines.len()
         );
-        assert!(
-            lines.len() <= 4,
-            "Expected at most 4 lines, got {}",
-            lines.len()
-        );
-        // Check key lines exist regardless of GPU line position
+        // Check key lines exist
         let all_text: String = lines
             .iter()
             .map(|l| l.to_string())
@@ -223,7 +309,6 @@ mod tests {
             .join("\n");
         assert!(all_text.contains("cpu:"), "Missing cpu line");
         assert!(all_text.contains("mem:"), "Missing mem line");
-        assert!(all_text.contains("uptime:"), "Missing canopy uptime line");
-        assert!(all_text.contains("2m"), "Should show 2 minutes uptime");
+        assert!(all_text.contains("disk:"), "Missing disk line");
     }
 }

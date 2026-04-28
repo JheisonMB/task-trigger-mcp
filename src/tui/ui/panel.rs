@@ -60,6 +60,20 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     // Store actual inner dimensions so PTY resize matches exactly
     app.last_panel_inner = (inner.width, inner.height);
 
+    // When there are no agents, show the home view instead of "No agent selected"
+    if app.agents.is_empty()
+        && !matches!(
+            app.focus,
+            Focus::NewAgentDialog | Focus::ContextTransfer | Focus::PromptTemplateDialog
+        )
+    {
+        if let Some(brain) = app.home_brain.as_ref() {
+            draw_brians_brain(frame, inner, brain);
+        }
+        draw_canopy_banner_glitch(frame, inner, app);
+        return;
+    }
+
     match app.focus {
         Focus::Home => {
             if let Some(brain) = app.home_brain.as_ref() {

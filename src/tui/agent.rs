@@ -551,6 +551,12 @@ impl InteractiveAgent {
         }
         cmd.cwd(working_dir);
 
+        // Advertise truecolor capability so child CLIs (Kiro, etc.) use
+        // 24-bit RGB color sequences for their accent colors instead of
+        // limited 16-color ANSI codes that get mapped to wrong hues.
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+
         let child = pair.slave.spawn_command(cmd)?;
         // Drop slave so the PTY closes when the child exits
         drop(pair.slave);
@@ -649,6 +655,8 @@ impl InteractiveAgent {
         // Compact prompt since warp mode shows its own prompt line
         cmd.env("PS1", "$ ");
         cmd.env("PROMPT_COMMAND", "");
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
 
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -981,12 +989,16 @@ impl InteractiveAgent {
     }
 
     /// Kill the agent process.
+    ///
+    /// Sends SIGHUP + SIGKILL to the process group (Unix) or just kills the
+    /// child process. Marks the agent as exited immediately — does NOT block
+    /// on `child.wait()`. The background PTY reader thread will detect EOF and
+    /// exit on its own; the OS reaps the child process.
     pub fn kill(&mut self) {
         if let Ok(mut child) = self.child.lock() {
             #[cfg(unix)]
-            terminate_process_group(child.as_mut());
+            send_sighup_to_group(child.as_mut());
             let _ = child.kill();
-            let _ = child.wait();
         }
         self.status = AgentStatus::Exited(-9);
     }
@@ -1357,17 +1369,11 @@ impl InteractiveAgent {
 }
 
 #[cfg(unix)]
-fn terminate_process_group(child: &mut dyn portable_pty::Child) {
+fn send_sighup_to_group(child: &mut dyn portable_pty::Child) {
     let Some(pid) = child.process_id().map(|pid| pid as i32) else {
         return;
     };
-
-    for signal in [libc::SIGHUP, libc::SIGTERM, libc::SIGKILL] {
-        let _ = send_signal_to_group(pid, signal);
-        if wait_for_child_exit(child, 6, Duration::from_millis(50)) {
-            return;
-        }
-    }
+    let _ = send_signal_to_group(pid, libc::SIGHUP);
 }
 
 #[cfg(unix)]
@@ -1382,21 +1388,6 @@ fn send_signal_to_group(pid: i32, signal: i32) -> io::Result<()> {
         return Ok(());
     }
     Err(err)
-}
-
-fn wait_for_child_exit(
-    child: &mut dyn portable_pty::Child,
-    attempts: usize,
-    delay: Duration,
-) -> bool {
-    for _ in 0..attempts {
-        match child.try_wait() {
-            Ok(Some(_)) => return true,
-            Ok(None) => std::thread::sleep(delay),
-            Err(_) => return false,
-        }
-    }
-    false
 }
 
 /// A snapshot of the virtual terminal screen.
@@ -1419,34 +1410,36 @@ pub struct VtCell {
 
 /// Convert vt100 color to ratatui color.
 ///
-/// For the standard 16 ANSI colors (indices 0-15), we map to explicit RGB
-/// values instead of `Color::Indexed`, because ratatui's indexed palette
-/// uses terminal-dependent colors that don't match what the agent expects.
+/// For ANSI indices 0-15 uses the standard xterm-256color palette
+/// (what modern terminals and CLIs expect).  For 256-color extensions
+/// (indices 16-255) delegates to `Color::Indexed` since those are
+/// well‑standardised (6×6×6 colour cube + grayscale).  Truecolor RGB
+/// passes through unchanged.
 fn convert_color(color: vt100::Color) -> ratatui::style::Color {
     use ratatui::style::Color;
     match color {
         vt100::Color::Default => Color::Reset,
         vt100::Color::Idx(i) if i < 16 => {
-            // Standard 16 ANSI colors with explicit RGB values.
-            const ANSI_16: [Color; 16] = [
+            // xterm-256color standard palette for ANSI 0-15
+            const XTERM_16: [Color; 16] = [
                 Color::Rgb(0, 0, 0),       // 0  black
-                Color::Rgb(170, 0, 0),     // 1  red
-                Color::Rgb(0, 170, 0),     // 2  green
-                Color::Rgb(170, 85, 0),    // 3  yellow
-                Color::Rgb(0, 0, 170),     // 4  blue
-                Color::Rgb(170, 0, 170),   // 5  magenta
-                Color::Rgb(0, 170, 170),   // 6  cyan
-                Color::Rgb(170, 170, 170), // 7  white (dark white = light gray)
-                Color::Rgb(85, 85, 85),    // 8  bright black (gray)
-                Color::Rgb(255, 85, 85),   // 9  bright red
-                Color::Rgb(85, 255, 85),   // 10 bright green
-                Color::Rgb(255, 255, 85),  // 11 bright yellow
-                Color::Rgb(85, 85, 255),   // 12 bright blue
-                Color::Rgb(255, 85, 255),  // 13 bright magenta
-                Color::Rgb(85, 255, 255),  // 14 bright cyan
+                Color::Rgb(205, 0, 0),     // 1  red
+                Color::Rgb(0, 205, 0),     // 2  green
+                Color::Rgb(205, 205, 0),   // 3  yellow
+                Color::Rgb(0, 0, 238),     // 4  blue
+                Color::Rgb(205, 0, 205),   // 5  magenta
+                Color::Rgb(0, 205, 205),   // 6  cyan
+                Color::Rgb(229, 229, 229), // 7  white
+                Color::Rgb(127, 127, 127), // 8  bright black
+                Color::Rgb(255, 0, 0),     // 9  bright red
+                Color::Rgb(0, 255, 0),     // 10 bright green
+                Color::Rgb(255, 255, 0),   // 11 bright yellow
+                Color::Rgb(92, 92, 255),   // 12 bright blue
+                Color::Rgb(255, 0, 255),   // 13 bright magenta
+                Color::Rgb(0, 255, 255),   // 14 bright cyan
                 Color::Rgb(255, 255, 255), // 15 bright white
             ];
-            ANSI_16[i as usize]
+            XTERM_16[i as usize]
         }
         vt100::Color::Idx(i) => Color::Indexed(i),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),

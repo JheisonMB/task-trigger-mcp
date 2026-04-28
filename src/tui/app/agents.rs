@@ -50,6 +50,13 @@ impl App {
     }
 
     pub fn tick_banner_glitch(&mut self) {
+        // Always step the brain if it exists so animation continues
+        // across focus changes (e.g. closing all sessions → Preview).
+        if let Some(ref mut brain) = self.home_brain {
+            brain.step();
+        }
+
+        // Only resize/reinitialize when on Home focus
         if self.focus != Focus::Home {
             return;
         }
@@ -88,10 +95,6 @@ impl App {
                     - std::time::Duration::from_millis(brain.step_interval_ms);
                 self.home_brain = Some(brain);
             }
-        }
-
-        if let Some(ref mut brain) = self.home_brain {
-            brain.step();
         }
     }
 
