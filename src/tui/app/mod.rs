@@ -178,7 +178,7 @@ fn append_flag_if_missing(
 
 fn build_resumed_session_args(
     session: &crate::db::InteractiveSession,
-    resume_args: Option<&str>,
+    interactive_args: Option<&str>,
     yolo_flag: Option<&str>,
 ) -> Option<String> {
     let original_args = session
@@ -186,11 +186,13 @@ fn build_resumed_session_args(
         .as_deref()
         .map(str::trim)
         .filter(|args| !args.is_empty());
-    let resume_args = resume_args.map(str::trim).filter(|args| !args.is_empty());
+    let inter_args = interactive_args.map(str::trim).filter(|args| !args.is_empty());
     let had_yolo = yolo_flag
         .is_some_and(|flag| original_args.is_some_and(|args| args_contain_flag(args, flag)));
 
-    append_flag_if_missing(resume_args.or(original_args), yolo_flag, had_yolo)
+    // Prefer original args (they were already constructed by launch_interactive).
+    // If none were persisted (legacy session), fall back to interactive_args from config.
+    append_flag_if_missing(original_args.or(inter_args), yolo_flag, had_yolo)
 }
 
 /// Search state for terminal scrollback.
@@ -933,9 +935,9 @@ impl App {
         for session in &sessions {
             let cli = crate::domain::models::Cli::from_str(&session.cli);
 
-            // Get CLI config for resume args and accent color
+            // Get CLI config for interactive args and accent color
             let cli_config = canopy_config.get_cli(cli.as_str());
-            let resume_args = cli_config.and_then(|c| c.resume_args.as_deref());
+            let interactive_args = cli_config.and_then(|c| c.interactive_args.as_deref());
             let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
             let accent = cli_config
                 .and_then(|c| c.accent_color)
@@ -943,7 +945,7 @@ impl App {
                 .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
 
             let yolo_flag = cli_config.and_then(|c| c.yolo_flag.as_deref());
-            let args_str = build_resumed_session_args(session, resume_args, yolo_flag);
+            let args_str = build_resumed_session_args(session, interactive_args, yolo_flag);
             let args = args_str.as_deref();
             let model: Option<String> = None; // No model info in session registry
             let model_flag = cli_config.and_then(|c| c.model_flag.clone());
@@ -1118,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn test_yolo_flag_is_applied_to_resume_args() {
+    fn test_original_args_preserved_over_config_args() {
         let session = InteractiveSession {
             id: "test-session".to_string(),
             name: "test-session".to_string(),
@@ -1129,9 +1131,31 @@ mod tests {
             status: "active".to_string(),
         };
 
+        // Even if config has different interactive_args, original persisted args win.
         let args =
-            build_resumed_session_args(&session, Some("--continue"), Some("--yolo")).unwrap();
-        assert!(args.contains("--continue"));
+            build_resumed_session_args(&session, Some("--chat"), Some("--yolo")).unwrap();
+        assert!(args.contains("--tui"));
         assert!(args.contains("--yolo"));
+        assert!(!args.contains("--chat"));
+    }
+
+    #[test]
+    fn test_falls_back_to_config_interactive_args_when_no_original() {
+        let session = InteractiveSession {
+            id: "test-session".to_string(),
+            name: "test-session".to_string(),
+            cli: "kiro".to_string(),
+            working_dir: "/tmp".to_string(),
+            args: None,
+            started_at: "2023-01-01T00:00:00Z".to_string(),
+            status: "active".to_string(),
+        };
+
+        // When no original args are persisted, fall back to config interactive_args.
+        // Yolo is not added because we don't know if the original session had it.
+        let args =
+            build_resumed_session_args(&session, Some("--tui"), Some("--yolo")).unwrap();
+        assert!(args.contains("--tui"));
+        assert!(!args.contains("--yolo"));
     }
 }
