@@ -146,26 +146,42 @@ impl NewAgentDialog {
     }
 
     fn load_available_clis() -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
+        let usage = dirs::home_dir()
+            .map(|h| crate::domain::usage_stats::CliUsage::load(&h.join(".canopy")))
+            .unwrap_or_default();
+
         if let Some(home) = dirs::home_dir() {
             let canopy_dir = home.join(".canopy");
             let config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
             if !config.clis.is_empty() {
-                let mut clis = Vec::new();
-                let mut configs = Vec::new();
+                let mut pairs = Vec::new();
                 for c in &config.clis {
                     if let Ok(cli) = Cli::resolve(Some(&c.name)) {
-                        clis.push(cli);
-                        configs.push(Some(c.clone()));
+                        pairs.push((cli, Some(c.clone())));
                     }
                 }
-                if !clis.is_empty() {
-                    return (clis, configs);
+                if !pairs.is_empty() {
+                    return Self::sort_clis_by_usage(pairs, &usage);
                 }
             }
         }
         let detected = Cli::detect_available();
-        let none_configs = vec![None; detected.len()];
-        (detected, none_configs)
+        let pairs: Vec<_> = detected.into_iter().map(|cli| (cli, None)).collect();
+        let (clis, configs) = Self::sort_clis_by_usage(pairs, &usage);
+        (clis, configs)
+    }
+
+    /// Sort CLI-config pairs by usage count descending (most-used first).
+    fn sort_clis_by_usage(
+        mut pairs: Vec<(Cli, Option<crate::domain::cli_config::CliConfig>)>,
+        usage: &crate::domain::usage_stats::CliUsage,
+    ) -> (Vec<Cli>, Vec<Option<crate::domain::cli_config::CliConfig>>) {
+        pairs.sort_by(|a, b| {
+            let count_a = usage.get(a.0.as_str());
+            let count_b = usage.get(b.0.as_str());
+            count_b.cmp(&count_a)
+        });
+        pairs.into_iter().unzip()
     }
 
     pub fn selected_cli(&self) -> Cli {
@@ -753,6 +769,7 @@ impl App {
     fn launch_interactive(&mut self, dialog: &NewAgentDialog) -> Result<()> {
         use super::super::agent::InteractiveAgent;
         let cli = dialog.selected_cli();
+        self.record_cli_usage(cli.as_str());
         let dir = dialog.working_dir.clone();
         // Append yolo flag to args when yolo mode is enabled
         let base_args = dialog.selected_args();

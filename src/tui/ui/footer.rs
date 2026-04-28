@@ -15,7 +15,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("↑↓", "select"),
             ("n", "new"),
             ("F10", "preview"),
-            ("F1", "legend"),
+            ("F1", "stats"),
         ],
         Focus::Preview => {
             let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));

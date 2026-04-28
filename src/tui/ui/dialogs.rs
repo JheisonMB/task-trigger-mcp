@@ -7,10 +7,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, truncate_str};
-use super::{
-    ACCENT, DIM, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING, STATUS_WAIT_OFF,
-    STATUS_WAIT_ON,
-};
+use super::{ACCENT, DIM};
 use crate::tui::app::dialog::SimplePromptDialog;
 use crate::tui::app::{AgentEntry, App};
 use crate::tui::context_transfer::ContextTransferStep;
@@ -797,123 +794,112 @@ pub(super) fn draw_quit_confirm(frame: &mut Frame) {
     frame.render_widget(msg, inner);
 }
 
+fn format_uptime_precise(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    let mins = (seconds % 3_600) / 60;
+    let secs = seconds % 60;
+    match (days, hours, mins) {
+        (0, 0, 0) => format!("{secs}s"),
+        (0, 0, m) => format!("{m}m {secs}s"),
+        (0, h, m) => format!("{h}h {m}m {secs}s"),
+        (d, h, m) => format!("{d}d {h}h {m}m {secs}s"),
+    }
+}
+
 pub(super) fn draw_legend(frame: &mut Frame, app: &App) {
-    let area = centered_rect(42, 22, frame.area());
+    let label_style = Style::default().fg(DIM);
+    let value_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let accent_style = Style::default().fg(ACCENT);
+
+    let session_uptime = format_uptime_precise(app.process_start_time.elapsed().as_secs());
+    let canopy_uptime = format_uptime_precise(app.cli_usage.canopy_uptime_seconds());
+    let interactive_count = app.db.count_interactive_sessions().unwrap_or(0);
+    let terminal_count = app.db.count_terminal_sessions().unwrap_or(0);
+    let bg_count = app.db.count_background_agents().unwrap_or(0);
+    let runs_count = app.db.count_runs().unwrap_or(0);
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Session uptime: ", label_style),
+            Span::styled(&session_uptime, accent_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Canopy uptime:  ", label_style),
+            Span::styled(&canopy_uptime, accent_style),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Interactive:       ", label_style),
+            Span::styled(format!("{interactive_count}"), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Terminal:          ", label_style),
+            Span::styled(format!("{terminal_count}"), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Background agents: ", label_style),
+            Span::styled(format!("{bg_count}"), value_style),
+        ]),
+        Line::from(vec![
+            Span::styled("Runs executed:     ", label_style),
+            Span::styled(format!("{runs_count}"), value_style),
+        ]),
+        Line::from(""),
+    ];
+
+    let top_clis = app.cli_usage.ranked();
+    if !top_clis.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Most used CLIs",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        for (name, count) in top_clis.iter().take(4) {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{name}  "), value_style),
+                Span::styled(format!("{count} launches"), label_style),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "F1 or Esc to close",
+        Style::default().fg(DIM),
+    )));
+
+    // Responsive sizing
+    let content_height = lines.len() as u16 + 2; // +2 for borders
+    let content_width = lines
+        .iter()
+        .map(|l| l.to_string().chars().count() as u16)
+        .max()
+        .unwrap_or(36)
+        + 4; // padding
+    let width = content_width.clamp(36, 50);
+    let height = content_height.clamp(10, 22);
+    let percent_x = (width * 100 / frame.area().width.max(1)).clamp(30, 60);
+    let area = centered_rect(percent_x, height, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Shortcuts & Legend ")
+        .title(" Canopy Stats ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow))
+        .border_style(Style::default().fg(ACCENT))
         .style(Style::default().bg(Color::Rgb(15, 25, 15)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let blink_cycle = (app.animation_tick / 10) % 2;
-    let wait_color = if blink_cycle == 0 {
-        STATUS_WAIT_ON
-    } else {
-        STATUS_WAIT_OFF
-    };
-
-    let key_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let desc_style = Style::default().fg(DIM);
-
-    let lines = vec![
-        Line::from(Span::styled(
-            "Status colors",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(STATUS_RUNNING)),
-            Span::styled(
-                "RUNNING   ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Agent is executing", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(STATUS_OK)),
-            Span::styled(
-                "OK/IDLE   ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Agent ready / last run OK", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(STATUS_FAIL)),
-            Span::styled(
-                "FAILED    ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Last run failed / error exit", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(wait_color)),
-            Span::styled(
-                "ATTENTION ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Waiting for user input", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("▌ ", Style::default().fg(STATUS_DISABLED)),
-            Span::styled(
-                "DISABLED  ",
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Agent is paused", desc_style),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Shortcuts",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Ctrl+S  ", key_style),
-            Span::styled("split with another session", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("F4      ", key_style),
-            Span::styled("dissolve/end", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("Shift+F4", key_style),
-            Span::styled("end", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("Ctrl+←→ ", key_style),
-            Span::styled("switch split panel", desc_style),
-        ]),
-        Line::from(vec![
-            Span::styled("Ctrl+T  ", key_style),
-            Span::styled("context transfer to agent", desc_style),
-        ]),
-    ];
-
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(
+        Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center),
+        inner,
+    );
 }
 
 // ── Context Transfer modal ───────────────────────────────────────

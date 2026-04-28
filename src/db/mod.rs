@@ -251,6 +251,37 @@ impl Database {
         Ok(())
     }
 
+    // ── Statistics helpers ────────────────────────────────────────────────
+
+    pub fn count_interactive_sessions(&self) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM interactive_sessions", [], |row| {
+                row.get(0)
+            })?;
+        Ok(count)
+    }
+
+    pub fn count_terminal_sessions(&self) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM terminal_sessions", [], |row| {
+            row.get(0)
+        })?;
+        Ok(count)
+    }
+
+    pub fn count_background_agents(&self) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    pub fn count_runs(&self) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM runs", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
     /// Persist a split group to the database.
     pub fn insert_group(
         &self,

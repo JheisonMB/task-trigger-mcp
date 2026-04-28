@@ -153,6 +153,8 @@ pub struct App {
     pub terminal_histories: HashMap<String, super::terminal_history::SessionHistory>,
     /// Terminal scrollback search state (Ctrl+F).
     pub terminal_search: Option<TerminalSearch>,
+    /// CLI launch usage counters (persisted to disk).
+    pub cli_usage: crate::domain::usage_stats::CliUsage,
 }
 
 fn args_contain_flag(args: &str, flag: &str) -> bool {
@@ -357,6 +359,16 @@ impl App {
             system_info_rx,
             last_system_update: std::time::Instant::now() - std::time::Duration::from_secs(10),
             process_start_time: std::time::Instant::now(),
+            cli_usage: {
+                let mut usage = dirs::home_dir()
+                    .map(|h| crate::domain::usage_stats::CliUsage::load(&h.join(".canopy")))
+                    .unwrap_or_default();
+                if usage.ensure_first_run() {
+                    let _ = dirs::home_dir()
+                        .and_then(|h| usage.save(&h.join(".canopy")).ok().map(|_| ()));
+                }
+                usage
+            },
         };
         app.refresh()?;
         Ok(app)
@@ -435,6 +447,13 @@ impl App {
         self.selected_agent()
             .map(|a| a.id(self).to_string())
             .unwrap_or_else(|| "—".to_string())
+    }
+
+    /// Record a CLI launch in usage stats and persist to disk.
+    pub fn record_cli_usage(&mut self, cli_name: &str) {
+        self.cli_usage.record(cli_name);
+        let _ =
+            dirs::home_dir().and_then(|h| self.cli_usage.save(&h.join(".canopy")).ok().map(|_| ()));
     }
 
     pub fn toggle_enable(&self) -> Result<()> {
