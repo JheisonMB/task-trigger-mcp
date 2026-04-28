@@ -1127,6 +1127,86 @@ impl InteractiveAgent {
         Some(text)
     }
 
+    /// Get plain text from the line at a specific screen position.
+    /// Used for single-click copy functionality.
+    #[allow(dead_code)]
+    pub fn get_line_text_at_position(&self, col: u16, row: u16) -> Option<String> {
+        let vt = self.vt.lock().ok()?;
+        let screen = vt.screen();
+        let (screen_rows, screen_cols) = screen.size();
+        if screen_rows == 0 || screen_cols == 0 {
+            return None;
+        }
+
+        // Adjust for scroll offset
+        let actual_row = if self.in_alternate_screen() {
+            // In alternate screen, row is relative to visible area
+            row.saturating_add(self.scroll_offset as u16)
+        } else {
+            // In normal screen, row is absolute in scrollback
+            row
+        };
+
+        // Check if position is within screen bounds
+        if actual_row >= screen_rows || col >= screen_cols {
+            return None;
+        }
+
+        let mut line = String::new();
+        for c in 0..screen_cols {
+            if let Some(cell) = screen.cell(actual_row, c) {
+                line.push_str(cell.contents());
+            }
+        }
+
+        let sanitized = sanitize_line(&line);
+        if sanitized.trim().is_empty() {
+            None
+        } else {
+            Some(sanitized)
+        }
+    }
+
+    /// Get plain text from the current cursor line.
+    /// Used for single-click copy functionality.
+    pub fn get_current_line_text(&self) -> Option<String> {
+        let vt = self.vt.lock().ok()?;
+        let screen = vt.screen();
+        let (screen_rows, screen_cols) = screen.size();
+        if screen_rows == 0 || screen_cols == 0 {
+            return None;
+        }
+
+        let cursor_pos = screen.cursor_position();
+        let cursor_row = cursor_pos.0 as u16;
+        let actual_row = if self.in_alternate_screen() {
+            // In alternate screen, cursor row is relative to visible area
+            cursor_row.saturating_add(self.scroll_offset as u16)
+        } else {
+            // In normal screen, cursor row is absolute in scrollback
+            cursor_row
+        };
+
+        // Check if cursor position is within screen bounds
+        if actual_row >= screen_rows {
+            return None;
+        }
+
+        let mut line = String::new();
+        for c in 0..screen_cols {
+            if let Some(cell) = screen.cell(actual_row, c) {
+                line.push_str(cell.contents());
+            }
+        }
+
+        let sanitized = sanitize_line(&line);
+        if sanitized.trim().is_empty() {
+            None
+        } else {
+            Some(sanitized)
+        }
+    }
+
     pub fn is_sensitive_input_active(&self) -> bool {
         self.current_visible_line_text()
             .is_some_and(|line| line_looks_sensitive_prompt(&line))

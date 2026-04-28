@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use std::path::PathBuf;
 use std::time::Duration;
@@ -54,7 +54,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
                 }
                 Event::Mouse(mouse) => {
                     app.notify_mouse_move();
-                    handle_mouse(app, mouse.kind, mouse.modifiers)?;
+                    handle_mouse(app, mouse)?;
                 }
                 Event::Resize(_, _) => {
                     // Resize is handled by refresh() on next tick
@@ -539,7 +539,29 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
 
 // ── Mouse: scroll wheel + Shift+Click to copy selection ─────────────
 
-fn handle_mouse(app: &mut App, kind: MouseEventKind, modifiers: KeyModifiers) -> Result<()> {
+fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
+    let kind = mouse.kind;
+    let modifiers = mouse.modifiers;
+    
+    // Normal Left click (no Shift) — copy current line from terminal
+    if matches!(kind, MouseEventKind::Up(MouseButton::Left))
+        && !modifiers.contains(KeyModifiers::SHIFT)
+    {
+        if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+            let idx = *idx;
+            if let Some(agent) = app.interactive_agents.get(idx) {
+                if let Some(line_text) = agent.get_current_line_text() {
+                    // Try to copy to clipboard
+                    let _ = arboard::Clipboard::new()
+                        .and_then(|mut clipboard| clipboard.set_text(&line_text));
+                    app.show_copied = true;
+                    app.copied_at = std::time::Instant::now();
+                }
+            }
+        }
+        return Ok(());
+    }
+
     // Shift+Left release — copy both formatted and plain text
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
         && modifiers.contains(KeyModifiers::SHIFT)
@@ -1514,9 +1536,25 @@ fn record_terminal_command(app: &mut App, idx: usize, captured: &str) {
         return;
     }
     let trimmed = captured.trim();
+
+    // Handle cd commands: update working dir but don't record to history
     if trimmed == "cd" || trimmed.starts_with("cd ") || trimmed.starts_with("cd\t") {
+        let target = if trimmed == "cd" {
+            // Plain "cd" without args usually goes to home directory
+            dirs::home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "/".to_string())
+        } else {
+            let after_cd = &trimmed[2..].trim();
+            after_cd.to_string()
+        };
+        let current_dir = app.terminal_agents[idx].working_dir.clone();
+        if let Some(abs_path) = resolve_cd_path(&current_dir, &target) {
+            app.terminal_agents[idx].update_working_dir(&abs_path.to_string_lossy());
+        }
         return;
     }
+
     let session_name = app.terminal_agents[idx].name.clone();
     let cwd = app.terminal_agents[idx].working_dir.clone();
     // Per-session history
@@ -2157,6 +2195,24 @@ fn handle_suggestion_picker_key(app: &mut App, code: KeyCode) -> Result<()> {
         KeyCode::Esc | KeyCode::Tab => {
             app.suggestion_picker = None;
         }
+        KeyCode::Backspace => {
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                if picker.mode == super::terminal_history::PickerMode::CommandHistory {
+                    picker.input.pop();
+                    let filter = picker.input.clone();
+                    picker.apply_filter(&filter);
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(picker) = app.suggestion_picker.as_mut() {
+                if picker.mode == super::terminal_history::PickerMode::CommandHistory {
+                    picker.input.push(c);
+                    let filter = picker.input.clone();
+                    picker.apply_filter(&filter);
+                }
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -2186,6 +2242,46 @@ fn resolve_cd_picker_selection(
     }
 }
 
+/// Resolve a cd target path relative to a current directory.
+fn resolve_cd_path(current_dir: &str, target: &str) -> Option<PathBuf> {
+    let current = PathBuf::from(current_dir);
+    let target_path = if target == ".." {
+        current
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| current)
+    } else if target.starts_with("../") {
+        let mut path = current;
+        let parts: Vec<&str> = target.split('/').collect();
+        let mut parent_count = 0;
+        for part in &parts {
+            if *part == ".." {
+                parent_count += 1;
+            } else {
+                break;
+            }
+        }
+        for _ in 0..parent_count {
+            if let Some(parent) = path.parent() {
+                path = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        if parts.len() > parent_count {
+            for part in parts.iter().skip(parent_count) {
+                if !part.is_empty() {
+                    path = path.join(part);
+                }
+            }
+        }
+        path
+    } else {
+        current.join(target)
+    };
+    target_path.canonicalize().ok()
+}
+
 /// Insert the selected suggestion into the terminal's input.
 fn insert_suggestion_into_terminal(app: &mut App, text: &str, is_cd: bool) {
     let term_idx = find_focused_terminal(app);
@@ -2203,53 +2299,7 @@ fn insert_suggestion_into_terminal(app: &mut App, text: &str, is_cd: bool) {
 
     // If this is a CD command, update the working directory
     if is_cd {
-        // Resolve the target directory relative to current working directory
-        let current_dir = PathBuf::from(&agent.working_dir);
-        let target_path = if text == ".." {
-            current_dir
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| current_dir)
-        } else if text.starts_with("../") {
-            // Handle multiple parent directory traversals (e.g., ../../dir)
-            let mut path = current_dir;
-            let parts: Vec<&str> = text.split('/').collect();
-            let mut parent_count = 0;
-
-            // Count how many ".." components we have
-            for part in &parts {
-                if *part == ".." {
-                    parent_count += 1;
-                } else {
-                    break;
-                }
-            }
-
-            // Go up the appropriate number of parent directories
-            for _ in 0..parent_count {
-                if let Some(parent) = path.parent() {
-                    path = parent.to_path_buf();
-                } else {
-                    break;
-                }
-            }
-
-            // Add any remaining path components after the ".."
-            if parts.len() > parent_count {
-                for part in parts.iter().skip(parent_count) {
-                    if !part.is_empty() {
-                        path = path.join(part);
-                    }
-                }
-            }
-
-            path
-        } else {
-            current_dir.join(text)
-        };
-
-        // Update working directory to the resolved absolute path
-        if let Ok(abs_path) = target_path.canonicalize() {
+        if let Some(abs_path) = resolve_cd_path(&agent.working_dir, text) {
             agent.update_working_dir(&abs_path.to_string_lossy());
         }
     }
@@ -2472,6 +2522,11 @@ mod tests {
         let picker = SuggestionPicker {
             input: "./alpha".to_string(),
             mode: PickerMode::CdDirectory,
+            all_items: vec![SuggestionItem {
+                text: "./beta".to_string(),
+                label: "./beta".to_string(),
+                count: 0,
+            }],
             items: vec![SuggestionItem {
                 text: "./beta".to_string(),
                 label: "./beta".to_string(),
@@ -2492,6 +2547,11 @@ mod tests {
         let picker = SuggestionPicker {
             input: "./alpha/beta".to_string(),
             mode: PickerMode::CdDirectory,
+            all_items: vec![SuggestionItem {
+                text: "..".to_string(),
+                label: "../".to_string(),
+                count: 0,
+            }],
             items: vec![SuggestionItem {
                 text: "..".to_string(),
                 label: "../".to_string(),
