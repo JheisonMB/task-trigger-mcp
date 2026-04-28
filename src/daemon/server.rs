@@ -13,6 +13,7 @@ use crate::scheduler::cron_scheduler::CronScheduler;
 use crate::watchers::WatcherEngine;
 
 pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
+    crate::domain::notification::register_aumid();
     crate::domain::notification::clear_stale_notifications();
     init_tracing();
 
@@ -100,6 +101,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
     scheduler_cancel.cancel();
     watcher_engine.stop_all().await;
     remove_pid_file(&data_dir);
+    crate::domain::notification::clear_notifications_on_exit();
     tracing::info!("Daemon stopped");
 
     Ok(())
@@ -143,6 +145,7 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
 
     cron_scheduler.stop();
     watcher_engine.stop_all().await;
+    crate::domain::notification::clear_notifications_on_exit();
     tracing::info!("Stdio server stopped");
 
     Ok(())
