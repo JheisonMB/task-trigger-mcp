@@ -32,9 +32,14 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     } else {
         0
     };
-    let model_picker_rows: u16 = if dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
+    let model_picker_rows: u16 = if dialog.model_picker_open && !dialog.model_suggestions.is_empty()
+    {
         let visible = dialog.model_suggestions.len().min(5);
-        let overflow_line = if dialog.model_suggestions.len() > 5 { 1 } else { 0 };
+        let overflow_line = if dialog.model_suggestions.len() > 5 {
+            1
+        } else {
+            0
+        };
         (visible + overflow_line) as u16
     } else {
         0
@@ -108,11 +113,21 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
     //   Terminal:    0=type 1=dir 2=shell
     //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
-    let cli_field: usize = if is_interactive || is_background { 2 } else { 0 };
+    let cli_field: usize = if is_interactive || is_background {
+        2
+    } else {
+        0
+    };
     let model_field: usize = 3; // background only
     let prompt_field: usize = 4; // background only
     let extra_field: usize = 5; // background only (cron/watch)
-    let dir_field: usize = if is_interactive { 3 } else if is_terminal { 1 } else { 6 };
+    let dir_field: usize = if is_interactive {
+        3
+    } else if is_terminal {
+        1
+    } else {
+        6
+    };
     let yolo_field: usize = 4; // interactive only
 
     let mut lines = vec![
@@ -140,10 +155,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         };
         let mut session_line = vec![
             Span::styled("  Session:  ", Style::default().fg(DIM)),
-            Span::styled(
-                format!(" ◀ {} ▶ ", mode_names[mode_idx]),
-                focus_style(1),
-            ),
+            Span::styled(format!(" ◀ {} ▶ ", mode_names[mode_idx]), focus_style(1)),
         ];
         if dialog.resume_unconfigured() && !dialog.has_session_picker() {
             session_line.push(Span::styled(
@@ -319,10 +331,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // ── CLI row (not for terminal) ──
     lines.push(Line::from(vec![
         Span::styled("  CLI:   ", Style::default().fg(DIM)),
-        Span::styled(
-            format!(" {} ", cli_name),
-            focus_style(cli_field),
-        ),
+        Span::styled(format!(" {} ", cli_name), focus_style(cli_field)),
         Span::styled("  (◂▸ cycle · Space pick)", Style::default().fg(DIM)),
     ]));
 
@@ -336,7 +345,13 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         } else {
             0
         };
-        for (i, cli) in dialog.available_clis.iter().enumerate().skip(scroll).take(max_visible) {
+        for (i, cli) in dialog
+            .available_clis
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(max_visible)
+        {
             let is_sel = i == sel;
             let style = if is_sel {
                 Style::default()
@@ -376,7 +391,10 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         ]));
 
         // Model suggestions dropdown
-        if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
+        if is_focused(model_field)
+            && dialog.model_picker_open
+            && !dialog.model_suggestions.is_empty()
+        {
             let max_visible = 5;
             let total = dialog.model_suggestions.len();
             let sel = dialog.model_suggestion_idx;
@@ -407,7 +425,11 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                     Span::styled(truncate_str(&entry.id, 38), style),
                     Span::styled(
                         provider_tag,
-                        if is_sel { style } else { Style::default().fg(DIM) },
+                        if is_sel {
+                            style
+                        } else {
+                            Style::default().fg(DIM)
+                        },
                     ),
                 ]));
             }
@@ -464,7 +486,11 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                     Span::styled(truncate_str(id, 18), style),
                     Span::styled(
                         format!("  {short_label}"),
-                        if is_sel { style } else { Style::default().fg(DIM) },
+                        if is_sel {
+                            style
+                        } else {
+                            Style::default().fg(DIM)
+                        },
                     ),
                 ]));
             }
@@ -553,8 +579,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     }
 
     // Working directory — hide for Watch background (uses Path field)
-    let hide_dir = is_background
-        && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
+    let hide_dir =
+        is_background && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
     if !hide_dir {
         lines.push(Line::from(vec![
             Span::styled("  Dir:   ", Style::default().fg(DIM)),
@@ -569,8 +595,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Directory / file browser
     if !dialog.dir_entries.is_empty() {
         let filtered = dialog.filtered_dir_entries();
-        let is_watch = is_background
-            && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
+        let is_watch =
+            is_background && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
         let browser_field_idx = if is_watch { extra_field } else { dir_field };
 
         let filter_display = if dialog.dir_filter.is_empty() {

@@ -1699,11 +1699,21 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
             //   Terminal:    0=type 1=dir 2=shell
             //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
-            let cli_field: usize = if is_interactive || is_background { 2 } else { 0 };
+            let cli_field: usize = if is_interactive || is_background {
+                2
+            } else {
+                0
+            };
             let model_field: usize = 3; // background only
             let prompt_field: usize = 4; // background only
             let extra_field: usize = 5; // background only
-            let dir_field: usize = if is_interactive { 3 } else if is_terminal { 1 } else { 6 };
+            let dir_field: usize = if is_interactive {
+                3
+            } else if is_terminal {
+                1
+            } else {
+                6
+            };
             let yolo_field: usize = 4; // interactive only
             let _ = (prompt_field, extra_field);
 
@@ -1712,18 +1722,30 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 0 => match code {
                     KeyCode::Left => {
                         dialog.task_type = match dialog.task_type {
-                            super::app::NewTaskType::Interactive => super::app::NewTaskType::Background,
-                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Interactive,
-                            super::app::NewTaskType::Background => super::app::NewTaskType::Terminal,
+                            super::app::NewTaskType::Interactive => {
+                                super::app::NewTaskType::Background
+                            }
+                            super::app::NewTaskType::Terminal => {
+                                super::app::NewTaskType::Interactive
+                            }
+                            super::app::NewTaskType::Background => {
+                                super::app::NewTaskType::Terminal
+                            }
                         };
                         dialog.field = 0;
                         dialog.refresh_dir_entries();
                     }
                     KeyCode::Right => {
                         dialog.task_type = match dialog.task_type {
-                            super::app::NewTaskType::Interactive => super::app::NewTaskType::Terminal,
-                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Background,
-                            super::app::NewTaskType::Background => super::app::NewTaskType::Interactive,
+                            super::app::NewTaskType::Interactive => {
+                                super::app::NewTaskType::Terminal
+                            }
+                            super::app::NewTaskType::Terminal => {
+                                super::app::NewTaskType::Background
+                            }
+                            super::app::NewTaskType::Background => {
+                                super::app::NewTaskType::Interactive
+                            }
                         };
                         dialog.field = 0;
                         dialog.refresh_dir_entries();
@@ -1760,8 +1782,12 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 1 if is_background => match code {
                     KeyCode::Left | KeyCode::Right => {
                         dialog.background_trigger = match dialog.background_trigger {
-                            super::app::BackgroundTrigger::Cron => super::app::BackgroundTrigger::Watch,
-                            super::app::BackgroundTrigger::Watch => super::app::BackgroundTrigger::Cron,
+                            super::app::BackgroundTrigger::Cron => {
+                                super::app::BackgroundTrigger::Watch
+                            }
+                            super::app::BackgroundTrigger::Watch => {
+                                super::app::BackgroundTrigger::Cron
+                            }
                         };
                         dialog.refresh_dir_entries();
                     }
@@ -1803,7 +1829,11 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         }
                     }
                     KeyCode::Up => {
-                        dialog.field = if is_interactive || is_background { 1 } else { 0 };
+                        dialog.field = if is_interactive || is_background {
+                            1
+                        } else {
+                            0
+                        };
                     }
                     _ => {}
                 },
@@ -1873,7 +1903,10 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 },
                 // Cron expr (Background+Cron — field 5)
                 5 if is_background
-                    && matches!(dialog.background_trigger, super::app::BackgroundTrigger::Cron) =>
+                    && matches!(
+                        dialog.background_trigger,
+                        super::app::BackgroundTrigger::Cron
+                    ) =>
                 {
                     match code {
                         KeyCode::Char(c) => dialog.cron_expr.push(c),
@@ -1887,51 +1920,58 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 }
                 // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
                 // For Background+Watch, dir_field == 6 but extra_field == 5 handles the path browser
-                n if n == dir_field || (n == extra_field && is_background && dialog.background_trigger == super::app::BackgroundTrigger::Watch) => match code {
-                    KeyCode::Up => {
-                        if dialog.dir_selected > 0 {
-                            dialog.dir_selected -= 1;
-                        } else if is_interactive {
-                            dialog.field = yolo_field;
-                        } else if is_terminal {
-                            dialog.field = 0;
-                        } else if is_background {
-                            if dialog.background_trigger == super::app::BackgroundTrigger::Watch {
-                                dialog.field = prompt_field;
-                            } else {
-                                dialog.field = extra_field; // cron field
+                n if n == dir_field
+                    || (n == extra_field
+                        && is_background
+                        && dialog.background_trigger == super::app::BackgroundTrigger::Watch) =>
+                {
+                    match code {
+                        KeyCode::Up => {
+                            if dialog.dir_selected > 0 {
+                                dialog.dir_selected -= 1;
+                            } else if is_interactive {
+                                dialog.field = yolo_field;
+                            } else if is_terminal {
+                                dialog.field = 0;
+                            } else if is_background {
+                                if dialog.background_trigger == super::app::BackgroundTrigger::Watch
+                                {
+                                    dialog.field = prompt_field;
+                                } else {
+                                    dialog.field = extra_field; // cron field
+                                }
                             }
                         }
-                    }
-                    KeyCode::Down => {
-                        let filtered_len = dialog.filtered_dir_entries().len();
-                        if dialog.dir_selected + 1 < filtered_len {
-                            dialog.dir_selected += 1;
-                        } else if is_terminal {
-                            dialog.field = 2; // shell field
-                        } else if is_interactive {
-                            dialog.field = yolo_field;
+                        KeyCode::Down => {
+                            let filtered_len = dialog.filtered_dir_entries().len();
+                            if dialog.dir_selected + 1 < filtered_len {
+                                dialog.dir_selected += 1;
+                            } else if is_terminal {
+                                dialog.field = 2; // shell field
+                            } else if is_interactive {
+                                dialog.field = yolo_field;
+                            }
                         }
+                        KeyCode::Right => {
+                            dialog.navigate_to_selected();
+                        }
+                        KeyCode::Left => {
+                            dialog.go_up();
+                        }
+                        KeyCode::Backspace if !dialog.dir_filter.is_empty() => {
+                            dialog.dir_filter.pop();
+                            dialog.dir_selected = 0;
+                        }
+                        KeyCode::Char(c) if c != ' ' => {
+                            dialog.dir_filter.push(c);
+                            dialog.dir_selected = 0;
+                        }
+                        KeyCode::Char(' ') => {
+                            dialog.navigate_to_selected();
+                        }
+                        _ => {}
                     }
-                    KeyCode::Right => {
-                        dialog.navigate_to_selected();
-                    }
-                    KeyCode::Left => {
-                        dialog.go_up();
-                    }
-                    KeyCode::Backspace if !dialog.dir_filter.is_empty() => {
-                        dialog.dir_filter.pop();
-                        dialog.dir_selected = 0;
-                    }
-                    KeyCode::Char(c) if c != ' ' => {
-                        dialog.dir_filter.push(c);
-                        dialog.dir_selected = 0;
-                    }
-                    KeyCode::Char(' ') => {
-                        dialog.navigate_to_selected();
-                    }
-                    _ => {}
-                },
+                }
                 // Shell picker (Terminal only — field 2): ←→ cycle shells
                 2 if is_terminal => match code {
                     KeyCode::Left | KeyCode::Right => {

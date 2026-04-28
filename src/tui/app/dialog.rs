@@ -637,12 +637,14 @@ impl App {
             // ── Edit mode: partial-update existing agent ──────────────────
             let model_ref = model.as_deref();
             match dialog.task_type {
-                NewTaskType::Background => {
-                    match dialog.background_trigger {
-                        BackgroundTrigger::Cron => self.update_scheduled(&dialog, model_ref, edit_id)?,
-                        BackgroundTrigger::Watch => self.update_watcher_edit(&dialog, model_ref, edit_id)?,
+                NewTaskType::Background => match dialog.background_trigger {
+                    BackgroundTrigger::Cron => {
+                        self.update_scheduled(&dialog, model_ref, edit_id)?
                     }
-                }
+                    BackgroundTrigger::Watch => {
+                        self.update_watcher_edit(&dialog, model_ref, edit_id)?
+                    }
+                },
                 NewTaskType::Interactive | NewTaskType::Terminal => {}
             }
             self.new_agent_dialog = None;

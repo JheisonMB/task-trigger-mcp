@@ -18,14 +18,8 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("F1", "legend"),
         ],
         Focus::Preview => {
-            let is_bg = matches!(
-                app.selected_agent(),
-                Some(AgentEntry::Agent(_))
-            );
-            let mut h = vec![
-                ("↑↓", "nav"),
-                ("Enter", "focus"),
-            ];
+            let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));
+            let mut h = vec![("↑↓", "nav"), ("Enter", "focus")];
             if is_bg {
                 h.push(("e", "edit"));
                 h.push(("d", "toggle"));

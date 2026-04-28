@@ -84,9 +84,7 @@ pub fn register_aumid() {
                 "New-ItemProperty -Path $key -Name 'IconUri' -Value '{}' ",
                 "-PropertyType String -Force | Out-Null",
             ),
-            APP_ID,
-            APP_ID,
-            icon_uri,
+            APP_ID, APP_ID, icon_uri,
         );
         let _ = Command::new("powershell.exe")
             .arg("-NoProfile")

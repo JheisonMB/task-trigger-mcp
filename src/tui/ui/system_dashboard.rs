@@ -123,10 +123,16 @@ fn create_system_dashboard_lines(
                 Span::styled("gpu: ", Style::default().fg(Color::White)),
                 if let Some(gpu) = &system_info.gpu_info {
                     // Format VRAM if available (similar to memory format: percentage first, then used size)
-                    let vram_text = if let (Some(vram_used), Some(vram_total)) = (gpu.vram_used, gpu.vram_total) {
+                    let vram_text = if let (Some(vram_used), Some(vram_total)) =
+                        (gpu.vram_used, gpu.vram_total)
+                    {
                         if vram_total > 0 {
                             let vram_percent = (vram_used as f32 / vram_total as f32) * 100.0;
-                            Some(format!("{:.0}% {}", vram_percent, format_megabytes_smart(vram_used)))
+                            Some(format!(
+                                "{:.0}% {}",
+                                vram_percent,
+                                format_megabytes_smart(vram_used)
+                            ))
                         } else {
                             None
                         }
@@ -136,20 +142,24 @@ fn create_system_dashboard_lines(
 
                     // Combine usage, temperature, and VRAM
                     let metrics = match (gpu.usage, gpu.temperature, vram_text) {
-                        (Some(usage), Some(temp), Some(vram)) => 
-                            Some(format!("{usage:.0}% {} | {vram}", format_temperature(temp, temperature_unit))),
-                        (Some(usage), Some(temp), None) => 
-                            Some(format!("{usage:.0}% {}", format_temperature(temp, temperature_unit))),
-                        (Some(usage), None, Some(vram)) => 
-                            Some(format!("{usage:.0}% | {vram}")),
-                        (Some(usage), None, None) => 
-                            Some(format!("{usage:.0}%")),
-                        (None, Some(temp), Some(vram)) => 
-                            Some(format!("{} | {vram}", format_temperature(temp, temperature_unit))),
-                        (None, Some(temp), None) => 
-                            Some(format_temperature(temp, temperature_unit)),
-                        (None, None, Some(vram)) => 
-                            Some(vram),
+                        (Some(usage), Some(temp), Some(vram)) => Some(format!(
+                            "{usage:.0}% {} | {vram}",
+                            format_temperature(temp, temperature_unit)
+                        )),
+                        (Some(usage), Some(temp), None) => Some(format!(
+                            "{usage:.0}% {}",
+                            format_temperature(temp, temperature_unit)
+                        )),
+                        (Some(usage), None, Some(vram)) => Some(format!("{usage:.0}% | {vram}")),
+                        (Some(usage), None, None) => Some(format!("{usage:.0}%")),
+                        (None, Some(temp), Some(vram)) => Some(format!(
+                            "{} | {vram}",
+                            format_temperature(temp, temperature_unit)
+                        )),
+                        (None, Some(temp), None) => {
+                            Some(format_temperature(temp, temperature_unit))
+                        }
+                        (None, None, Some(vram)) => Some(vram),
                         (None, None, None) => None,
                     };
                     let gpu_text = metrics.unwrap_or_else(|| "n/a".to_string());
