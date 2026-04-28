@@ -752,7 +752,7 @@ fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) ->
             let _ = app.delete_selected();
         }
         KeyCode::F(10) => {
-            // Already in preview; no-op
+            app.focus = Focus::Home;
         }
         KeyCode::F(1) => {
             app.show_legend = true;
@@ -1607,6 +1607,63 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
             }
             return Ok(());
         }
+
+        // CLI picker intercepts ALL keys when open
+        if dialog.cli_picker_open {
+            match code {
+                KeyCode::Down => {
+                    let len = dialog.available_clis.len();
+                    if len > 0 {
+                        dialog.cli_picker_idx = (dialog.cli_picker_idx + 1) % len;
+                        dialog.cli_index = dialog.cli_picker_idx;
+                        dialog.refresh_model_suggestions();
+                        if dialog.selected_yolo_flag().is_none() {
+                            dialog.yolo_mode = false;
+                        }
+                    }
+                }
+                KeyCode::Up => {
+                    let len = dialog.available_clis.len();
+                    if len > 0 {
+                        dialog.cli_picker_idx =
+                            dialog.cli_picker_idx.checked_sub(1).unwrap_or(len - 1);
+                        dialog.cli_index = dialog.cli_picker_idx;
+                        dialog.refresh_model_suggestions();
+                        if dialog.selected_yolo_flag().is_none() {
+                            dialog.yolo_mode = false;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    dialog.cli_index = dialog.cli_picker_idx;
+                    dialog.cli_picker_open = false;
+                    dialog.refresh_model_suggestions();
+                    if dialog.selected_yolo_flag().is_none() {
+                        dialog.yolo_mode = false;
+                    }
+                }
+                KeyCode::Esc => {
+                    dialog.cli_picker_open = false;
+                }
+                KeyCode::Char(c) => {
+                    // Jump to first CLI starting with the typed letter
+                    if let Some(idx) = dialog
+                        .available_clis
+                        .iter()
+                        .position(|cli| cli.as_str().starts_with(c))
+                    {
+                        dialog.cli_picker_idx = idx;
+                        dialog.cli_index = dialog.cli_picker_idx;
+                        dialog.refresh_model_suggestions();
+                        if dialog.selected_yolo_flag().is_none() {
+                            dialog.yolo_mode = false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
     }
 
     match code {
@@ -1636,58 +1693,45 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
 
             let is_interactive = matches!(dialog.task_type, super::app::NewTaskType::Interactive);
             let is_terminal = matches!(dialog.task_type, super::app::NewTaskType::Terminal);
-            // Interactive: 0=type, 1=mode, 2=CLI, 3=model, 4=dir, 5=yolo
-            // Scheduled/Watcher: 0=type, 1=CLI, 2=model, 3=prompt, 4=cron/watch, 5=dir
-            // Terminal: 0=type, 1=dir, 2=shell
-            let cli_field: usize = if is_interactive { 2 } else { 1 };
-            let model_field: usize = if is_interactive { 3 } else { 2 };
-            let prompt_field: usize = 3;
-            let extra_field: usize = 4;
-            let dir_field: usize = if is_interactive {
-                4
-            } else if is_terminal {
-                1
-            } else if dialog.task_type == super::app::NewTaskType::Watcher {
-                4
-            } else {
-                5
-            };
-            let yolo_field: usize = 5; // interactive only
-            let _ = (prompt_field, extra_field); // used in specific branches below
+            let is_background = matches!(dialog.task_type, super::app::NewTaskType::Background);
+
+            // Field layout:
+            //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
+            //   Terminal:    0=type 1=dir 2=shell
+            //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
+            let cli_field: usize = if is_interactive || is_background { 2 } else { 0 };
+            let model_field: usize = 3; // background only
+            let prompt_field: usize = 4; // background only
+            let extra_field: usize = 5; // background only
+            let dir_field: usize = if is_interactive { 3 } else if is_terminal { 1 } else { 6 };
+            let yolo_field: usize = 4; // interactive only
+            let _ = (prompt_field, extra_field);
 
             match dialog.field {
-                // BackgroundAgent type selector
+                // Type selector (field 0)
                 0 => match code {
                     KeyCode::Left => {
                         dialog.task_type = match dialog.task_type {
-                            super::app::NewTaskType::Interactive => {
-                                super::app::NewTaskType::Terminal
-                            }
-                            super::app::NewTaskType::Scheduled => {
-                                super::app::NewTaskType::Interactive
-                            }
-                            super::app::NewTaskType::Watcher => super::app::NewTaskType::Scheduled,
-                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Watcher,
+                            super::app::NewTaskType::Interactive => super::app::NewTaskType::Background,
+                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Interactive,
+                            super::app::NewTaskType::Background => super::app::NewTaskType::Terminal,
                         };
+                        dialog.field = 0;
                         dialog.refresh_dir_entries();
                     }
                     KeyCode::Right => {
                         dialog.task_type = match dialog.task_type {
-                            super::app::NewTaskType::Interactive => {
-                                super::app::NewTaskType::Scheduled
-                            }
-                            super::app::NewTaskType::Scheduled => super::app::NewTaskType::Watcher,
-                            super::app::NewTaskType::Watcher => super::app::NewTaskType::Terminal,
-                            super::app::NewTaskType::Terminal => {
-                                super::app::NewTaskType::Interactive
-                            }
+                            super::app::NewTaskType::Interactive => super::app::NewTaskType::Terminal,
+                            super::app::NewTaskType::Terminal => super::app::NewTaskType::Background,
+                            super::app::NewTaskType::Background => super::app::NewTaskType::Interactive,
                         };
+                        dialog.field = 0;
                         dialog.refresh_dir_entries();
                     }
                     KeyCode::Down | KeyCode::Tab => dialog.field = 1,
                     _ => {}
                 },
-                // Mode selector (Interactive only)
+                // Mode selector (Interactive only — field 1)
                 1 if is_interactive => match code {
                     KeyCode::Left => {
                         dialog.task_mode = match dialog.task_mode {
@@ -1712,30 +1756,59 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
                     _ => {}
                 },
-                // CLI selector
+                // Trigger selector (Background only — field 1)
+                1 if is_background => match code {
+                    KeyCode::Left | KeyCode::Right => {
+                        dialog.background_trigger = match dialog.background_trigger {
+                            super::app::BackgroundTrigger::Cron => super::app::BackgroundTrigger::Watch,
+                            super::app::BackgroundTrigger::Watch => super::app::BackgroundTrigger::Cron,
+                        };
+                        dialog.refresh_dir_entries();
+                    }
+                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
+                    KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
+                    _ => {}
+                },
+                // CLI field (field 2 for interactive/background) — Space opens picker
                 n if n == cli_field && !is_terminal => match code {
+                    KeyCode::Char(' ') => {
+                        dialog.cli_picker_open = true;
+                        dialog.cli_picker_idx = dialog.cli_index;
+                    }
                     KeyCode::Left => {
-                        dialog.prev_cli();
-                        dialog.refresh_model_suggestions();
-                        if dialog.selected_yolo_flag().is_none() {
-                            dialog.yolo_mode = false;
+                        let count = dialog.available_clis.len();
+                        if count > 0 {
+                            dialog.cli_index = (dialog.cli_index + count - 1) % count;
+                            dialog.refresh_model_suggestions();
+                            if dialog.selected_yolo_flag().is_none() {
+                                dialog.yolo_mode = false;
+                            }
                         }
                     }
                     KeyCode::Right => {
-                        dialog.next_cli();
-                        dialog.refresh_model_suggestions();
-                        if dialog.selected_yolo_flag().is_none() {
-                            dialog.yolo_mode = false;
+                        let count = dialog.available_clis.len();
+                        if count > 0 {
+                            dialog.cli_index = (dialog.cli_index + 1) % count;
+                            dialog.refresh_model_suggestions();
+                            if dialog.selected_yolo_flag().is_none() {
+                                dialog.yolo_mode = false;
+                            }
                         }
                     }
-                    KeyCode::Down => dialog.field = model_field,
+                    KeyCode::Down => {
+                        if is_interactive {
+                            dialog.field = yolo_field;
+                        } else {
+                            dialog.field = model_field;
+                        }
+                    }
                     KeyCode::Up => {
-                        dialog.field = if is_interactive { 1 } else { 0 };
+                        dialog.field = if is_interactive || is_background { 1 } else { 0 };
                     }
                     _ => {}
                 },
-                // Model field — Space opens picker, ↑↓ navigate suggestions or fields
-                n if n == model_field => match code {
+                // Model field (Background only — field 3) — Space opens picker
+                n if n == model_field && is_background => match code {
                     KeyCode::Char(' ') => {
                         dialog.model_picker_open = true;
                         dialog.model_suggestion_idx = 0;
@@ -1784,51 +1857,50 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     }
                     KeyCode::Down => {
                         dialog.model_picker_open = false;
-                        dialog.field = if is_interactive { yolo_field } else { 3 };
-                        // yolo (interactive) or prompt (non-interactive)
+                        dialog.field = prompt_field;
                     }
                     _ => {}
                 },
-                // Prompt (scheduled/watcher only — field 3)
-                3 if !is_interactive => match code {
+                // Prompt (Background only — field 4)
+                4 if is_background => match code {
                     KeyCode::Char(c) => dialog.prompt.push(c),
                     KeyCode::Backspace => {
                         dialog.prompt.pop();
                     }
                     KeyCode::Up => dialog.field = model_field,
-                    KeyCode::Down => dialog.field = 4, // extra_field
+                    KeyCode::Down => dialog.field = extra_field,
                     _ => {}
                 },
-                // Cron expr (field 4, Scheduled only — Watcher uses field 4 as the browser)
-                4 if !is_interactive
-                    && matches!(dialog.task_type, super::app::NewTaskType::Scheduled) =>
+                // Cron expr (Background+Cron — field 5)
+                5 if is_background
+                    && matches!(dialog.background_trigger, super::app::BackgroundTrigger::Cron) =>
                 {
                     match code {
                         KeyCode::Char(c) => dialog.cron_expr.push(c),
                         KeyCode::Backspace => {
                             dialog.cron_expr.pop();
                         }
-                        KeyCode::Up => dialog.field = 3, // prompt
+                        KeyCode::Up => dialog.field = prompt_field,
                         KeyCode::Down => dialog.field = dir_field,
                         _ => {}
                     }
                 }
                 // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
-                // For Watcher, dir_field == 4 (same as extra_field), so this arm also handles
-                // the watch-path browser. The Scheduled arm above is guarded to avoid shadowing.
-                // For Terminal, dir_field == 1.
-                n if n == dir_field => match code {
+                // For Background+Watch, dir_field == 6 but extra_field == 5 handles the path browser
+                n if n == dir_field || (n == extra_field && is_background && dialog.background_trigger == super::app::BackgroundTrigger::Watch) => match code {
                     KeyCode::Up => {
                         if dialog.dir_selected > 0 {
                             dialog.dir_selected -= 1;
                         } else if is_interactive {
-                            dialog.field = yolo_field; // yolo is above dir for interactive
+                            dialog.field = yolo_field;
                         } else if is_terminal {
-                            dialog.field = 0; // type selector
-                        } else if dialog.task_type == super::app::NewTaskType::Watcher {
-                            dialog.field = 3; // prompt (watcher has no separate cron field)
-                        } else {
-                            dialog.field = 4; // extra_field (cron) for scheduled
+                            dialog.field = 0;
+                        } else if is_background {
+                            if dialog.background_trigger == super::app::BackgroundTrigger::Watch {
+                                dialog.field = prompt_field;
+                            } else {
+                                dialog.field = extra_field; // cron field
+                            }
                         }
                     }
                     KeyCode::Down => {
@@ -1836,7 +1908,9 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         if dialog.dir_selected + 1 < filtered_len {
                             dialog.dir_selected += 1;
                         } else if is_terminal {
-                            dialog.field = 2; // shell field for terminal
+                            dialog.field = 2; // shell field
+                        } else if is_interactive {
+                            dialog.field = yolo_field;
                         }
                     }
                     KeyCode::Right => {
@@ -1873,14 +1947,14 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                     KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
                     _ => {}
                 },
-                // Yolo toggle (interactive only — field 5), sits between model and dir
+                // Yolo toggle (interactive only — field 4)
                 n if n == yolo_field && is_interactive => match code {
                     KeyCode::Char(' ') if dialog.selected_yolo_flag().is_some() => {
                         dialog.yolo_mode = !dialog.yolo_mode;
                     }
                     KeyCode::Char(' ') => {}
                     KeyCode::Up | KeyCode::BackTab => {
-                        dialog.field = model_field;
+                        dialog.field = cli_field;
                     }
                     KeyCode::Down | KeyCode::Tab => {
                         dialog.field = dir_field;
