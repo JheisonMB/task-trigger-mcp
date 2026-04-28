@@ -109,17 +109,11 @@ fn create_system_dashboard_lines(
     let cpu_usage = system_info.cpu_usage_percent();
     let cpu_color = alert_color(cpu_usage, 70.0, 90.0);
 
-    // Build CPU line: usage (alert) + cores + freq (dim) + temp (alert)
+    // Build CPU line: usage (alert) + freq (dim) + temp (alert) + cores (dim)
     let mut cpu_spans = vec![
         Span::styled("cpu: ", Style::default().fg(Color::White)),
         Span::styled(format!("{cpu_usage:.0}%"), Style::default().fg(cpu_color)),
     ];
-    if system_info.cpu_cores > 0 {
-        cpu_spans.push(Span::styled(
-            format!(" {}c", system_info.cpu_cores),
-            Style::default().fg(DIM),
-        ));
-    }
     if let Some(freq) = format_cpu_frequency(system_info.cpu_frequency_mhz) {
         cpu_spans.push(Span::styled(format!(" {freq}"), Style::default().fg(DIM)));
     }
@@ -128,6 +122,12 @@ fn create_system_dashboard_lines(
         cpu_spans.push(Span::styled(
             format!(" {temp_str}"),
             Style::default().fg(temp_alert_color(temp_c)),
+        ));
+    }
+    if system_info.cpu_cores > 0 {
+        cpu_spans.push(Span::styled(
+            format!(" {}core", system_info.cpu_cores),
+            Style::default().fg(DIM),
         ));
     }
     let mut lines = vec![Line::from(cpu_spans)];
@@ -248,13 +248,11 @@ fn create_system_dashboard_lines(
         } else {
             DIM
         };
+        let load_pct = (load_per_core * 100.0) as u32;
         lines.push(Line::from(vec![
             Span::styled("load: ", Style::default().fg(Color::White)),
-            Span::styled(format!("{load:.2}"), Style::default().fg(load_color)),
-            Span::styled(
-                format!(" ({:.0}%)", load_per_core * 100.0),
-                Style::default().fg(DIM),
-            ),
+            Span::styled(format!("{load_pct}%"), Style::default().fg(load_color)),
+            Span::styled(format!(" {load:.2}"), Style::default().fg(DIM)),
             Span::styled(" · ", Style::default().fg(Color::White)),
             Span::styled(
                 format!("{} procs", system_info.process_count),
