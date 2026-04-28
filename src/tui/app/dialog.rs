@@ -13,9 +13,15 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum NewTaskType {
     Interactive,
-    Scheduled,
-    Watcher,
     Terminal,
+    Background,
+}
+
+/// Trigger type for background agents.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundTrigger {
+    Cron,
+    Watch,
 }
 
 /// Launch mode for interactive agents.
@@ -33,6 +39,7 @@ pub struct NewAgentDialog {
     pub edit_id: Option<String>,
     pub task_type: NewTaskType,
     pub task_mode: NewTaskMode,
+    pub background_trigger: BackgroundTrigger,
     pub cli_index: usize,
     pub available_clis: Vec<Cli>,
     pub cli_configs: Vec<Option<crate::domain::cli_config::CliConfig>>,
@@ -46,7 +53,7 @@ pub struct NewAgentDialog {
     pub available_shells: Vec<String>,
     /// Index into `available_shells` for the selected shell.
     pub shell_index: usize,
-    /// Which field is focused: 0=type, 1=mode (interactive), 2=CLI, 3=model, 4=dir, 5=yolo
+    /// Which field is focused: depends on task_type
     pub field: usize,
     pub dir_entries: Vec<String>,
     pub dir_selected: usize,
@@ -54,6 +61,9 @@ pub struct NewAgentDialog {
     pub dir_filter: String,
     pub current_path: String,
     pub prev_focus: Option<Focus>,
+    // ── CLI picker ──
+    pub cli_picker_open: bool,
+    pub cli_picker_idx: usize,
     // ── Model suggestions ──
     pub model_catalog: Option<ModelCatalog>,
     pub model_suggestions: Vec<ModelEntry>,
@@ -83,6 +93,7 @@ impl NewAgentDialog {
             edit_id: None,
             task_type: NewTaskType::Interactive,
             task_mode: NewTaskMode::Interactive,
+            background_trigger: BackgroundTrigger::Cron,
             cli_index: 0,
             available_clis: if available.is_empty() {
                 vec![Cli::new("opencode"), Cli::new("kiro"), Cli::new("qwen")]
@@ -109,6 +120,8 @@ impl NewAgentDialog {
             dir_filter: String::new(),
             current_path: cwd,
             prev_focus: None,
+            cli_picker_open: false,
+            cli_picker_idx: 0,
             model_catalog: catalog,
             model_suggestions: Vec::new(),
             model_suggestion_idx: 0,
@@ -290,26 +303,14 @@ impl NewAgentDialog {
             .unwrap_or(Color::Rgb(102, 187, 106))
     }
 
-    pub fn next_cli(&mut self) {
-        self.cli_index = (self.cli_index + 1) % self.available_clis.len();
-        self.selected_session = None;
-    }
-
-    pub fn prev_cli(&mut self) {
-        self.cli_index = self
-            .cli_index
-            .checked_sub(1)
-            .unwrap_or(self.available_clis.len() - 1);
-        self.selected_session = None;
-    }
-
     pub fn refresh_dir_entries(&mut self) {
         let Ok(entries) = std::fs::read_dir(&self.current_path) else {
             self.dir_entries.clear();
             return;
         };
 
-        let include_files = self.task_type == NewTaskType::Watcher;
+        let include_files = self.task_type == NewTaskType::Background
+            && self.background_trigger == BackgroundTrigger::Watch;
 
         self.dir_entries.clear();
         let all: Vec<_> = entries.filter_map(|e| e.ok()).collect();
@@ -385,7 +386,9 @@ impl NewAgentDialog {
         };
         self.current_path = new_path;
         self.working_dir = self.current_path.clone();
-        if self.task_type == NewTaskType::Watcher {
+        if self.task_type == NewTaskType::Background
+            && self.background_trigger == BackgroundTrigger::Watch
+        {
             self.watch_path = self.current_path.clone();
         }
         self.dir_filter.clear();
@@ -413,7 +416,9 @@ impl NewAgentDialog {
             // Navigate into directory
             self.current_path = full_path;
             self.working_dir = self.current_path.clone();
-            if self.task_type == NewTaskType::Watcher {
+            if self.task_type == NewTaskType::Background
+                && self.background_trigger == BackgroundTrigger::Watch
+            {
                 self.watch_path = self.current_path.clone();
             }
             self.dir_filter.clear();
@@ -476,7 +481,8 @@ impl App {
                 match &a.trigger {
                     Some(crate::domain::models::Trigger::Cron { schedule_expr }) => {
                         dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Scheduled;
+                        dialog.task_type = NewTaskType::Background;
+                        dialog.background_trigger = BackgroundTrigger::Cron;
                         dialog.prompt = a.prompt.clone();
                         dialog.cron_expr = schedule_expr.clone();
                         dialog.working_dir = a.working_dir.clone().unwrap_or_default();
@@ -492,7 +498,8 @@ impl App {
                     }
                     Some(crate::domain::models::Trigger::Watch { path, events, .. }) => {
                         dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Watcher;
+                        dialog.task_type = NewTaskType::Background;
+                        dialog.background_trigger = BackgroundTrigger::Watch;
                         dialog.prompt = a.prompt.clone();
                         dialog.watch_path = path.clone();
                         dialog.watch_events = events
@@ -510,9 +517,10 @@ impl App {
                         dialog.field = 2;
                     }
                     None => {
-                        // Manual-only agent — open as scheduled with empty cron
+                        // Manual-only agent — open as background with empty cron
                         dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Scheduled;
+                        dialog.task_type = NewTaskType::Background;
+                        dialog.background_trigger = BackgroundTrigger::Cron;
                         dialog.prompt = a.prompt.clone();
                         dialog.model = a.model.clone().unwrap_or_default();
                         if let Some(idx) = dialog
@@ -629,11 +637,11 @@ impl App {
             // ── Edit mode: partial-update existing agent ──────────────────
             let model_ref = model.as_deref();
             match dialog.task_type {
-                NewTaskType::Scheduled => {
-                    self.update_scheduled(&dialog, model_ref, edit_id)?;
-                }
-                NewTaskType::Watcher => {
-                    self.update_watcher_edit(&dialog, model_ref, edit_id)?;
+                NewTaskType::Background => {
+                    match dialog.background_trigger {
+                        BackgroundTrigger::Cron => self.update_scheduled(&dialog, model_ref, edit_id)?,
+                        BackgroundTrigger::Watch => self.update_watcher_edit(&dialog, model_ref, edit_id)?,
+                    }
                 }
                 NewTaskType::Interactive | NewTaskType::Terminal => {}
             }
@@ -652,13 +660,16 @@ impl App {
                     .last()
                     .map(|agent| agent.name.clone())
             }
-            NewTaskType::Scheduled => {
-                self.launch_scheduled(&dialog, model)?;
-                None // Scheduled agents don't need immediate focus
-            }
-            NewTaskType::Watcher => {
-                self.launch_watcher(&dialog, model)?;
-                None // Watcher agents don't need immediate focus
+            NewTaskType::Background => {
+                match dialog.background_trigger {
+                    BackgroundTrigger::Cron => {
+                        self.launch_scheduled(&dialog, model)?;
+                    }
+                    BackgroundTrigger::Watch => {
+                        self.launch_watcher(&dialog, model)?;
+                    }
+                }
+                None
             }
             NewTaskType::Terminal => {
                 self.launch_terminal(&dialog)?;
