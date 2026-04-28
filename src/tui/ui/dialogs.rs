@@ -2074,10 +2074,15 @@ pub(super) fn draw_suggestion_picker(
     let total = picker.items.len();
     let title = match picker.mode {
         crate::tui::terminal_history::PickerMode::CommandHistory => {
-            if total > picker.visible_count() {
-                format!(" History [{}/{}] ", picker.selected + 1, total)
+            let filter_hint = if picker.input.is_empty() {
+                String::new()
             } else {
-                " History ".to_string()
+                format!(" | {}", picker.input)
+            };
+            if total > picker.visible_count() {
+                format!(" History [{}/{}]{} ", picker.selected + 1, total, filter_hint)
+            } else {
+                format!(" History{} ", filter_hint)
             }
         }
         crate::tui::terminal_history::PickerMode::CdDirectory => {
