@@ -22,14 +22,20 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let accent = dialog.selected_accent_color();
 
-    let picker_rows = if dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
+    let is_interactive = matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
+    let is_terminal = matches!(dialog.task_type, crate::tui::app::NewTaskType::Terminal);
+    let is_background = matches!(dialog.task_type, crate::tui::app::NewTaskType::Background);
+
+    let cli_picker_rows: u16 = if dialog.cli_picker_open {
+        let visible = dialog.available_clis.len().min(6);
+        visible as u16 + 1
+    } else {
+        0
+    };
+    let model_picker_rows: u16 = if dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
         let visible = dialog.model_suggestions.len().min(5);
-        let overflow_line = if dialog.model_suggestions.len() > 5 {
-            1
-        } else {
-            0
-        };
-        visible + overflow_line
+        let overflow_line = if dialog.model_suggestions.len() > 5 { 1 } else { 0 };
+        (visible + overflow_line) as u16
     } else {
         0
     };
@@ -44,25 +50,22 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     let is_edit = dialog.is_edit_mode();
 
-    let is_interactive = matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
-    let is_terminal = matches!(dialog.task_type, crate::tui::app::NewTaskType::Terminal);
-
-    // Base heights: Interactive=15, Scheduled/Watcher=13, Terminal=10
-    let base_height: u16 = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => 15 + dir_rows,
-        crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher => {
-            13 + dir_rows
-        }
-        crate::tui::app::NewTaskType::Terminal => 10 + dir_rows,
+    // Base heights
+    let base_height: u16 = if is_interactive {
+        12 + dir_rows // type, mode, cli, dir, yolo, help
+    } else if is_terminal {
+        10 + dir_rows // type, dir, shell, help
+    } else {
+        // background: type, trigger, cli, model, prompt, cron/watch, dir, help
+        15 + dir_rows
     };
-    let height = base_height + picker_rows as u16;
+    let height = base_height + cli_picker_rows + model_picker_rows;
     let area = centered_rect(65, height, frame.area());
     frame.render_widget(Clear, area);
 
     let title = if is_edit {
         match dialog.task_type {
-            crate::tui::app::NewTaskType::Scheduled => " Edit Task ",
-            crate::tui::app::NewTaskType::Watcher => " Edit Watcher ",
+            crate::tui::app::NewTaskType::Background => " Edit Background ",
             crate::tui::app::NewTaskType::Interactive => " Edit Agent ",
             crate::tui::app::NewTaskType::Terminal => " Edit Terminal ",
         }
@@ -79,12 +82,11 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let type_names = ["Interactive", "Scheduled", "Watcher", "Terminal"];
+    let type_names = ["Interactive", "Terminal", "Background"];
     let type_idx = match dialog.task_type {
         crate::tui::app::NewTaskType::Interactive => 0,
-        crate::tui::app::NewTaskType::Scheduled => 1,
-        crate::tui::app::NewTaskType::Watcher => 2,
-        crate::tui::app::NewTaskType::Terminal => 3,
+        crate::tui::app::NewTaskType::Terminal => 1,
+        crate::tui::app::NewTaskType::Background => 2,
     };
 
     let is_focused = |field: usize| dialog.field == field;
@@ -102,25 +104,22 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let cli_binding = dialog.selected_cli();
     let cli_name = cli_binding.as_str();
 
-    let mode_names = ["New", "Resume"];
-    let mode_idx = match dialog.task_mode {
-        crate::tui::app::NewTaskMode::Interactive => 0,
-        crate::tui::app::NewTaskMode::Resume => 1,
-    };
-    let mode_field = 1;
-
-    // After removing the Name field, field indices for Interactive shift down by 1:
-    // Interactive: 0=type, 1=mode, 2=CLI, 3=model, 4=dir, 5=yolo
-    // Scheduled/Watcher: 0=type, 1=CLI, 2=model, 3=prompt, 4=cron/watch, 5=dir
-    // Terminal: 0=type, 1=dir, 2=shell
-    let cli_field = if is_interactive { 2 } else { 1 };
+    // Field layout:
+    //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
+    //   Terminal:    0=type 1=dir 2=shell
+    //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
+    let cli_field: usize = if is_interactive || is_background { 2 } else { 0 };
+    let model_field: usize = 3; // background only
+    let prompt_field: usize = 4; // background only
+    let extra_field: usize = 5; // background only (cron/watch)
+    let dir_field: usize = if is_interactive { 3 } else if is_terminal { 1 } else { 6 };
+    let yolo_field: usize = 4; // interactive only
 
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  Type:  ", Style::default().fg(DIM)),
             if is_edit {
-                // Locked in edit mode — show type without arrow affordance
                 Span::styled(
                     format!("  {}  ", type_names[type_idx]),
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
@@ -134,11 +133,16 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     // Session/mode row — only for interactive, and hidden in edit mode
     if is_interactive && !is_edit {
+        let mode_names = ["New", "Resume"];
+        let mode_idx = match dialog.task_mode {
+            crate::tui::app::NewTaskMode::Interactive => 0,
+            crate::tui::app::NewTaskMode::Resume => 1,
+        };
         let mut session_line = vec![
             Span::styled("  Session:  ", Style::default().fg(DIM)),
             Span::styled(
                 format!(" ◀ {} ▶ ", mode_names[mode_idx]),
-                focus_style(mode_field),
+                focus_style(1),
             ),
         ];
         if dialog.resume_unconfigured() && !dialog.has_session_picker() {
@@ -170,7 +174,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // For Terminal type, show only Dir + Shell fields (no CLI, no model, etc.)
+    // For Terminal type, show only Dir + Shell fields
     if is_terminal {
         let term_dir_field = 1usize;
         let term_shell_field = 2usize;
@@ -184,7 +188,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         ]));
         lines.push(Line::from(""));
 
-        // Directory browser for terminal (field 1 = dir)
+        // Directory browser for terminal
         if !dialog.dir_entries.is_empty() {
             let filtered = dialog.filtered_dir_entries();
             let filter_display = if dialog.dir_filter.is_empty() {
@@ -243,7 +247,6 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                 }
             }
 
-            // Status line with scroll indicators
             let up = if has_above { "↑ " } else { "  " };
             let dn = if has_below { " ↓" } else { "  " };
             if filtered.is_empty() {
@@ -283,60 +286,57 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         return;
     }
 
+    // ── Trigger row (Background only) ──
+    if is_background && !is_edit {
+        let trigger_names = ["Cron", "Watch"];
+        let trigger_idx = match dialog.background_trigger {
+            crate::tui::app::BackgroundTrigger::Cron => 0,
+            crate::tui::app::BackgroundTrigger::Watch => 1,
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Trigger:", Style::default().fg(DIM)),
+            Span::styled(
+                format!(" ◀ {} ▶ ", trigger_names[trigger_idx]),
+                focus_style(1),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    } else if is_background && is_edit {
+        let trigger_label = match dialog.background_trigger {
+            crate::tui::app::BackgroundTrigger::Cron => "Cron",
+            crate::tui::app::BackgroundTrigger::Watch => "Watch",
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Trigger:", Style::default().fg(DIM)),
+            Span::styled(
+                format!("  {}  ", trigger_label),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
+    // ── CLI row (not for terminal) ──
     lines.push(Line::from(vec![
         Span::styled("  CLI:   ", Style::default().fg(DIM)),
-        if is_focused(cli_field) {
-            Span::styled(format!(" ◀ {cli_name} ▶ "), focus_style(cli_field))
-        } else {
-            Span::styled(
-                format!(" ◀ {cli_name} ▶ "),
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            )
-        },
-    ]));
-    lines.push(Line::from(""));
-
-    // Interactive: 0=type 1=mode 2=CLI 3=model 4=dir 5=yolo
-    // Scheduled/Watcher: 0=type 1=CLI 2=model 3=prompt 4=cron/watch 5=dir
-    let model_field = if is_interactive { 3 } else { 2 };
-    let prompt_field = 3usize;
-    let extra_field = 4usize;
-    let dir_field = if is_interactive || dialog.task_type == crate::tui::app::NewTaskType::Watcher {
-        4
-    } else {
-        5
-    };
-
-    lines.push(Line::from(vec![
-        Span::styled("  Model: ", Style::default().fg(DIM)),
         Span::styled(
-            if dialog.model.is_empty() {
-                "(optional — Space to browse)".to_string()
-            } else {
-                format!("{}▏", dialog.model)
-            },
-            focus_style(model_field),
+            format!(" {} ", cli_name),
+            focus_style(cli_field),
         ),
+        Span::styled("  (◂▸ cycle · Space pick)", Style::default().fg(DIM)),
     ]));
 
-    // Model suggestions dropdown
-    if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
-        let max_visible = 5;
-        let total = dialog.model_suggestions.len();
-        let sel = dialog.model_suggestion_idx;
+    // CLI picker dropdown
+    if dialog.cli_picker_open {
+        let max_visible = 6;
+        let total = dialog.available_clis.len();
+        let sel = dialog.cli_picker_idx;
         let scroll = if sel >= max_visible {
             sel - max_visible + 1
         } else {
             0
         };
-
-        for (i, entry) in dialog
-            .model_suggestions
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(max_visible)
-        {
+        for (i, cli) in dialog.available_clis.iter().enumerate().skip(scroll).take(max_visible) {
             let is_sel = i == sel;
             let style = if is_sel {
                 Style::default()
@@ -346,29 +346,82 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(Color::White)
             };
-            let provider_tag = format!(" [{}]", entry.provider);
             lines.push(Line::from(vec![
                 Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
-                Span::styled(truncate_str(&entry.id, 38), style),
-                Span::styled(
-                    provider_tag,
-                    if is_sel {
-                        style
-                    } else {
-                        Style::default().fg(DIM)
-                    },
-                ),
+                Span::styled(cli.as_str().to_string(), style),
             ]));
         }
         if total > max_visible {
             lines.push(Line::from(Span::styled(
-                format!("    … {total} models  ↑↓ scroll  → accept  Esc close"),
+                format!("    … {total} CLIs  ↑↓ scroll  Enter/Esc close"),
                 Style::default().fg(DIM),
             )));
         }
     }
 
-    // Session picker dropdown — shown when session_picker_open
+    lines.push(Line::from(""));
+
+    // ── Model row (Background only, not Interactive) ──
+    if is_background {
+        lines.push(Line::from(vec![
+            Span::styled("  Model: ", Style::default().fg(DIM)),
+            Span::styled(
+                if dialog.model.is_empty() {
+                    "(optional — Space to browse)".to_string()
+                } else {
+                    format!("{}▏", dialog.model)
+                },
+                focus_style(model_field),
+            ),
+        ]));
+
+        // Model suggestions dropdown
+        if is_focused(model_field) && dialog.model_picker_open && !dialog.model_suggestions.is_empty() {
+            let max_visible = 5;
+            let total = dialog.model_suggestions.len();
+            let sel = dialog.model_suggestion_idx;
+            let scroll = if sel >= max_visible {
+                sel - max_visible + 1
+            } else {
+                0
+            };
+            for (i, entry) in dialog
+                .model_suggestions
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(max_visible)
+            {
+                let is_sel = i == sel;
+                let style = if is_sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let provider_tag = format!(" [{}]", entry.provider);
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
+                    Span::styled(truncate_str(&entry.id, 38), style),
+                    Span::styled(
+                        provider_tag,
+                        if is_sel { style } else { Style::default().fg(DIM) },
+                    ),
+                ]));
+            }
+            if total > max_visible {
+                lines.push(Line::from(Span::styled(
+                    format!("    … {total} models  ↑↓ scroll  → accept  Esc close"),
+                    Style::default().fg(DIM),
+                )));
+            }
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Session picker dropdown — shown when session_picker_open (interactive only)
     if dialog.session_picker_open {
         let max_visible = 6;
         let total = dialog.session_entries.len();
@@ -411,11 +464,7 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
                     Span::styled(truncate_str(id, 18), style),
                     Span::styled(
                         format!("  {short_label}"),
-                        if is_sel {
-                            style
-                        } else {
-                            Style::default().fg(DIM)
-                        },
+                        if is_sel { style } else { Style::default().fg(DIM) },
                     ),
                 ]));
             }
@@ -428,18 +477,13 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         }
     }
 
-    lines.push(Line::from(""));
-
-    // Prompt + extra fields for non-interactive background_agents (before Dir)
-    if matches!(
-        dialog.task_type,
-        crate::tui::app::NewTaskType::Scheduled | crate::tui::app::NewTaskType::Watcher
-    ) {
+    // ── Prompt (Background only) ──
+    if is_background {
         lines.push(Line::from(vec![
             Span::styled("  Prompt:", Style::default().fg(DIM)),
             Span::styled(
                 if dialog.prompt.is_empty() {
-                    " enter background_agent prompt...".to_string()
+                    " enter agent prompt...".to_string()
                 } else {
                     format!(" {}▏", dialog.prompt)
                 },
@@ -448,7 +492,8 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         ]));
         lines.push(Line::from(""));
 
-        if dialog.task_type == crate::tui::app::NewTaskType::Scheduled {
+        // Cron expr or Watch path
+        if dialog.background_trigger == crate::tui::app::BackgroundTrigger::Cron {
             lines.push(Line::from(vec![
                 Span::styled("  Cron:  ", Style::default().fg(DIM)),
                 Span::styled(
@@ -472,11 +517,10 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Yolo mode toggle — only for interactive agents, shown before the dir browser
+    // Yolo mode toggle — only for interactive agents
     if is_interactive {
         let has_yolo = dialog.selected_yolo_flag().is_some();
         let checkbox = if dialog.yolo_mode { "◉" } else { "○" };
-        let yolo_field = 5usize;
         let checkbox_style = if dialog.field == yolo_field {
             Style::default()
                 .fg(Color::Black)
@@ -508,10 +552,10 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // Only show working directory when not creating a Watcher. Watchers use
-    // the 'Path' field to select files or directories to watch, which is
-    // displayed above as 'Path'. Hiding Dir avoids confusion.
-    if dialog.task_type != crate::tui::app::NewTaskType::Watcher {
+    // Working directory — hide for Watch background (uses Path field)
+    let hide_dir = is_background
+        && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
+    if !hide_dir {
         lines.push(Line::from(vec![
             Span::styled("  Dir:   ", Style::default().fg(DIM)),
             Span::styled(
@@ -525,10 +569,10 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     // Directory / file browser
     if !dialog.dir_entries.is_empty() {
         let filtered = dialog.filtered_dir_entries();
-        let is_watcher = dialog.task_type == crate::tui::app::NewTaskType::Watcher;
-        let browser_field_idx = if is_watcher { extra_field } else { dir_field };
+        let is_watch = is_background
+            && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
+        let browser_field_idx = if is_watch { extra_field } else { dir_field };
 
-        // Filter input line
         let filter_display = if dialog.dir_filter.is_empty() {
             "type to filter".to_string()
         } else {
@@ -586,7 +630,6 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
             }
         }
 
-        // Status line with scroll indicators
         let up = if has_above { "↑ " } else { "  " };
         let dn = if has_below { " ↓" } else { "  " };
         if filtered.is_empty() {
@@ -603,19 +646,12 @@ pub(super) fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    let help_text = match dialog.task_type {
-        crate::tui::app::NewTaskType::Interactive => {
-            "  ↑↓: fields · ←→: CLI/mode  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
-        }
-        crate::tui::app::NewTaskType::Scheduled => {
-            "  ↑↓: fields · ←→: type/CLI  (in dirs: → enter  ← up) · Enter: create · Esc: cancel"
-        }
-        crate::tui::app::NewTaskType::Watcher => {
-            "  ↑↓: fields · ←→: type/CLI · Space: select · Enter: create · Esc: cancel"
-        }
-        crate::tui::app::NewTaskType::Terminal => {
-            "  ↑↓: fields  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
-        }
+    let help_text = if is_interactive {
+        "  ↑↓: fields · ←→: mode  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
+    } else if is_background {
+        "  ↑↓: fields · ←→: trigger  (in dirs: → enter  ← up) · Enter: create · Esc: cancel"
+    } else {
+        "  ↑↓: fields  (in dirs: → enter  ← up) · Enter: launch · Esc: cancel"
     };
 
     lines.push(Line::from(Span::styled(
@@ -713,7 +749,15 @@ pub(super) fn draw_split_picker(frame: &mut Frame, app: &App) {
 }
 
 pub(super) fn draw_quit_confirm(frame: &mut Frame) {
-    let area = centered_rect(40, 3, frame.area());
+    let text = "Press y/Enter to quit, any key to cancel";
+    let dialog_width = frame.area().width * 40 / 100;
+    let inner_width = dialog_width.saturating_sub(2).max(1);
+    let chars_per_line = inner_width as usize;
+    let text_len = text.len();
+    let needed_lines = ((text_len + chars_per_line - 1) / chars_per_line).max(1) as u16;
+    let height = needed_lines + 2; // +2 for borders
+
+    let area = centered_rect(40, height, frame.area());
     frame.render_widget(Clear, area);
 
     let block = Block::default()
@@ -724,9 +768,10 @@ pub(super) fn draw_quit_confirm(frame: &mut Frame) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let msg = Paragraph::new("Press y/Enter to quit, any key to cancel")
+    let msg = Paragraph::new(text)
         .style(Style::default().fg(ACCENT))
-        .alignment(ratatui::layout::Alignment::Center);
+        .alignment(ratatui::layout::Alignment::Center)
+        .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(msg, inner);
 }
 
