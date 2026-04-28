@@ -546,7 +546,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
             let idx = *idx;
             if let Some(agent) = app.interactive_agents.get(idx) {
                 // Calculate relative position within PTY area
-                let sidebar_width = if app.sidebar_visible { 29 } else { 0 };
+                let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
                 let header_height = 1; // Header is always 1 line
 
                 // Check if click was in sidebar or header area

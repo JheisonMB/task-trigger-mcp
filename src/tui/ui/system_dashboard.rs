@@ -109,20 +109,20 @@ fn create_system_dashboard_lines(
     let cpu_usage = system_info.cpu_usage_percent();
     let cpu_color = alert_color(cpu_usage, 70.0, 90.0);
 
-    // Build CPU line: usage (alert) + freq (dim) + temp (alert) + cores (dim)
+    // Build CPU line: usage (alert) + temp (alert) + freq (dim) + cores (dim)
     let mut cpu_spans = vec![
         Span::styled("cpu: ", Style::default().fg(Color::White)),
         Span::styled(format!("{cpu_usage:.0}%"), Style::default().fg(cpu_color)),
     ];
-    if let Some(freq) = format_cpu_frequency(system_info.cpu_frequency_mhz) {
-        cpu_spans.push(Span::styled(format!(" {freq}"), Style::default().fg(DIM)));
-    }
     if let Some(temp_c) = system_info.cpu_temperature_celsius() {
         let temp_str = format_temperature(temp_c, temperature_unit);
         cpu_spans.push(Span::styled(
             format!(" {temp_str}"),
             Style::default().fg(temp_alert_color(temp_c)),
         ));
+    }
+    if let Some(freq) = format_cpu_frequency(system_info.cpu_frequency_mhz) {
+        cpu_spans.push(Span::styled(format!(" {freq}"), Style::default().fg(DIM)));
     }
     if system_info.cpu_cores > 0 {
         cpu_spans.push(Span::styled(
@@ -153,32 +153,32 @@ fn create_system_dashboard_lines(
             None
         };
 
-        let mut spans = vec![Span::styled("gpu: ", Style::default().fg(Color::White))];
+        // Only show GPU line if we have at least one piece of information
+        if gpu.usage.is_some() || gpu.temperature.is_some() || vram_text.is_some() {
+            let mut spans = vec![Span::styled("gpu: ", Style::default().fg(Color::White))];
 
-        if let Some(usage) = gpu.usage {
-            spans.push(Span::styled(
-                format!("{usage:.0}%"),
-                Style::default().fg(gpu_usage_color),
-            ));
-        }
-        if let Some(temp) = gpu.temperature {
-            let sep = if gpu.usage.is_some() { " " } else { "" };
-            spans.push(Span::styled(
-                format!("{sep}{}", format_temperature(temp, temperature_unit)),
-                Style::default().fg(gpu_temp_alert_color(temp)),
-            ));
-        }
-        if let Some(ref vram) = vram_text {
-            if gpu.usage.is_some() || gpu.temperature.is_some() {
-                spans.push(Span::styled(" · ", Style::default().fg(Color::White)));
+            if let Some(usage) = gpu.usage {
+                spans.push(Span::styled(
+                    format!("{usage:.0}%"),
+                    Style::default().fg(gpu_usage_color),
+                ));
             }
-            spans.push(Span::styled(vram.to_string(), Style::default().fg(DIM)));
-        }
-        if gpu.usage.is_none() && gpu.temperature.is_none() && vram_text.is_none() {
-            spans.push(Span::styled("n/a", Style::default().fg(DIM)));
-        }
+            if let Some(temp) = gpu.temperature {
+                let sep = if gpu.usage.is_some() { " " } else { "" };
+                spans.push(Span::styled(
+                    format!("{sep}{}", format_temperature(temp, temperature_unit)),
+                    Style::default().fg(gpu_temp_alert_color(temp)),
+                ));
+            }
+            if let Some(ref vram) = vram_text {
+                if gpu.usage.is_some() || gpu.temperature.is_some() {
+                    spans.push(Span::styled(" · ", Style::default().fg(Color::White)));
+                }
+                spans.push(Span::styled(vram.to_string(), Style::default().fg(DIM)));
+            }
 
-        lines.push(Line::from(spans));
+            lines.push(Line::from(spans));
+        }
     }
 
     // Memory line

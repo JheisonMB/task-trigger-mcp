@@ -102,7 +102,7 @@ impl App {
         // The exact sidebar brain dimensions depend on layout (agent card count, etc.)
         // so we compute them the same way sidebar.rs does.
         let (_tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-        let sidebar_w = 29u16;
+        let sidebar_w = 30u16;
         let sidebar_h = th.saturating_sub(2); // minus header + footer
 
         // Approximate: inner width = sidebar - 2 borders
