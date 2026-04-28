@@ -1213,14 +1213,15 @@ impl InteractiveAgent {
     /// This is a non-blocking, fast-path version that avoids expensive operations.
     pub fn get_clean_pty_line_at_position(&self, col: u16, row: u16) -> Option<String> {
         // Quick early return if position is obviously invalid
-        if row > 1000 || col > 1000 { // Reasonable upper bounds
+        if row > 1000 || col > 1000 {
+            // Reasonable upper bounds
             return None;
         }
 
         let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
-        
+
         // Early return for empty screen
         if screen_rows == 0 || screen_cols == 0 {
             return None;
@@ -1249,10 +1250,11 @@ impl InteractiveAgent {
                 }
             }
             line
-        })).ok()?;
+        }))
+        .ok()?;
 
         let sanitized = sanitize_line(&line);
-        
+
         // Quick check for empty or UI-only lines
         if sanitized.trim().is_empty() {
             return None;
@@ -1265,7 +1267,7 @@ impl InteractiveAgent {
 
         // Extract clean content, stripping borders and UI elements
         let clean_content = strip_borders(&sanitized);
-        
+
         if clean_content.trim().is_empty() {
             None
         } else {

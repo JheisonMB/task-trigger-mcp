@@ -2080,7 +2080,12 @@ pub(super) fn draw_suggestion_picker(
                 format!(" | {}", picker.input)
             };
             if total > picker.visible_count() {
-                format!(" History [{}/{}]{} ", picker.selected + 1, total, filter_hint)
+                format!(
+                    " History [{}/{}]{} ",
+                    picker.selected + 1,
+                    total,
+                    filter_hint
+                )
             } else {
                 format!(" History{} ", filter_hint)
             }

@@ -186,7 +186,9 @@ fn build_resumed_session_args(
         .as_deref()
         .map(str::trim)
         .filter(|args| !args.is_empty());
-    let inter_args = interactive_args.map(str::trim).filter(|args| !args.is_empty());
+    let inter_args = interactive_args
+        .map(str::trim)
+        .filter(|args| !args.is_empty());
     let had_yolo = yolo_flag
         .is_some_and(|flag| original_args.is_some_and(|args| args_contain_flag(args, flag)));
 
@@ -1132,8 +1134,7 @@ mod tests {
         };
 
         // Even if config has different interactive_args, original persisted args win.
-        let args =
-            build_resumed_session_args(&session, Some("--chat"), Some("--yolo")).unwrap();
+        let args = build_resumed_session_args(&session, Some("--chat"), Some("--yolo")).unwrap();
         assert!(args.contains("--tui"));
         assert!(args.contains("--yolo"));
         assert!(!args.contains("--chat"));
@@ -1153,8 +1154,7 @@ mod tests {
 
         // When no original args are persisted, fall back to config interactive_args.
         // Yolo is not added because we don't know if the original session had it.
-        let args =
-            build_resumed_session_args(&session, Some("--tui"), Some("--yolo")).unwrap();
+        let args = build_resumed_session_args(&session, Some("--tui"), Some("--yolo")).unwrap();
         assert!(args.contains("--tui"));
         assert!(!args.contains("--yolo"));
     }

@@ -357,7 +357,6 @@ impl SystemInfo {
         }
         None
     }
-
 }
 
 fn detect_host_platform() -> HostPlatform {

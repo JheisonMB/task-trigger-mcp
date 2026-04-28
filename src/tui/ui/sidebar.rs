@@ -48,7 +48,11 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let has_groups = !app.split_groups.is_empty();
 
     // Responsive dashboard height: 5 without GPU, 6 with GPU (content + 2 borders)
-    let dashboard_height = if app.system_info.gpu_info.is_some() { 6 } else { 5 };
+    let dashboard_height = if app.system_info.gpu_info.is_some() {
+        6
+    } else {
+        5
+    };
     let dashboard_area = if area.height >= dashboard_height {
         Some(Rect::new(
             area.x,
@@ -204,11 +208,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(bg_area) = bg_area {
         let block = Block::default()
             .title_bottom(
-                Line::from(Span::styled(
-                    " background ",
-                    Style::default().fg(DIM),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
+                Line::from(Span::styled(" background ", Style::default().fg(DIM)))
+                    .alignment(ratatui::layout::Alignment::Right),
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -220,11 +221,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(ix_area) = ix_area {
         let block = Block::default()
             .title_bottom(
-                Line::from(Span::styled(
-                    " interactive ",
-                    Style::default().fg(DIM),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
+                Line::from(Span::styled(" interactive ", Style::default().fg(DIM)))
+                    .alignment(ratatui::layout::Alignment::Right),
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -236,11 +234,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(term_area) = term_area {
         let block = Block::default()
             .title_bottom(
-                Line::from(Span::styled(
-                    " terminal ",
-                    Style::default().fg(DIM),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
+                Line::from(Span::styled(" terminal ", Style::default().fg(DIM)))
+                    .alignment(ratatui::layout::Alignment::Right),
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -252,11 +247,8 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     if let Some(grp_area) = grp_area {
         let block = Block::default()
             .title_bottom(
-                Line::from(Span::styled(
-                    " groups ",
-                    Style::default().fg(DIM),
-                ))
-                .alignment(ratatui::layout::Alignment::Right),
+                Line::from(Span::styled(" groups ", Style::default().fg(DIM)))
+                    .alignment(ratatui::layout::Alignment::Right),
             )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -331,12 +323,7 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut A
     // Draw scroll indicators
     if has_scroll_up {
         let indicator = Paragraph::new("▲").style(Style::default().fg(DIM));
-        let indicator_area = Rect::new(
-            area.x + area.width.saturating_sub(2),
-            area.y,
-            1,
-            1,
-        );
+        let indicator_area = Rect::new(area.x + area.width.saturating_sub(2), area.y, 1, 1);
         frame.render_widget(indicator, indicator_area);
     }
     if has_scroll_down {

@@ -120,10 +120,7 @@ fn create_system_dashboard_lines(
         // Canopy runtime line
         Line::from(vec![
             Span::styled("uptime: ", Style::default().fg(Color::White)),
-            Span::styled(
-                format_uptime(app_uptime_seconds),
-                Style::default().fg(DIM),
-            ),
+            Span::styled(format_uptime(app_uptime_seconds), Style::default().fg(DIM)),
         ]),
     ];
 
