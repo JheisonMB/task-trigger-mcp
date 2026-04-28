@@ -196,10 +196,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(bg_area) = bg_area {
         let block = Block::default()
-            .title(Span::styled(
-                format!(" background ({}) ", bg_indices.len()),
-                Style::default().fg(DIM),
-            ))
+            .title_bottom(
+                Line::from(Span::styled(
+                    " background ",
+                    Style::default().fg(DIM),
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(bg_area);
@@ -209,10 +212,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(ix_area) = ix_area {
         let block = Block::default()
-            .title(Span::styled(
-                format!(" interactive ({}) ", ix_indices.len()),
-                Style::default().fg(DIM),
-            ))
+            .title_bottom(
+                Line::from(Span::styled(
+                    " interactive ",
+                    Style::default().fg(DIM),
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(ix_area);
@@ -222,10 +228,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(term_area) = term_area {
         let block = Block::default()
-            .title(Span::styled(
-                format!(" terminal ({}) ", term_indices.len()),
-                Style::default().fg(DIM),
-            ))
+            .title_bottom(
+                Line::from(Span::styled(
+                    " terminal ",
+                    Style::default().fg(DIM),
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(term_area);
@@ -235,10 +244,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if let Some(grp_area) = grp_area {
         let block = Block::default()
-            .title(Span::styled(
-                format!(" groups ({}) ", app.split_groups.len()),
-                Style::default().fg(DIM),
-            ))
+            .title_bottom(
+                Line::from(Span::styled(
+                    " groups ",
+                    Style::default().fg(DIM),
+                ))
+                .alignment(ratatui::layout::Alignment::Right),
+            )
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
         let inner = block.inner(grp_area);
