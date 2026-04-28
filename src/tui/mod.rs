@@ -1,0 +1,121 @@
+//! Canopy Agent Hub — TUI for monitoring and managing agents.
+//!
+//! Reads the daemon's `SQLite` database in read-only mode (WAL allows
+//! concurrent readers) and displays background_agents, watchers, and their logs
+//! in a card-based sidebar with a live log panel.
+
+mod agent;
+mod app;
+mod brians_brain;
+pub(crate) mod context_transfer;
+mod event;
+pub(crate) mod prompt_templates;
+pub(crate) mod terminal_history;
+mod ui;
+mod whimsg;
+
+use anyhow::{Context, Result};
+use ratatui::crossterm::{
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::io;
+use std::sync::Arc;
+
+use crate::db::Database;
+
+use app::App;
+use event::run_event_loop;
+
+/// Entry point for `canopy tui`.
+pub fn run_tui() -> Result<()> {
+    crate::domain::notification::register_aumid();
+    crate::domain::notification::clear_stale_notifications();
+    let data_dir = crate::ensure_data_dir()?;
+    let db_path = data_dir.join("background_agents.db");
+
+    if !db_path.exists() {
+        eprintln!("Daemon not running — starting it automatically…");
+        auto_start_daemon(&data_dir)?;
+        // Wait briefly for the daemon to create the database
+        for _ in 0..20 {
+            if db_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if !db_path.exists() {
+            anyhow::bail!(
+                "Daemon started but database not found at {}.\nCheck logs: canopy daemon logs",
+                db_path.display()
+            );
+        }
+    }
+
+    let db = Arc::new(Database::new(&db_path).context("Failed to open database")?);
+    let mut app = App::new(Arc::clone(&db), &data_dir)?;
+
+    // Auto-resume previously active interactive sessions
+    app.auto_resume_sessions();
+    // Auto-resume previously active terminal sessions
+    app.auto_resume_terminal_sessions();
+
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let mut terminal = ratatui::Terminal::new(backend)?;
+
+    // Run
+    let result = run_event_loop(&mut terminal, &mut app);
+
+    // Restore terminal — always, even on error
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture,
+        DisableBracketedPaste
+    )?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+/// Try to start the daemon process automatically.
+fn auto_start_daemon(data_dir: &std::path::Path) -> Result<()> {
+    let exe = std::env::current_exe()?;
+    let log_path = data_dir.join("daemon.log");
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_err = log_file.try_clone()?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.arg("serve")
+        .stdout(log_file)
+        .stderr(log_err)
+        .stdin(std::process::Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    cmd.spawn().context("Failed to spawn daemon process")?;
+    Ok(())
+}

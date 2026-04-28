@@ -55,6 +55,7 @@ pub fn validate_watch_path(path: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[path = "validation_tests.rs"]
 mod tests {
     use super::*;
 
@@ -62,7 +63,7 @@ mod tests {
 
     #[test]
     fn test_validate_id_valid() {
-        assert!(validate_id("my-task").is_ok());
+        assert!(validate_id("my-background_agent").is_ok());
         assert!(validate_id("task_123").is_ok());
         assert!(validate_id("a").is_ok());
         assert!(validate_id("ABC-def_456").is_ok());

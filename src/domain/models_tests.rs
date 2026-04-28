@@ -1,0 +1,299 @@
+use super::*;
+
+use chrono::Duration;
+
+fn sample_agent(id: &str, trigger: Option<Trigger>) -> Agent {
+    Agent {
+        id: id.to_string(),
+        prompt: "Run tests".to_string(),
+        trigger,
+        cli: Cli::new("opencode"),
+        model: None,
+        working_dir: Some("/tmp/project".to_string()),
+        enabled: true,
+        created_at: Utc::now(),
+        log_path: "/tmp/test.log".to_string(),
+        timeout_minutes: 15,
+        expires_at: None,
+        last_run_at: None,
+        last_run_ok: None,
+        last_triggered_at: None,
+        trigger_count: 0,
+    }
+}
+
+#[test]
+fn test_agent_not_expired_no_expiry() {
+    let agent = sample_agent("t1", None);
+    assert!(!agent.is_expired());
+}
+
+#[test]
+fn test_agent_not_expired_future() {
+    let mut agent = sample_agent("t2", None);
+    agent.expires_at = Some(Utc::now() + Duration::hours(1));
+    assert!(!agent.is_expired());
+}
+
+#[test]
+fn test_agent_expired_past() {
+    let mut agent = sample_agent("t3", None);
+    agent.created_at = Utc::now() - Duration::hours(2);
+    agent.expires_at = Some(Utc::now() - Duration::hours(1));
+    assert!(agent.is_expired());
+}
+
+#[test]
+fn test_agent_trigger_type_labels() {
+    let cron_agent = sample_agent(
+        "c1",
+        Some(Trigger::Cron {
+            schedule_expr: "0 9 * * *".to_string(),
+        }),
+    );
+    assert_eq!(cron_agent.trigger_type_label(), "cron");
+    assert!(cron_agent.is_cron());
+    assert!(!cron_agent.is_watch());
+
+    let watch_agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp".to_string(),
+            events: vec![WatchEvent::Create],
+            debounce_seconds: 2,
+            recursive: false,
+        }),
+    );
+    assert_eq!(watch_agent.trigger_type_label(), "watch");
+    assert!(!watch_agent.is_cron());
+    assert!(watch_agent.is_watch());
+
+    let manual_agent = sample_agent("m1", None);
+    assert_eq!(manual_agent.trigger_type_label(), "manual");
+    assert!(!manual_agent.is_cron());
+    assert!(!manual_agent.is_watch());
+}
+
+#[test]
+fn test_agent_accessors() {
+    let cron_agent = sample_agent(
+        "c1",
+        Some(Trigger::Cron {
+            schedule_expr: "0 9 * * *".to_string(),
+        }),
+    );
+    assert_eq!(cron_agent.schedule_expr(), Some("0 9 * * *"));
+    assert!(cron_agent.watch_path().is_none());
+
+    let watch_agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp/watched".to_string(),
+            events: vec![WatchEvent::Create, WatchEvent::Modify],
+            debounce_seconds: 5,
+            recursive: true,
+        }),
+    );
+    assert_eq!(watch_agent.watch_path(), Some("/tmp/watched"));
+    assert!(watch_agent.schedule_expr().is_none());
+    let events = watch_agent.watch_events().unwrap();
+    assert_eq!(events.len(), 2);
+    assert!(events.contains(&WatchEvent::Create));
+    assert!(events.contains(&WatchEvent::Modify));
+}
+
+#[test]
+fn test_trigger_type_str() {
+    let cron_trigger = Trigger::Cron {
+        schedule_expr: "0 9 * * *".to_string(),
+    };
+    assert_eq!(cron_trigger.type_str(), "cron");
+
+    let watch_trigger = Trigger::Watch {
+        path: "/tmp".to_string(),
+        events: vec![WatchEvent::Create],
+        debounce_seconds: 2,
+        recursive: false,
+    };
+    assert_eq!(watch_trigger.type_str(), "watch");
+}
+
+#[test]
+fn test_watch_event_from_str() {
+    assert_eq!(WatchEvent::from_str("create"), Some(WatchEvent::Create));
+    assert_eq!(WatchEvent::from_str("modify"), Some(WatchEvent::Modify));
+    assert_eq!(WatchEvent::from_str("delete"), Some(WatchEvent::Delete));
+    assert_eq!(WatchEvent::from_str("move"), Some(WatchEvent::Move));
+    assert_eq!(WatchEvent::from_str("invalid"), None);
+    assert_eq!(WatchEvent::from_str(""), None);
+}
+
+#[test]
+fn test_watch_event_display() {
+    assert_eq!(WatchEvent::Create.to_string(), "create");
+    assert_eq!(WatchEvent::Modify.to_string(), "modify");
+    assert_eq!(WatchEvent::Delete.to_string(), "delete");
+    assert_eq!(WatchEvent::Move.to_string(), "move");
+}
+
+#[test]
+fn test_cli_from_str() {
+    assert_eq!(Cli::from_str("opencode").as_str(), "opencode");
+    assert_eq!(Cli::from_str("kiro").as_str(), "kiro");
+    assert_eq!(Cli::from_str("gemini").as_str(), "gemini");
+    assert_eq!(Cli::from_str("unknown").as_str(), "unknown");
+    assert_eq!(Cli::from_str("").as_str(), "opencode");
+}
+
+#[test]
+fn test_cli_as_str() {
+    assert_eq!(Cli::new("opencode").as_str(), "opencode");
+    assert_eq!(Cli::new("kiro").as_str(), "kiro");
+    assert_eq!(Cli::new("gemini").as_str(), "gemini");
+}
+
+#[test]
+fn test_cli_display() {
+    assert_eq!(format!("{}", Cli::new("opencode")), "opencode");
+    assert_eq!(format!("{}", Cli::new("kiro")), "kiro");
+    assert_eq!(format!("{}", Cli::new("gemini")), "gemini");
+}
+
+#[test]
+fn test_cli_resolve_explicit_opencode() {
+    assert_eq!(Cli::resolve(Some("opencode")).unwrap().as_str(), "opencode");
+}
+
+#[test]
+fn test_cli_resolve_explicit_kiro() {
+    assert_eq!(Cli::resolve(Some("kiro")).unwrap().as_str(), "kiro");
+}
+
+#[test]
+fn test_cli_resolve_explicit_gemini() {
+    assert_eq!(Cli::resolve(Some("gemini")).unwrap().as_str(), "gemini");
+}
+
+#[test]
+fn test_cli_resolve_unknown_returns_ok() {
+    assert_eq!(Cli::resolve(Some("vim")).unwrap().as_str(), "vim");
+}
+
+#[test]
+fn test_parse_list_valid_events() {
+    let input = vec!["create".to_string(), "modify".to_string()];
+    let events = WatchEvent::parse_list(&input).unwrap();
+    assert_eq!(events, vec![WatchEvent::Create, WatchEvent::Modify]);
+}
+
+#[test]
+fn test_parse_list_all_events() {
+    let input = vec![
+        "create".to_string(),
+        "modify".to_string(),
+        "delete".to_string(),
+        "move".to_string(),
+    ];
+    let events = WatchEvent::parse_list(&input).unwrap();
+    assert_eq!(events.len(), 4);
+}
+
+#[test]
+fn test_parse_list_invalid_event_returns_error() {
+    let input = vec!["create".to_string(), "bogus".to_string()];
+    let err = WatchEvent::parse_list(&input).unwrap_err();
+    assert!(err.contains("Invalid event type 'bogus'"));
+}
+
+#[test]
+fn test_parse_list_empty_returns_error() {
+    let input: Vec<String> = vec![];
+    let err = WatchEvent::parse_list(&input).unwrap_err();
+    assert!(err.contains("At least one event type must be specified"));
+}
+
+#[test]
+fn test_trigger_type_from_str() {
+    assert!(matches!(
+        TriggerType::from_str("scheduled"),
+        TriggerType::Scheduled
+    ));
+    assert!(matches!(
+        TriggerType::from_str("manual"),
+        TriggerType::Manual
+    ));
+    assert!(matches!(TriggerType::from_str("watch"), TriggerType::Watch));
+    assert!(matches!(
+        TriggerType::from_str("unknown"),
+        TriggerType::Scheduled
+    ));
+}
+
+#[test]
+fn test_trigger_type_roundtrip() {
+    for tt in [
+        TriggerType::Scheduled,
+        TriggerType::Manual,
+        TriggerType::Watch,
+    ] {
+        assert!(
+            matches!(TriggerType::from_str(tt.as_str()), t if std::mem::discriminant(&t) == std::mem::discriminant(&tt))
+        );
+    }
+}
+
+#[test]
+fn test_run_status_from_str() {
+    assert!(matches!(RunStatus::from_str("pending"), RunStatus::Pending));
+    assert!(matches!(
+        RunStatus::from_str("in_progress"),
+        RunStatus::InProgress
+    ));
+    assert!(matches!(RunStatus::from_str("success"), RunStatus::Success));
+    assert!(matches!(RunStatus::from_str("error"), RunStatus::Error));
+    assert!(matches!(RunStatus::from_str("timeout"), RunStatus::Timeout));
+    assert!(matches!(RunStatus::from_str("missed"), RunStatus::Missed));
+    assert!(matches!(RunStatus::from_str("unknown"), RunStatus::Pending));
+}
+
+#[test]
+fn test_run_status_as_str() {
+    assert_eq!(RunStatus::Pending.as_str(), "pending");
+    assert_eq!(RunStatus::InProgress.as_str(), "in_progress");
+    assert_eq!(RunStatus::Success.as_str(), "success");
+    assert_eq!(RunStatus::Error.as_str(), "error");
+    assert_eq!(RunStatus::Timeout.as_str(), "timeout");
+    assert_eq!(RunStatus::Missed.as_str(), "missed");
+}
+
+#[test]
+fn test_run_status_is_active() {
+    assert!(RunStatus::Pending.is_active());
+    assert!(RunStatus::InProgress.is_active());
+    assert!(!RunStatus::Success.is_active());
+    assert!(!RunStatus::Error.is_active());
+    assert!(!RunStatus::Timeout.is_active());
+    assert!(!RunStatus::Missed.is_active());
+}
+
+#[test]
+fn test_run_status_display() {
+    assert_eq!(format!("{}", RunStatus::Pending), "pending");
+    assert_eq!(format!("{}", RunStatus::Success), "success");
+    assert_eq!(format!("{}", RunStatus::Error), "error");
+}
+
+#[test]
+fn test_watcher_trigger_accessors() {
+    let agent = sample_agent(
+        "w1",
+        Some(Trigger::Watch {
+            path: "/tmp".to_string(),
+            events: vec![WatchEvent::Create],
+            debounce_seconds: 5,
+            recursive: false,
+        }),
+    );
+    assert_eq!(agent.trigger_count, 0);
+    assert!(agent.last_triggered_at.is_none());
+}

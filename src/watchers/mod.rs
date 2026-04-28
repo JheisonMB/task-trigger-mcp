@@ -13,25 +13,25 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use crate::application::ports::WatcherRepository;
+use crate::application::ports::AgentRepository;
 use crate::db::Database;
-use crate::domain::models::{WatchEvent, Watcher};
+use crate::domain::models::{Agent, Trigger, WatchEvent};
 use crate::executor::Executor;
 
 /// Manages all active file system watchers.
 pub struct WatcherEngine {
     db: Arc<Database>,
     executor: Arc<Executor>,
-    /// Active notify watchers keyed by watcher ID.
+    /// Active notify watchers keyed by agent ID.
     active: Arc<Mutex<HashMap<String, ActiveWatcher>>>,
 }
 
-#[allow(dead_code)]
 struct ActiveWatcher {
     /// The notify watcher handle — dropping this stops the watcher.
     _watcher: RecommendedWatcher,
-    /// Watcher config from database.
-    config: Watcher,
+    /// Agent config from database.
+    #[allow(dead_code)]
+    agent: Agent,
 }
 
 impl WatcherEngine {
@@ -43,29 +43,42 @@ impl WatcherEngine {
         }
     }
 
-    /// Load and start all enabled watchers from the database.
+    /// Load and start all enabled watch agents from the database.
     pub async fn reload_from_db(&self) -> Result<()> {
-        let watchers = self.db.list_enabled_watchers()?;
+        let agents = self.db.list_watch_agents()?;
         tracing::info!(
-            "Reloading {} enabled watchers from database",
-            watchers.len()
+            "Reloading {} enabled watch agents from database",
+            agents.len()
         );
 
-        for w in watchers {
-            if let Err(e) = self.start_watcher(w).await {
-                tracing::error!("Failed to start watcher: {}", e);
+        for agent in agents {
+            if let Err(e) = self.start_watcher(&agent).await {
+                tracing::error!("Failed to start watcher for agent '{}': {}", agent.id, e);
             }
         }
         Ok(())
     }
 
-    /// Start watching for a specific watcher configuration.
-    pub async fn start_watcher(&self, watcher_config: Watcher) -> Result<()> {
-        let id = watcher_config.id.clone();
-        let path = watcher_config.path.clone();
-        let events = watcher_config.events.clone();
-        let debounce_secs = watcher_config.debounce_seconds;
-        let recursive = watcher_config.recursive;
+    /// Start watching for a specific agent configuration.
+    pub async fn start_watcher(&self, agent: &Agent) -> Result<()> {
+        let Trigger::Watch {
+            path,
+            events,
+            debounce_seconds,
+            recursive,
+        } = agent
+            .trigger
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Agent '{}' has no Watch trigger", agent.id))?
+        else {
+            return Err(anyhow::anyhow!("Agent '{}' trigger is not Watch", agent.id));
+        };
+
+        let id = agent.id.clone();
+        let path = path.clone();
+        let events = events.clone();
+        let debounce_secs = *debounce_seconds;
+        let recursive = *recursive;
 
         // On macOS, FSEvents works at directory level. If watching a single file,
         // watch the parent directory and filter events by filename.
@@ -91,7 +104,7 @@ impl WatcherEngine {
         // Clone what we need for the event handler closure
         let db = Arc::clone(&self.db);
         let executor = Arc::clone(&self.executor);
-        let watcher_config_for_handler = watcher_config.clone();
+        let agent_clone = agent.clone();
         let last_trigger: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
 
         // Create the notify watcher with event handler
@@ -101,108 +114,94 @@ impl WatcherEngine {
             let last_trigger = Arc::clone(&last_trigger);
             let db = Arc::clone(&db);
             let executor = Arc::clone(&executor);
-            let watcher_config = watcher_config_for_handler.clone();
+            let agent_for_handler = agent_clone.clone();
             let file_filter = file_filter.clone();
 
             let rt = tokio::runtime::Handle::current();
 
             RecommendedWatcher::new(
                 move |res: Result<Event, notify::Error>| {
-                    match res {
-                        Ok(event) => {
-                            // If watching a single file, filter by filename
-                            if let Some(ref filter) = file_filter {
-                                let matches = event.paths.iter().any(|p| {
-                                    p.file_name()
-                                        .map(|f| f.to_string_lossy() == *filter)
-                                        .unwrap_or(false)
-                                });
-                                if !matches {
-                                    return;
-                                }
-                            }
-
-                            // Map notify event kind to our WatchEvent type
-                            let our_event = match event.kind {
-                                EventKind::Create(_) => Some(WatchEvent::Create),
-                                EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
-                                    Some(WatchEvent::Move)
-                                }
-                                EventKind::Modify(_) => Some(WatchEvent::Modify),
-                                EventKind::Remove(_) => Some(WatchEvent::Delete),
-                                _ => {
-                                    tracing::debug!(
-                                        "Watcher '{}' ignoring event kind: {:?}",
-                                        id,
-                                        event.kind
-                                    );
-                                    None
-                                }
-                            };
-
-                            // On macOS, FSEvents may report file creation as Modify.
-                            // Also try matching Access events that some platforms emit.
-
-                            // Check if this event type is in our watched events.
-                            // On macOS, create events often arrive as modify — if the
-                            // user watches for "create", also accept modify events.
-                            if let Some(evt) = our_event {
-                                let matched = events.contains(&evt)
-                                    || (evt == WatchEvent::Modify
-                                        && events.contains(&WatchEvent::Create));
-                                if !matched {
-                                    return;
-                                }
-
-                                // Debounce check
-                                let last_trigger = Arc::clone(&last_trigger);
-                                let _db = Arc::clone(&db);
-                                let executor = Arc::clone(&executor);
-                                let watcher_config = watcher_config.clone();
-                                let event_paths = event.paths;
-                                let evt_str = evt.to_string();
-
-                                rt.spawn(async move {
-                                    // Debounce
-                                    {
-                                        let mut lt = last_trigger.lock().await;
-                                        if let Some(last) = *lt {
-                                            if last.elapsed() < Duration::from_secs(debounce_secs) {
-                                                return;
-                                            }
-                                        }
-                                        *lt = Some(Instant::now());
-                                    }
-
-                                    let file_path = event_paths
-                                        .first()
-                                        .map(|p| p.to_string_lossy().to_string())
-                                        .unwrap_or_default();
-
-                                    tracing::info!(
-                                        "Watcher '{}' triggered: {} on {}",
-                                        watcher_config.id,
-                                        evt_str,
-                                        file_path
-                                    );
-
-                                    if let Err(e) = executor
-                                        .execute_watcher_task(&watcher_config, &file_path, &evt_str)
-                                        .await
-                                    {
-                                        tracing::error!(
-                                            "Watcher '{}' execution failed: {}",
-                                            watcher_config.id,
-                                            e
-                                        );
-                                    }
-                                });
-                            }
-                        }
+                    let event = match res {
+                        Ok(e) => e,
                         Err(e) => {
                             tracing::error!("Watcher '{}' error: {}", id, e);
+                            return;
+                        }
+                    };
+
+                    if let Some(ref filter) = file_filter {
+                        let matches = event.paths.iter().any(|p| {
+                            p.file_name()
+                                .map(|f| f.to_string_lossy() == *filter)
+                                .unwrap_or(false)
+                        });
+                        if !matches {
+                            return;
                         }
                     }
+
+                    let our_event = match event.kind {
+                        EventKind::Create(_) => Some(WatchEvent::Create),
+                        EventKind::Modify(notify::event::ModifyKind::Name(_)) => {
+                            Some(WatchEvent::Move)
+                        }
+                        EventKind::Modify(_) => Some(WatchEvent::Modify),
+                        EventKind::Remove(_) => Some(WatchEvent::Delete),
+                        _ => {
+                            tracing::debug!(
+                                "Watcher '{}' ignoring event kind: {:?}",
+                                id,
+                                event.kind
+                            );
+                            None
+                        }
+                    };
+
+                    let Some(evt) = our_event else { return };
+
+                    let matched = events.contains(&evt)
+                        || (evt == WatchEvent::Modify && events.contains(&WatchEvent::Create));
+                    if !matched {
+                        return;
+                    }
+
+                    let last_trigger = Arc::clone(&last_trigger);
+                    let _db = Arc::clone(&db);
+                    let executor = Arc::clone(&executor);
+                    let agent = agent_for_handler.clone();
+                    let event_paths = event.paths;
+                    let evt_str = evt.to_string();
+
+                    rt.spawn(async move {
+                        {
+                            let mut lt = last_trigger.lock().await;
+                            if let Some(last) = *lt {
+                                if last.elapsed() < Duration::from_secs(debounce_secs) {
+                                    return;
+                                }
+                            }
+                            *lt = Some(Instant::now());
+                        }
+
+                        let file_path = event_paths
+                            .first()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+
+                        tracing::info!(
+                            "Watcher '{}' triggered: {} on {}",
+                            agent.id,
+                            evt_str,
+                            file_path
+                        );
+
+                        if let Err(e) = executor
+                            .execute_agent_with_context(&agent, &file_path, &evt_str)
+                            .await
+                        {
+                            tracing::error!("Watcher '{}' execution failed: {}", agent.id, e);
+                        }
+                    });
                 },
                 Config::default(),
             )?
@@ -263,7 +262,7 @@ impl WatcherEngine {
             id,
             ActiveWatcher {
                 _watcher: watcher,
-                config: watcher_config,
+                agent: agent_clone,
             },
         );
 

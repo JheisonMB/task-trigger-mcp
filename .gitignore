@@ -9,6 +9,8 @@
 .zencoder/
 .qwen/
 .agents/
+.codex/
+.codex
 skills-lock.json
 
 ### Rust ###
@@ -26,3 +28,6 @@ target/
 .vscode/
 .idea/
 *.log
+
+# Ignore accidental HKCU directory (Windows registry reference, not a real directory)
+HKCU/
