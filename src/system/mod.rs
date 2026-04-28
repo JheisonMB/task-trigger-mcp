@@ -336,14 +336,6 @@ impl SystemInfo {
         self.cpu_temperature
     }
 
-    pub fn memory_used_gb(&self) -> f32 {
-        bytes_to_gigabytes(self.memory_used)
-    }
-
-    pub fn memory_total_gb(&self) -> f32 {
-        bytes_to_gigabytes(self.memory_total)
-    }
-
     #[allow(dead_code)]
     pub fn gpu_vram_used_mb(&self) -> Option<u64> {
         self.gpu_info.as_ref()?.vram_used
@@ -516,10 +508,6 @@ fn is_gpu_temperature_label(label: &str) -> bool {
     label.contains("gpu") || label.contains("graphics") || label.contains("junction")
 }
 
-fn bytes_to_gigabytes(bytes: u64) -> f32 {
-    bytes as f32 / 1024.0 / 1024.0 / 1024.0
-}
-
 fn bytes_to_megabytes(bytes: u64) -> u64 {
     bytes / 1024 / 1024
 }
@@ -546,10 +534,7 @@ mod tests {
         };
         assert!((0.0..=100.0).contains(&percent));
 
-        let used_gb = info.memory_used_gb();
-        let total_gb = info.memory_total_gb();
-        assert!(used_gb >= 0.0);
-        assert!(total_gb >= used_gb);
+        assert!(info.memory_total >= info.memory_used);
     }
 
     #[test]
