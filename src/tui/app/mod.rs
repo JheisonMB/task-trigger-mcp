@@ -23,7 +23,7 @@ use dialog::SimplePromptDialog;
 
 pub(crate) use data::send_mcp_task_run;
 pub use dialog::NewAgentDialog;
-pub use dialog::{NewTaskMode, NewTaskType};
+pub use dialog::{BackgroundTrigger, NewTaskMode, NewTaskType};
 
 // ── Types ───────────────────────────────────────────────────────
 
@@ -292,7 +292,7 @@ impl App {
             let initial = crate::system::SystemInfo::new();
             let _ = system_info_tx.send(initial);
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::thread::sleep(std::time::Duration::from_secs(2));
                 let mut info = crate::system::SystemInfo::default();
                 info.update();
                 let _ = system_info_tx.send(info);
