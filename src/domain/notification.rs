@@ -3,8 +3,22 @@
 //! Sends native notifications when agents complete or fail.
 //! Detected platforms: WSL → Windows toast, macOS → osascript, Linux → notify-send.
 //! All notifications are fire-and-forget on a background thread.
+//!
+//! ## Windows AUMID Registration
+//!
+//! Windows requires an AppUserModelId (AUMID) to be registered in the current
+//! user's registry before `ToastNotificationManager::History` can resolve it.
+//! Without registration, `GetHistory()` returns `0x80070490` (element not found).
+//!
+//! `register_aumid()` is called once at startup (WSL only) to write:
+//!   `HKCU\Software\Classes\AppUserModelId\Canopy`
+//! with `DisplayName` and optional `IconUri`.
 
 use std::process::Command;
+
+/// Canonical AppUserModelId for Canopy toast notifications.
+/// Must match exactly between registry key name and `CreateToastNotifier()` calls.
+const APP_ID: &str = "Canopy";
 
 /// Detected runtime platform for notification dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +53,54 @@ fn applescript_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+// ── Windows AUMID Registration ───────────────────────────────────────
+
+/// Register the Canopy AppUserModelId in the Windows registry so that
+/// `ToastNotificationManager::History` can resolve it without `0x80070490`.
+///
+/// Writes to `HKCU\Software\Classes\AppUserModelId\Canopy` with:
+///   - `DisplayName` = "Canopy"
+///   - `IconUri`     = path to the current executable (best-effort)
+///
+/// Safe to call multiple times — overwrites existing values idempotently.
+/// Only runs on WSL; no-op on other platforms.
+pub fn register_aumid() {
+    if detect_platform() != Platform::Wsl {
+        return;
+    }
+    std::thread::spawn(|| {
+        // Resolve icon path from the current executable
+        let icon_uri = std::env::current_exe()
+            .ok()
+            .map(|p| ps_escape(&p.to_string_lossy()))
+            .unwrap_or_default();
+
+        let script = format!(
+            concat!(
+                "$key = 'HKCU\\Software\\Classes\\AppUserModelId\\{}'; ",
+                "New-Item -Path $key -Force | Out-Null; ",
+                "New-ItemProperty -Path $key -Name 'DisplayName' -Value '{}' ",
+                "-PropertyType String -Force | Out-Null; ",
+                "New-ItemProperty -Path $key -Name 'IconUri' -Value '{}' ",
+                "-PropertyType String -Force | Out-Null",
+            ),
+            APP_ID,
+            APP_ID,
+            icon_uri,
+        );
+        let _ = Command::new("powershell.exe")
+            .arg("-NoProfile")
+            .arg("-NonInteractive")
+            .arg("-Command")
+            .arg(&script)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    });
+}
+
+// ── Platform senders ─────────────────────────────────────────────────
+
 fn send_linux(title: &str, body: &str) {
     let _ = Command::new("notify-send")
         .arg("--app-name=Canopy")
@@ -64,27 +126,26 @@ fn send_macos(title: &str, body: &str) {
 }
 
 fn send_wsl(title: &str, body: &str) {
-    // Clear any stale Canopy notifications from the Windows Action Center first
-    // to prevent notification pile-up that keeps re-appearing.
-    let clear_script = concat!(
-        "Get-AppxPackage | Where-Object { $_.Name -like '*Canopy*' } | ForEach-Object { ",
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ",
-        "ContentType = WindowsRuntime] > $null; ",
-        "try { [Windows.UI.Notifications.ToastNotificationManager]::",
-        "CreateToastNotifier('Canopy').Clear() } catch {} ",
-        "}; "
+    // Clear stale Canopy notifications from Action Center before showing a new one.
+    let clear_script = format!(
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, \
+         ContentType = WindowsRuntime] > $null; \
+         try {{ [Windows.UI.Notifications.ToastNotificationManager]::\
+         CreateToastNotifier('{}').Clear() }} catch {{}}",
+        ps_escape(APP_ID),
     );
     let _ = Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-NonInteractive")
         .arg("-Command")
-        .arg(clear_script)
+        .arg(&clear_script)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
 
-    // Use BurntToast-style toast via WinRT API with explicit dismissal time.
-    // Creates the toast, shows it, and schedules removal from Action Center after 5 seconds.
+    // Show toast via WinRT API with an expiration window.
+    // ExpirationTime controls when the toast is auto-removed from the queue;
+    // Action Center retains it until explicitly cleared or the user interacts.
     let ps_script = format!(
         concat!(
             "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ",
@@ -95,12 +156,13 @@ fn send_wsl(title: &str, body: &str) {
             "$nodes.Item(0).AppendChild($template.CreateTextNode('{}')) > $null; ",
             "$nodes.Item(1).AppendChild($template.CreateTextNode('{}')) > $null; ",
             "$toast = [Windows.UI.Notifications.ToastNotification]::new($template); ",
-            "$toast.ExpirationTime = [DateTimeOffset]::UtcNow.Add([TimeSpan]::FromSeconds(5)); ",
+            "$toast.ExpirationTime = [DateTimeOffset]::UtcNow.Add([TimeSpan]::FromSeconds(30)); ",
             "[Windows.UI.Notifications.ToastNotificationManager]::",
-            "CreateToastNotifier('Canopy').Show($toast)"
+            "CreateToastNotifier('{}').Show($toast)"
         ),
         ps_escape(title),
         ps_escape(body),
+        ps_escape(APP_ID),
     );
     let _ = Command::new("powershell.exe")
         .arg("-NoProfile")
@@ -112,29 +174,60 @@ fn send_wsl(title: &str, body: &str) {
         .spawn();
 }
 
+// ── Public API ───────────────────────────────────────────────────────
+
 /// Clear any stale Canopy notifications from the Windows Action Center.
 /// Call this once at startup to prevent pile-up of old notifications.
+/// Only runs on WSL; no-op on other platforms.
 pub fn clear_stale_notifications() {
-    let platform = detect_platform();
-    if platform != Platform::Wsl {
+    if detect_platform() != Platform::Wsl {
         return;
     }
-    std::thread::spawn(move || {
-        let clear_script = concat!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ",
-            "ContentType = WindowsRuntime] > $null; ",
-            "try { [Windows.UI.Notifications.ToastNotificationManager]::",
-            "CreateToastNotifier('Canopy').Clear() } catch {}"
+    std::thread::spawn(|| {
+        let clear_script = format!(
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, \
+             ContentType = WindowsRuntime] > $null; \
+             try {{ [Windows.UI.Notifications.ToastNotificationManager]::\
+             CreateToastNotifier('{}').Clear() }} catch {{}}",
+            ps_escape(APP_ID),
         );
         let _ = Command::new("powershell.exe")
             .arg("-NoProfile")
             .arg("-NonInteractive")
             .arg("-Command")
-            .arg(clear_script)
+            .arg(&clear_script)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
     });
+}
+
+/// Clear all Canopy notifications from the Windows Action Center.
+/// Call this on app exit / task cancellation to avoid stale notifications
+/// lingering in the Action Center after the process terminates.
+///
+/// Unlike `clear_stale_notifications`, this blocks until the PowerShell
+/// process completes so the cleanup is guaranteed before the process exits.
+/// Only runs on WSL; no-op on other platforms.
+pub fn clear_notifications_on_exit() {
+    if detect_platform() != Platform::Wsl {
+        return;
+    }
+    let clear_script = format!(
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, \
+         ContentType = WindowsRuntime] > $null; \
+         try {{ [Windows.UI.Notifications.ToastNotificationManager]::\
+         CreateToastNotifier('{}').Clear() }} catch {{}}",
+        ps_escape(APP_ID),
+    );
+    let _ = Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-Command")
+        .arg(&clear_script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Send a desktop notification. Fire-and-forget — spawns a background thread
