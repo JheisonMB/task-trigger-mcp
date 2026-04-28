@@ -28,3 +28,6 @@ target/
 .vscode/
 .idea/
 *.log
+
+# Ignore accidental HKCU directory (Windows registry reference, not a real directory)
+HKCU/
