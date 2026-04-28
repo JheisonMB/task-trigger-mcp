@@ -1210,10 +1210,18 @@ impl InteractiveAgent {
 
     /// Get clean PTY line text at a specific screen position, excluding UI elements.
     /// Used for single-click copy functionality to get only terminal content.
+    /// This is a non-blocking, fast-path version that avoids expensive operations.
     pub fn get_clean_pty_line_at_position(&self, col: u16, row: u16) -> Option<String> {
+        // Quick early return if position is obviously invalid
+        if row > 1000 || col > 1000 { // Reasonable upper bounds
+            return None;
+        }
+
         let vt = self.vt.lock().ok()?;
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
+        
+        // Early return for empty screen
         if screen_rows == 0 || screen_cols == 0 {
             return None;
         }
@@ -1232,16 +1240,24 @@ impl InteractiveAgent {
             return None;
         }
 
-        // Get the full line
-        let mut line = String::new();
-        for c in 0..screen_cols {
-            if let Some(cell) = screen.cell(actual_row, c) {
-                line.push_str(cell.contents());
+        // Get the full line with panic protection
+        let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut line = String::with_capacity(screen_cols as usize);
+            for c in 0..screen_cols {
+                if let Some(cell) = screen.cell(actual_row, c) {
+                    line.push_str(cell.contents());
+                }
             }
-        }
+            line
+        })).ok()?;
 
         let sanitized = sanitize_line(&line);
         
+        // Quick check for empty or UI-only lines
+        if sanitized.trim().is_empty() {
+            return None;
+        }
+
         // Check if this line is UI noise that should be excluded
         if is_ui_line(&sanitized) {
             return None;

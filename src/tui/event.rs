@@ -547,20 +547,15 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
         && !modifiers.contains(KeyModifiers::SHIFT)
     {
+        // Only handle clicks when focused on an interactive agent
         if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
             let idx = *idx;
             if let Some(agent) = app.interactive_agents.get(idx) {
                 // Calculate relative position within PTY area
-                // Sidebar visibility affects the layout
                 let sidebar_width = if app.sidebar_visible { 29 } else { 0 };
                 let header_height = 1; // Header is always 1 line
                 
-                // Calculate relative position within PTY area
-                let pty_col = mouse.column.saturating_sub(sidebar_width);
-                let pty_row = mouse.row.saturating_sub(header_height);
-                
                 // Check if click was in sidebar or header area
-                // (saturating_sub already ensures non-negative values)
                 let clicked_in_sidebar = mouse.column < sidebar_width;
                 let clicked_in_header = mouse.row < header_height;
                 
@@ -568,10 +563,19 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
                     return Ok(()); // Click was outside PTY area
                 }
                 
+                // Calculate relative position within PTY area
+                let pty_col = mouse.column.saturating_sub(sidebar_width);
+                let pty_row = mouse.row.saturating_sub(header_height);
+                
+                // Try to get clean PTY line text (non-blocking)
                 if let Some(line_text) = agent.get_clean_pty_line_at_position(pty_col, pty_row) {
-                    // Try to copy to clipboard
-                    let _ = arboard::Clipboard::new()
-                        .and_then(|mut clipboard| clipboard.set_text(&line_text));
+                    // Spawn a separate thread for clipboard operations to avoid UI freezing
+                    std::thread::spawn(move || {
+                        let _ = arboard::Clipboard::new()
+                            .and_then(|mut clipboard| clipboard.set_text(&line_text));
+                    });
+                    
+                    // Show copy feedback in UI
                     app.show_copied = true;
                     app.copied_at = std::time::Instant::now();
                 }
