@@ -515,6 +515,8 @@ impl App {
         for agent in &mut self.terminal_agents {
             agent.kill();
         }
+        // Clear any lingering toast notifications from the Windows Action Center
+        crate::domain::notification::clear_notifications_on_exit();
     }
 
     /// Terminate the session(s) currently in focus.
