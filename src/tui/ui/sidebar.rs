@@ -267,8 +267,32 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut App, accent: Color) {
     let card_h = 3u16;
     let row_h = 4u16;
+
+    if area.height < card_h || indices.is_empty() {
+        return;
+    }
+
+    // Calculate how many cards fit in the visible area
+    let max_visible = ((area.height.saturating_sub(card_h)) / row_h + 1) as usize;
+
+    // Find the selected agent's position within this list
+    let selected_local = indices.iter().position(|&idx| idx == app.selected);
+
+    // Compute scroll offset so the selected item is always visible
+    let scroll_start = selected_local.map_or(0, |sel| {
+        if sel >= max_visible {
+            sel.saturating_sub(max_visible - 1)
+        } else {
+            0
+        }
+    });
+
+    let has_scroll_up = scroll_start > 0;
+    let has_scroll_down = indices.len().saturating_sub(scroll_start) > max_visible;
+
     let mut y = area.y;
-    for (i, &idx) in indices.iter().enumerate() {
+    let end = indices.len().min(scroll_start + max_visible + 1);
+    for (rel_i, &idx) in indices[scroll_start..end].iter().enumerate() {
         if y + card_h > area.y + area.height {
             break;
         }
@@ -277,11 +301,34 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut A
         let selected = idx == app.selected;
         draw_sidebar_card(frame, card_area, agent, app, selected, accent);
         app.sidebar_click_map.push((idx, y, y + card_h));
-        if i < indices.len() - 1 {
+        let global_i = scroll_start + rel_i;
+        if global_i < indices.len() - 1 {
             y += row_h;
         } else {
             y += card_h;
         }
+    }
+
+    // Draw scroll indicators
+    if has_scroll_up {
+        let indicator = Paragraph::new("▲").style(Style::default().fg(DIM));
+        let indicator_area = Rect::new(
+            area.x + area.width.saturating_sub(2),
+            area.y,
+            1,
+            1,
+        );
+        frame.render_widget(indicator, indicator_area);
+    }
+    if has_scroll_down {
+        let indicator = Paragraph::new("▼").style(Style::default().fg(DIM));
+        let indicator_area = Rect::new(
+            area.x + area.width.saturating_sub(2),
+            area.y + area.height - 1,
+            1,
+            1,
+        );
+        frame.render_widget(indicator, indicator_area);
     }
 }
 
