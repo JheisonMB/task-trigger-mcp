@@ -639,10 +639,10 @@ impl App {
             match dialog.task_type {
                 NewTaskType::Background => match dialog.background_trigger {
                     BackgroundTrigger::Cron => {
-                        self.update_scheduled(&dialog, model_ref, edit_id)?
+                        self.update_scheduled(&dialog, model_ref, edit_id)?;
                     }
                     BackgroundTrigger::Watch => {
-                        self.update_watcher_edit(&dialog, model_ref, edit_id)?
+                        self.update_watcher_edit(&dialog, model_ref, edit_id)?;
                     }
                 },
                 NewTaskType::Interactive | NewTaskType::Terminal => {}

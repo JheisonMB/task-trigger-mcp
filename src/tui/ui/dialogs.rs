@@ -780,7 +780,7 @@ pub(super) fn draw_quit_confirm(frame: &mut Frame) {
     let inner_width = dialog_width.saturating_sub(2).max(1);
     let chars_per_line = inner_width as usize;
     let text_len = text.len();
-    let needed_lines = ((text_len + chars_per_line - 1) / chars_per_line).max(1) as u16;
+    let needed_lines = text_len.div_ceil(chars_per_line).max(1) as u16;
     let height = needed_lines + 2; // +2 for borders
 
     let area = centered_rect(40, height, frame.area());
