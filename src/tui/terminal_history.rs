@@ -156,6 +156,7 @@ pub fn from_global_catalog(input: &str, data_dir: &Path, _cwd: &str) -> Suggesti
     SuggestionPicker {
         input: input.to_string(),
         mode: PickerMode::CommandHistory,
+        all_items: items.clone(),
         items,
         selected: 0,
         scroll_offset: 0,
@@ -236,6 +237,8 @@ pub struct SuggestionPicker {
     pub mode: PickerMode,
     /// Filtered suggestion entries.
     pub items: Vec<SuggestionItem>,
+    /// All original items (for re-filtering in command-history mode).
+    pub all_items: Vec<SuggestionItem>,
     /// Currently highlighted index.
     pub selected: usize,
     /// Scroll offset for windowed rendering (first visible item index).
@@ -288,6 +291,7 @@ impl SuggestionPicker {
         Self {
             input: input.to_string(),
             mode: PickerMode::CommandHistory,
+            all_items: items.clone(),
             items,
             selected: 0,
             scroll_offset: 0,
@@ -346,12 +350,29 @@ impl SuggestionPicker {
         Self {
             input: partial.to_string(),
             mode: PickerMode::CdDirectory,
+            all_items: items.clone(),
             items,
             selected: 0,
             scroll_offset: 0,
             cd_base_dir: Some(PathBuf::from(cwd)),
             cd_current_dir: Some(PathBuf::from(cwd)),
         }
+    }
+
+    /// Apply a filter to the picker items (command-history mode only).
+    pub fn apply_filter(&mut self, filter: &str) {
+        let filter_lower = filter.to_lowercase();
+        self.items = self
+            .all_items
+            .iter()
+            .filter(|i| {
+                i.text.to_lowercase().contains(&filter_lower)
+                    || i.label.to_lowercase().contains(&filter_lower)
+            })
+            .cloned()
+            .collect();
+        self.selected = 0;
+        self.scroll_offset = 0;
     }
 
     /// Maximum visible items in the picker window.
