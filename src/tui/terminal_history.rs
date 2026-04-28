@@ -488,18 +488,6 @@ impl SuggestionPicker {
             self.input = abbreviate_path(&cwd);
         }
 
-        // Add parent entry if not at root
-        if cwd_path
-            .parent()
-            .is_some_and(|p| !p.to_string_lossy().is_empty())
-        {
-            items.push(SuggestionItem {
-                text: "..".to_string(),
-                label: "../".to_string(),
-                count: 0,
-            });
-        }
-
         // List subdirectories
         if let Ok(entries) = fs::read_dir(&cwd) {
             let mut children: Vec<SuggestionItem> = entries
