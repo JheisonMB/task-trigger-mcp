@@ -1583,7 +1583,6 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let height = total_height.min(max_dialog_h);
 
     // Pre-compute render height for each section (label + content + border + gap = h + 3).
-    // Used for auto-scroll calculation.
     let section_heights: Vec<u16> = dialog
         .enabled_sections
         .iter()

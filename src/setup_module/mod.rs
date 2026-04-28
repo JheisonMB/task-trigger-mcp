@@ -68,7 +68,6 @@ pub struct Platform {
     #[serde(default)]
     pub deprecated_keys: Vec<String>,
     /// Keys that this platform's MCP schema does not support.
-    /// Used to sanitize configs when syncing across platforms.
     #[serde(default)]
     pub unsupported_keys: Vec<String>,
     /// Translation map from Canopy's standard field names to this platform's names.

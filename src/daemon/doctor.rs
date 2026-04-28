@@ -8,7 +8,6 @@ pub(crate) async fn run_doctor() -> Result<()> {
     use crate::shared::banner;
 
     banner::print_banner_with_gradient("canopy doctor");
-    // Removed duplicate line - banner function already prints the separator line
     println!();
 
     let home = dirs::home_dir().context("No home directory")?;

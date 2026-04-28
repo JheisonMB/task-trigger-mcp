@@ -3,8 +3,6 @@
 //! Provides a clean abstraction for sending notifications from both
 //! daemon (background tasks) and TUI (interactive agents).
 
-// Models are not directly used here but kept for reference
-
 /// Notification service for sending cross-platform desktop notifications.
 pub trait NotificationService: Send + Sync {
     /// Send a notification about a completed background task.

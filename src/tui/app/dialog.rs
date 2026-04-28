@@ -1821,7 +1821,6 @@ impl SimplePromptDialog {
     }
 
     /// Insert text at cursor position in any section.
-    /// Used for paste operations to insert all text at once.
     pub fn insert_text_at_cursor(&mut self, section_id: &str, text: &str, field_width: usize) {
         let content = self.get_section_content(section_id);
         let chars: Vec<char> = content.chars().collect();

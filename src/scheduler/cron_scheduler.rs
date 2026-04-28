@@ -266,4 +266,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_to_7field_cron_trims_whitespace() {
+        assert_eq!(to_7field_cron("  */5 * * * *  "), "0 */5 * * * * *");
+        assert_eq!(to_7field_cron("\t0 9 * * *\t"), "0 0 9 * * * *");
+    }
+
+    #[test]
+    fn test_cron_schedule_next_fire_time() {
+        let converted = to_7field_cron("* * * * *");
+        let schedule = Schedule::from_str(&converted).unwrap();
+        let now = chrono::Utc::now();
+        let next = schedule.after(&now).next();
+        assert!(next.is_some());
+    }
 }

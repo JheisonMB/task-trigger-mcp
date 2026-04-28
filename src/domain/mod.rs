@@ -11,3 +11,6 @@ pub mod models_db;
 pub mod notification;
 pub mod usage_stats;
 pub mod validation;
+
+#[cfg(test)]
+mod domain_tests;

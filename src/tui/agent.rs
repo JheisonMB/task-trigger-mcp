@@ -1140,7 +1140,6 @@ impl InteractiveAgent {
     }
 
     /// Get plain text from the line at a specific screen position.
-    /// Used for single-click copy functionality.
     #[allow(dead_code)]
     pub fn get_line_text_at_position(&self, col: u16, row: u16) -> Option<String> {
         let vt = self.vt.try_lock().ok()?;
@@ -1180,7 +1179,6 @@ impl InteractiveAgent {
     }
 
     /// Get plain text from the current cursor line.
-    /// Used for single-click copy functionality.
     #[allow(dead_code)]
     pub fn get_current_line_text(&self) -> Option<String> {
         let vt = self.vt.try_lock().ok()?;
@@ -1221,7 +1219,6 @@ impl InteractiveAgent {
     }
 
     /// Get clean PTY line text at a specific screen position, excluding UI elements.
-    /// Used for single-click copy functionality to get only terminal content.
     /// This is a non-blocking, fast-path version that avoids expensive operations.
     pub fn get_clean_pty_line_at_position(&self, col: u16, row: u16) -> Option<String> {
         // Quick early return if position is obviously invalid
