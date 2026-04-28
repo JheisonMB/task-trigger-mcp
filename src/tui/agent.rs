@@ -1041,7 +1041,7 @@ impl InteractiveAgent {
     }
 
     fn current_visible_line_text(&self) -> Option<String> {
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (rows, cols) = screen.size();
         if rows == 0 || cols == 0 {
@@ -1062,7 +1062,7 @@ impl InteractiveAgent {
     /// Get plain text from the current visible screen area.
     /// This is used for copying clean text without ANSI formatting.
     pub fn get_plain_text_from_screen(&self) -> Option<String> {
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (rows, cols) = screen.size();
         if rows == 0 || cols == 0 {
@@ -1098,7 +1098,7 @@ impl InteractiveAgent {
         start_row: usize,
         end_row: usize,
     ) -> Option<String> {
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (rows, cols) = screen.size();
         if rows == 0 || cols == 0 {
@@ -1131,7 +1131,7 @@ impl InteractiveAgent {
     /// Used for single-click copy functionality.
     #[allow(dead_code)]
     pub fn get_line_text_at_position(&self, col: u16, row: u16) -> Option<String> {
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
         if screen_rows == 0 || screen_cols == 0 {
@@ -1171,7 +1171,7 @@ impl InteractiveAgent {
     /// Used for single-click copy functionality.
     #[allow(dead_code)]
     pub fn get_current_line_text(&self) -> Option<String> {
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
         if screen_rows == 0 || screen_cols == 0 {
@@ -1217,7 +1217,7 @@ impl InteractiveAgent {
             return None;
         }
 
-        let vt = self.vt.lock().ok()?;
+        let vt = self.vt.try_lock().ok()?;
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
         
@@ -1294,7 +1294,7 @@ impl InteractiveAgent {
     /// Whether the child process is using alternate screen mode.
     pub fn in_alternate_screen(&self) -> bool {
         self.vt
-            .lock()
+            .try_lock()
             .map(|vt| vt.screen().alternate_screen())
             .unwrap_or(false)
     }
