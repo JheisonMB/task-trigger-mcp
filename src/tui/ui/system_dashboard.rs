@@ -217,21 +217,13 @@ fn create_system_dashboard_lines(
         ),
     ]));
 
-    // Swap line only if actually being used
+    // Swap line only if actually being used — always yellow, no percentage
     if system_info.swap_used > 0 {
-        let swap_pct = if system_info.swap_total > 0 {
-            (system_info.swap_used as f32 / system_info.swap_total as f32) * 100.0
-        } else {
-            0.0
-        };
-        // Swap is always yellow at minimum; red if >50%
-        let swap_color = if swap_pct >= 50.0 { DANGER } else { WARN };
         lines.push(Line::from(vec![
             Span::styled("swap: ", Style::default().fg(Color::White)),
-            Span::styled(format!("{swap_pct:.0}%"), Style::default().fg(swap_color)),
             Span::styled(
-                format!(" {}", format_bytes_smart(system_info.swap_used)),
-                Style::default().fg(DIM),
+                format_bytes_smart(system_info.swap_used),
+                Style::default().fg(WARN),
             ),
         ]));
     }
