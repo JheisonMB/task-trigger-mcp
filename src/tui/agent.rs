@@ -1415,14 +1415,13 @@ fn convert_color(color: vt100::Color) -> ratatui::style::Color {
     match color {
         vt100::Color::Default => Color::Reset,
         vt100::Color::Idx(i) if i < 16 => {
-            // xterm-256color standard palette for ANSI 0-15
             const XTERM_16: [Color; 16] = [
                 Color::Rgb(0, 0, 0),       // 0  black
                 Color::Rgb(205, 0, 0),     // 1  red
                 Color::Rgb(0, 205, 0),     // 2  green
                 Color::Rgb(205, 205, 0),   // 3  yellow
                 Color::Rgb(0, 0, 238),     // 4  blue
-                Color::Rgb(205, 0, 205),   // 5  magenta
+                Color::Rgb(180, 0, 180),   // 5  purple (Kiro's brand color)
                 Color::Rgb(0, 205, 205),   // 6  cyan
                 Color::Rgb(229, 229, 229), // 7  white
                 Color::Rgb(127, 127, 127), // 8  bright black
@@ -1430,7 +1429,7 @@ fn convert_color(color: vt100::Color) -> ratatui::style::Color {
                 Color::Rgb(0, 255, 0),     // 10 bright green
                 Color::Rgb(255, 255, 0),   // 11 bright yellow
                 Color::Rgb(92, 92, 255),   // 12 bright blue
-                Color::Rgb(255, 0, 255),   // 13 bright magenta
+                Color::Rgb(200, 50, 255),  // 13 bright purple
                 Color::Rgb(0, 255, 255),   // 14 bright cyan
                 Color::Rgb(255, 255, 255), // 15 bright white
             ];
