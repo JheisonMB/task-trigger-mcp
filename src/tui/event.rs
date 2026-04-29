@@ -1969,17 +1969,62 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         && is_background
                         && dialog.background_trigger == super::app::BackgroundTrigger::Watch) =>
                 {
+                    let is_watch_dir = n == extra_field
+                        && is_background
+                        && dialog.background_trigger == super::app::BackgroundTrigger::Watch;
                     match code {
                         KeyCode::Up => {
                             if dialog.dir_selected > 0 {
                                 dialog.dir_selected -= 1;
+                            } else {
+                                // At top of list: move focus to previous field
+                                dialog.field = if is_watch_dir {
+                                    prompt_field
+                                } else if is_interactive {
+                                    cli_field
+                                } else if is_terminal {
+                                    0
+                                } else {
+                                    extra_field
+                                };
                             }
                         }
                         KeyCode::Down => {
                             let filtered_len = dialog.filtered_dir_entries().len();
                             if filtered_len > 0 && dialog.dir_selected + 1 < filtered_len {
                                 dialog.dir_selected += 1;
+                            } else {
+                                // At bottom of list: move focus to next field
+                                dialog.field = if is_interactive {
+                                    yolo_field
+                                } else if is_terminal {
+                                    2 // shell field
+                                } else {
+                                    // Background: dir is the last field, stay
+                                    dialog.field
+                                };
                             }
+                        }
+                        KeyCode::BackTab => {
+                            dialog.field = if is_watch_dir {
+                                prompt_field
+                            } else if is_interactive {
+                                cli_field
+                            } else if is_terminal {
+                                0
+                            } else {
+                                extra_field
+                            };
+                        }
+                        KeyCode::Tab => {
+                            dialog.field = if is_interactive {
+                                yolo_field
+                            } else if is_terminal {
+                                2 // shell field
+                            } else {
+                                // Background: dir is the last field, stay
+                                dialog.field
+                            };
                         }
                         KeyCode::Right => {
                             dialog.navigate_to_selected();
