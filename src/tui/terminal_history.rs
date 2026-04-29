@@ -439,11 +439,14 @@ impl SuggestionPicker {
     }
 
     /// Navigate to parent directory (cd mode only).
+    /// Remembers the directory we came from and positions cursor on it.
     pub fn navigate_parent(&mut self, base_cwd: &str) -> Option<String> {
         if self.mode != PickerMode::CdDirectory {
             return None;
         }
         let current = self.cd_current_dir.as_ref()?;
+        // Remember the directory name we're leaving
+        let leaving_name = current.file_name().map(|n| n.to_string_lossy().to_string());
         if let Some(parent) = current.parent() {
             if parent.to_string_lossy().is_empty() {
                 return None;
@@ -452,6 +455,19 @@ impl SuggestionPicker {
             let result = parent_path.to_string_lossy().to_string();
             self.cd_current_dir = Some(parent_path);
             self.refresh_items(base_cwd);
+            // Position cursor on the directory we came from
+            if let Some(name) = leaving_name {
+                let target = format!("./{name}");
+                if let Some(idx) = self.items.iter().position(|i| i.text == target) {
+                    self.selected = idx;
+                    // Adjust scroll to keep selection visible
+                    if self.selected >= self.scroll_offset + Self::MAX_VISIBLE {
+                        self.scroll_offset = self.selected + 1 - Self::MAX_VISIBLE;
+                    } else if self.selected < self.scroll_offset {
+                        self.scroll_offset = self.selected;
+                    }
+                }
+            }
             return Some(result);
         }
         None

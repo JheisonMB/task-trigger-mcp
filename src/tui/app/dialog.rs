@@ -387,10 +387,20 @@ impl NewAgentDialog {
     }
 
     /// Go up one directory level (← key).
+    /// Remembers the directory we came from and positions cursor on it.
     pub fn go_up(&mut self) {
         if self.current_path == "/" {
             return;
         }
+        // Remember the directory name we're leaving
+        let leaving_name = self.current_path.rfind('/').and_then(|pos| {
+            let name = &self.current_path[pos + 1..];
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        });
         let new_path = if let Some(pos) = self.current_path.rfind('/') {
             if pos == 0 {
                 "/".to_string()
@@ -409,6 +419,13 @@ impl NewAgentDialog {
         }
         self.dir_filter.clear();
         self.refresh_dir_entries();
+        // Position cursor on the directory we came from
+        if let Some(name) = leaving_name {
+            let target = format!("📁 {name}");
+            if let Some(idx) = self.dir_entries.iter().position(|e| e == &target) {
+                self.dir_selected = idx;
+            }
+        }
     }
 
     /// Enter the selected directory entry (→ key or Space).
