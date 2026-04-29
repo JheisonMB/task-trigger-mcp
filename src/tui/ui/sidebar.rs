@@ -48,9 +48,13 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     let has_groups = !app.split_groups.is_empty();
 
     // Responsive dashboard height based on how many lines the dashboard will render.
-    // Base lines: cpu + mem + disk + load/procs = 4. +1 for gpu, +1 for swap if used.
+    // Base lines: cpu + mem + disk + load/procs = 4. +1 for gpu if it has data, +1 for swap if used.
     let mut dashboard_content_lines = 4u16;
-    if app.system_info.gpu_info.is_some() {
+    let gpu_will_show = app.system_info.gpu_info.as_ref().is_some_and(|gpu| {
+        let has_vram = matches!((gpu.vram_used, gpu.vram_total), (Some(_), Some(total)) if total > 0);
+        gpu.usage.is_some() || gpu.temperature.is_some() || has_vram
+    });
+    if gpu_will_show {
         dashboard_content_lines += 1;
     }
     if app.system_info.swap_used > 0 {
