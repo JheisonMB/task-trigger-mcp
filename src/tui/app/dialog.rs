@@ -265,7 +265,11 @@ impl NewAgentDialog {
         let binary = config.binary.clone();
 
         let args: Vec<&str> = list_cmd.split_whitespace().collect();
-        let Ok(output) = std::process::Command::new(&binary).args(&args).output() else {
+        let Ok(output) = std::process::Command::new(&binary)
+            .args(&args)
+            .current_dir(&self.working_dir)
+            .output()
+        else {
             return;
         };
 
