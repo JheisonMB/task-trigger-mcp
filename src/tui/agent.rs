@@ -1336,7 +1336,6 @@ impl InteractiveAgent {
                 self.write_to_pty(seq)
             }
             _ => {
-                // Send 3 scroll events for smoother scrolling
                 let button: u8 = if scroll_up { 64 } else { 65 };
                 let col: u16 = cols / 2;
                 let row: u16 = 10;
@@ -1353,8 +1352,7 @@ impl InteractiveAgent {
                         ]
                     }
                 };
-                let bytes: Vec<u8> = single.repeat(3);
-                self.write_to_pty(&bytes)
+                self.write_to_pty(&single)
             }
         }
     }
