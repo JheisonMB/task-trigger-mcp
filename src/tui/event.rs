@@ -42,21 +42,26 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
         };
 
         if event::poll(tick)? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    handle_key(app, key.code, key.modifiers)?;
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        handle_key(app, key.code, key.modifiers)?;
+                    }
+                    Event::Mouse(mouse) => {
+                        app.notify_mouse_move();
+                        handle_mouse(app, mouse)?;
+                    }
+                    Event::Resize(_, _) => {
+                        // Resize is handled by refresh() on next tick
+                    }
+                    Event::Paste(text) => {
+                        handle_paste(app, &text);
+                    }
+                    _ => {}
                 }
-                Event::Mouse(mouse) => {
-                    app.notify_mouse_move();
-                    handle_mouse(app, mouse)?;
+                if !event::poll(Duration::from_millis(0))? {
+                    break;
                 }
-                Event::Resize(_, _) => {
-                    // Resize is handled by refresh() on next tick
-                }
-                Event::Paste(text) => {
-                    handle_paste(app, &text);
-                }
-                _ => {}
             }
         }
 
@@ -617,9 +622,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
                 } else {
                     if dir > 0 {
                         let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
                     } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
                     }
                 }
             } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
@@ -630,9 +635,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
                         let _ = agent.forward_scroll(dir > 0);
                     } else if dir > 0 {
                         let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 5).min(max);
+                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
                     } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(5);
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
                     }
                 }
             } else if dir > 0 {
@@ -651,9 +656,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
                         let _ = agent.forward_scroll(dir > 0);
                     } else if dir > 0 {
                         let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 3).min(max);
+                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
                     } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
                     }
                 }
             } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
@@ -664,9 +669,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
                         let _ = agent.forward_scroll(dir > 0);
                     } else if dir > 0 {
                         let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 3).min(max);
+                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
                     } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(3);
+                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
                     }
                 }
             } else if dir > 0 {
@@ -1135,19 +1140,7 @@ fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Re
                 input.clear();
             }
         } else if code == KeyCode::Tab {
-            let input_text = app.terminal_agents[idx]
-                .input_buffer
-                .lock()
-                .map(|b| b.trim().to_string())
-                .unwrap_or_default();
-            let is_cd = input_text.is_empty()
-                || input_text == "cd"
-                || input_text.starts_with("cd ")
-                || input_text.starts_with("cd\t");
-            if is_cd {
-                return open_terminal_suggestion_picker(app, idx);
-            }
-            // Non-cd: forward Tab to PTY for native autocomplete
+            // Non-warp mode: Tab goes directly to PTY (no suggestion picker)
         } else if let KeyCode::Char(c) = code {
             if !modifiers.contains(KeyModifiers::CONTROL) {
                 if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
@@ -1980,27 +1973,12 @@ fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         KeyCode::Up => {
                             if dialog.dir_selected > 0 {
                                 dialog.dir_selected -= 1;
-                            } else if is_interactive {
-                                dialog.field = yolo_field;
-                            } else if is_terminal {
-                                dialog.field = 0;
-                            } else if is_background {
-                                if dialog.background_trigger == super::app::BackgroundTrigger::Watch
-                                {
-                                    dialog.field = prompt_field;
-                                } else {
-                                    dialog.field = extra_field; // cron field
-                                }
                             }
                         }
                         KeyCode::Down => {
                             let filtered_len = dialog.filtered_dir_entries().len();
-                            if dialog.dir_selected + 1 < filtered_len {
+                            if filtered_len > 0 && dialog.dir_selected + 1 < filtered_len {
                                 dialog.dir_selected += 1;
-                            } else if is_terminal {
-                                dialog.field = 2; // shell field
-                            } else if is_interactive {
-                                dialog.field = yolo_field;
                             }
                         }
                         KeyCode::Right => {
