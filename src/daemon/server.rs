@@ -65,8 +65,12 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
                 port,
             ))
         },
-        rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default()
-            .into(),
+        {
+            let mut mgr =
+                rmcp::transport::streamable_http_server::session::local::LocalSessionManager::default();
+            mgr.session_config.keep_alive = None;
+            mgr.into()
+        },
         {
             #[allow(clippy::field_reassign_with_default)]
             {
