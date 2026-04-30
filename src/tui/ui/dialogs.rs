@@ -1640,7 +1640,7 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
         Span::styled("Ctrl+S ", Style::default().fg(DIM)),
         Span::styled("send  ", Style::default().fg(Color::White)),
         Span::styled("Esc  ", Style::default().fg(DIM)),
-        Span::styled("cancel", Style::default().fg(Color::White)),
+        Span::styled("hide", Style::default().fg(Color::White)),
     ]);
 
     let instructions_area = ratatui::layout::Rect {
