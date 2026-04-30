@@ -1721,13 +1721,18 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             .get("instruction")
             .map(|s| s.as_str())
             .unwrap_or("");
+        let instruction_real = dialog
+            .collapsed_pastes
+            .get("instruction")
+            .map(|s| s.as_str())
+            .unwrap_or(instruction_content);
 
         let (instruction_render_text, instr_scroll) = if is_instruction_focused {
             let cursor_idx = dialog
                 .cursor("instruction")
-                .min(instruction_content.chars().count());
-            let before: String = instruction_content.chars().take(cursor_idx).collect();
-            let after: String = instruction_content.chars().skip(cursor_idx).collect();
+                .min(instruction_real.chars().count());
+            let before: String = instruction_real.chars().take(cursor_idx).collect();
+            let after: String = instruction_real.chars().skip(cursor_idx).collect();
             (
                 format!("{}│{}", before, after),
                 dialog.scroll("instruction") as u16,
@@ -1857,6 +1862,11 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             .get(section_name)
             .map(|s| s.as_str())
             .unwrap_or("");
+        let content_real = dialog
+            .collapsed_pastes
+            .get(section_name)
+            .map(|s| s.as_str())
+            .unwrap_or(content_raw);
 
         let (render_text, content_height, scroll_offset) = if is_tools {
             // Tools section: read-only, always 1 line — shows skill label or placeholder
@@ -1867,14 +1877,16 @@ pub(super) fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             };
             (display, 1u16, 0u16)
         } else if is_focused {
-            let cursor_idx = dialog.cursor(section_name).min(content_raw.chars().count());
-            let before: String = content_raw.chars().take(cursor_idx).collect();
-            let after: String = content_raw.chars().skip(cursor_idx).collect();
+            let cursor_idx = dialog
+                .cursor(section_name)
+                .min(content_real.chars().count());
+            let before: String = content_real.chars().take(cursor_idx).collect();
+            let after: String = content_real.chars().skip(cursor_idx).collect();
             let text = format!("{}│{}", before, after);
             let max_h =
                 crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
             let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
-                content_raw,
+                content_real,
                 field_width,
             );
             // Clamp content height to available space

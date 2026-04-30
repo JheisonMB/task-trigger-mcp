@@ -266,6 +266,9 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
     let is_shift = modifiers.contains(KeyModifiers::SHIFT);
     let section_name = dialog.enabled_sections[dialog.focused_section].clone();
 
+    // Expand collapsed paste so the user can see/edit real content.
+    dialog.expand_collapsed_paste(&section_name);
+
     // ── @ file-picker intercepts keys when active ─────────────────
     if dialog.at_picker.is_some() {
         match code {
@@ -380,7 +383,9 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                         let _ = app.interactive_agents[idx].write_to_pty(b"\r");
                     }
                 }
-                app.close_simple_prompt_dialog();
+                let workdir = app.current_workdir();
+                app.prompt_builder_sessions.remove(&workdir);
+                app.discard_simple_prompt_dialog();
             }
         }
         KeyCode::Enter => {
@@ -399,7 +404,9 @@ fn handle_prompt_template_key(app: &mut App, code: KeyCode, modifiers: KeyModifi
                             let _ = app.interactive_agents[idx].write_to_pty(b"\r");
                         }
                     }
-                    app.close_simple_prompt_dialog();
+                    let workdir = app.current_workdir();
+                    app.prompt_builder_sessions.remove(&workdir);
+                    app.discard_simple_prompt_dialog();
                 }
             }
         }
@@ -2392,12 +2399,9 @@ fn find_focused_terminal(app: &App) -> Option<usize> {
 
 // ── Paste handling (bracketed paste) ─────────────────────────────────
 
-/// Handle pasted text — inserts into the active input buffer without triggering sends.
-/// Newlines are replaced with spaces to prevent accidental prompt submission.
+/// Handle pasted text — uses bracketed paste to send text to the PTY without
+/// triggering multiple Enter key presses. Preserves newlines for code/YAML/etc.
 fn handle_paste(app: &mut App, text: &str) {
-    // Replace newlines with spaces
-    let clean = text.replace('\n', " ").replace('\r', "");
-
     match app.focus {
         Focus::Agent => {
             let (vec, idx) = if let Some(split_id) = &app.active_split_id {
@@ -2423,20 +2427,22 @@ fn handle_paste(app: &mut App, text: &str) {
                         sync_terminal_warp_buffer_from_pty(app, idx, 35);
                     }
                 } else if agent.warp_mode {
-                    // Warp mode: insert into input buffer at cursor
+                    // Warp mode: insert into input buffer at cursor (preserves newlines)
                     if let Ok(mut buf) = agent.input_buffer.lock() {
                         let pos = agent.warp_cursor.min(buf.len());
-                        buf.insert_str(pos, &clean);
-                        agent.warp_cursor = pos + clean.len();
+                        buf.insert_str(pos, text);
+                        agent.warp_cursor = pos + text.len();
                     }
                 } else {
-                    // Non-warp: send directly to PTY (with newlines preserved for PTY)
-                    let _ = agent.write_to_pty(text.as_bytes());
+                    // Non-warp: use bracketed paste to preserve newlines without triggering Enter
+                    let bracketed = format!("\x1b[200~{}\x1b[201~", text);
+                    let _ = agent.write_to_pty(bracketed.as_bytes());
                 }
             }
         }
         Focus::NewAgentDialog | Focus::PromptTemplateDialog => {
-            // Insert pasted text directly into the SimplePromptDialog sections
+            // Insert pasted text into the SimplePromptDialog sections.
+            // Multi-line pastes are collapsed to a placeholder while keeping the real text.
             if let Some(dialog) = &mut app.simple_prompt_dialog {
                 if dialog.enabled_sections.len() > dialog.focused_section {
                     let section_name = dialog.enabled_sections[dialog.focused_section].clone();
@@ -2444,12 +2450,20 @@ fn handle_paste(app: &mut App, text: &str) {
                     let field_width = ((app.term_width as usize * 65 / 100).max(40))
                         .saturating_sub(4)
                         .max(10);
-                    dialog.insert_text_at_cursor(&section_name, &clean, field_width);
+                    if text.contains('\n') || text.chars().count() > 200 {
+                        // Preserve newlines for collapsed multi-line paste
+                        let clean = text.replace('\r', "");
+                        dialog.insert_collapsed_paste_at_cursor(&section_name, &clean, field_width);
+                    } else {
+                        let clean = text.replace('\n', " ").replace('\r', "");
+                        dialog.insert_text_at_cursor(&section_name, &clean, field_width);
+                    }
                 }
             }
         }
         _ => {
-            // For other contexts, simulate typing each char
+            // For other contexts, simulate typing each char (no newlines)
+            let clean = text.replace('\n', " ").replace('\r', "");
             for c in clean.chars() {
                 let _ = handle_key(app, KeyCode::Char(c), KeyModifiers::NONE);
             }

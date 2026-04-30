@@ -137,6 +137,8 @@ pub struct App {
     pub prompt_templates: PromptTemplates,
     /// Current simple prompt dialog state
     pub simple_prompt_dialog: Option<SimplePromptDialog>,
+    /// Persisted prompt-builder sessions per workdir (cleared on send).
+    pub prompt_builder_sessions: HashMap<PathBuf, dialog::PromptBuilderSession>,
     /// Whether to send OS-level desktop notifications (agent done/failed).
     pub notifications_enabled: bool,
     /// Notification service for sending cross-platform notifications.
@@ -347,6 +349,7 @@ impl App {
             prompt_templates: PromptTemplates::load_from_registry()
                 .unwrap_or_else(|_| PromptTemplates::internal_templates()),
             simple_prompt_dialog: None,
+            prompt_builder_sessions: HashMap::new(),
             notifications_enabled: true,
             notification_service: Arc::new(DefaultNotificationService),
             prev_active_run_ids: std::collections::HashSet::new(),
@@ -428,6 +431,29 @@ impl App {
 
     pub fn selected_agent(&self) -> Option<&AgentEntry> {
         self.agents.get(self.selected)
+    }
+
+    /// Return the working directory of the currently selected agent,
+    /// or the parent of the data directory as a fallback.
+    pub fn current_workdir(&self) -> PathBuf {
+        self.selected_agent()
+            .and_then(|a| match a {
+                AgentEntry::Interactive(idx) => self
+                    .interactive_agents
+                    .get(*idx)
+                    .map(|ia| PathBuf::from(&ia.working_dir)),
+                AgentEntry::Terminal(idx) => self
+                    .terminal_agents
+                    .get(*idx)
+                    .map(|ta| PathBuf::from(&ta.working_dir)),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                self.data_dir
+                    .parent()
+                    .unwrap_or(&self.data_dir)
+                    .to_path_buf()
+            })
     }
 
     pub fn focused_agent_name(&self) -> String {

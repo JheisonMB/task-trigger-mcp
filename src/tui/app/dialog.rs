@@ -613,10 +613,18 @@ impl App {
         self.new_agent_dialog = None;
     }
 
-    /// Open prompt template dialog with the specified template and optional initial content
+    /// Open prompt template dialog with the specified template and optional initial content.
+    /// Restores any persisted session for the current workdir.
     pub fn open_simple_prompt_dialog(&mut self, initial_content: Option<HashMap<String, String>>) {
         let prev_focus = self.focus;
+        let workdir = self.current_workdir();
         let mut dialog = SimplePromptDialog::new();
+
+        // Restore persisted session for this workdir if available
+        if let Some(session) = self.prompt_builder_sessions.get(&workdir) {
+            session.restore_into(&mut dialog);
+        }
+
         if let Some(content) = initial_content {
             for (section_name, section_content) in content {
                 if section_name == "instruction" {
@@ -638,18 +646,31 @@ impl App {
         self.focus = Focus::PromptTemplateDialog;
     }
 
-    /// Close simple prompt dialog
+    /// Close simple prompt dialog and persist its state for the current workdir.
     pub fn close_simple_prompt_dialog(&mut self) {
-        if let Some(dialog) = &self.simple_prompt_dialog {
+        self._close_simple_prompt_dialog(true);
+    }
+
+    /// Close simple prompt dialog without persisting its state (e.g. after sending).
+    pub fn discard_simple_prompt_dialog(&mut self) {
+        self._close_simple_prompt_dialog(false);
+    }
+
+    fn _close_simple_prompt_dialog(&mut self, persist: bool) {
+        if let Some(dialog) = self.simple_prompt_dialog.take() {
             if let Some(prev) = dialog.prev_focus {
                 self.focus = prev;
             } else {
                 self.focus = Focus::Agent;
             }
+            if persist {
+                let workdir = self.current_workdir();
+                let session = PromptBuilderSession::from_dialog(&dialog);
+                self.prompt_builder_sessions.insert(workdir, session);
+            }
         } else {
             self.focus = Focus::Agent;
         }
-        self.simple_prompt_dialog = None;
     }
 
     pub fn launch_new_agent(&mut self) -> Result<()> {
@@ -1271,6 +1292,9 @@ pub struct SimplePromptDialog {
     pub section_scrolls: HashMap<String, usize>,
     /// Active `@`-file picker (inline dropdown), if open.
     pub at_picker: Option<AtPicker>,
+    /// Collapsed paste content: placeholder text is stored in `sections`,
+    /// the real pasted content lives here and is used for building the prompt.
+    pub collapsed_pastes: HashMap<String, String>,
 }
 
 impl SimplePromptDialog {
@@ -1291,6 +1315,7 @@ impl SimplePromptDialog {
             section_cursors: cursors,
             section_scrolls: scrolls,
             at_picker: None,
+            collapsed_pastes: HashMap::new(),
         };
         dialog
             .sections
@@ -1329,7 +1354,8 @@ impl SimplePromptDialog {
         self.enabled_sections.push(unique_id.clone());
         self.sections.insert(unique_id.clone(), String::new());
         self.section_cursors.insert(unique_id.clone(), 0);
-        self.section_scrolls.insert(unique_id, 0);
+        self.section_scrolls.insert(unique_id.clone(), 0);
+        self.collapsed_pastes.remove(&unique_id);
         self.focused_section = self.enabled_sections.len() - 1;
     }
 
@@ -1340,7 +1366,8 @@ impl SimplePromptDialog {
         self.enabled_sections.push(unique_id.clone());
         self.sections.insert(unique_id.clone(), content);
         self.section_cursors.insert(unique_id.clone(), cursor_pos);
-        self.section_scrolls.insert(unique_id, 0);
+        self.section_scrolls.insert(unique_id.clone(), 0);
+        self.collapsed_pastes.remove(&unique_id);
         self.focused_section = self.enabled_sections.len() - 1;
     }
 
@@ -1351,6 +1378,7 @@ impl SimplePromptDialog {
             self.sections.remove(section_id);
             self.section_cursors.remove(section_id);
             self.section_scrolls.remove(section_id);
+            self.collapsed_pastes.remove(section_id);
             if self.focused_section > 0 {
                 self.focused_section = self.focused_section.saturating_sub(1);
             }
@@ -1460,6 +1488,14 @@ impl SimplePromptDialog {
         self.sections.insert(section_name.to_string(), content);
     }
 
+    /// Get the real content for a section, resolving any collapsed paste.
+    pub fn section_content_for_build(&self, section_id: &str) -> Option<&str> {
+        self.collapsed_pastes
+            .get(section_id)
+            .map(|s| s.as_str())
+            .or_else(|| self.sections.get(section_id).map(|s| s.as_str()))
+    }
+
     /// Build the final prompt from the filled sections with structured format
     /// Supports multiple instances of each section type
     pub fn build_prompt(&self) -> Result<String> {
@@ -1469,7 +1505,7 @@ impl SimplePromptDialog {
         let mut ctx_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("context") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
                         if ctx_count == 0 {
@@ -1496,7 +1532,7 @@ impl SimplePromptDialog {
         let mut instr_count = 0;
         for section_id in &self.enabled_sections {
             if section_id == "instruction" || section_id.starts_with("instruction_") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
                         instr_count += 1;
@@ -1515,7 +1551,7 @@ impl SimplePromptDialog {
         let mut resources_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("resources") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
                         if resources_count == 0 {
@@ -1540,7 +1576,7 @@ impl SimplePromptDialog {
         let mut examples_count = 0;
         for section_id in &self.enabled_sections {
             if section_id.starts_with("examples") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
                         if examples_count == 0 {
@@ -1565,7 +1601,7 @@ impl SimplePromptDialog {
         let mut constraints_count = 0;
         for section_id in &self.enabled_sections {
             if section_id == "constraints" || section_id.starts_with("constraints_") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
                         if constraints_count == 0 {
@@ -1590,7 +1626,7 @@ impl SimplePromptDialog {
         let mut tools_count = 0;
         for section_id in &self.enabled_sections {
             if section_id == "tools" || section_id.starts_with("tools_") {
-                if let Some(content) = self.sections.get(section_id) {
+                if let Some(content) = self.section_content_for_build(section_id) {
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
@@ -1853,6 +1889,89 @@ impl SimplePromptDialog {
         self.section_cursors
             .insert(section_id.to_string(), cur + text.chars().count());
         self.update_section_scroll(section_id, field_width);
+    }
+
+    /// Insert pasted text. If it spans multiple lines, collapse it to a
+    /// `[Pasted ~N lines]` placeholder while keeping the real text for `build_prompt`.
+    pub fn insert_collapsed_paste_at_cursor(
+        &mut self,
+        section_id: &str,
+        text: &str,
+        field_width: usize,
+    ) {
+        let line_count = text.lines().count();
+        // Collapse if more than one line or very long single line (>200 chars)
+        if line_count > 1 || text.chars().count() > 200 {
+            // Expand any existing collapsed paste first so we don't lose data
+            self.expand_collapsed_paste(section_id);
+            let content = self.get_section_content(section_id);
+            let chars: Vec<char> = content.chars().collect();
+            let cur = self.cursor(section_id).min(chars.len());
+            let before: String = chars[..cur].iter().collect();
+            let after: String = chars[cur..].iter().collect();
+
+            let real_content = format!("{}{}{}", before, text, after);
+            let placeholder = format!("[Pasted ~{} lines]", line_count.max(1));
+            let display_content = format!("{}{}{}", before, placeholder, after);
+
+            self.collapsed_pastes
+                .insert(section_id.to_string(), real_content);
+            self.set_section_content(section_id, display_content);
+            self.section_cursors
+                .insert(section_id.to_string(), cur + placeholder.chars().count());
+            self.update_section_scroll(section_id, field_width);
+        } else {
+            // Short paste: insert normally
+            self.insert_text_at_cursor(section_id, text, field_width);
+        }
+    }
+
+    /// Expand a collapsed paste for the given section, restoring real content.
+    pub fn expand_collapsed_paste(&mut self, section_id: &str) {
+        if let Some(real) = self.collapsed_pastes.remove(section_id) {
+            self.set_section_content(section_id, real);
+        }
+    }
+
+}
+
+/// Snapshot of `SimplePromptDialog` state used to persist the prompt builder
+/// per workdir across openings within the same canopy session.
+#[derive(Clone)]
+pub struct PromptBuilderSession {
+    pub sections: HashMap<String, String>,
+    pub enabled_sections: Vec<String>,
+    pub focused_section: usize,
+    pub section_counters: HashMap<String, usize>,
+    pub section_cursors: HashMap<String, usize>,
+    pub section_scrolls: HashMap<String, usize>,
+    pub collapsed_pastes: HashMap<String, String>,
+}
+
+impl PromptBuilderSession {
+    pub fn from_dialog(dialog: &SimplePromptDialog) -> Self {
+        Self {
+            sections: dialog.sections.clone(),
+            enabled_sections: dialog.enabled_sections.clone(),
+            focused_section: dialog.focused_section,
+            section_counters: dialog.section_counters.clone(),
+            section_cursors: dialog.section_cursors.clone(),
+            section_scrolls: dialog.section_scrolls.clone(),
+            collapsed_pastes: dialog.collapsed_pastes.clone(),
+        }
+    }
+
+    pub fn restore_into(&self, dialog: &mut SimplePromptDialog) {
+        dialog.sections = self.sections.clone();
+        dialog.enabled_sections = self.enabled_sections.clone();
+        dialog.focused_section = self.focused_section;
+        dialog.section_counters = self.section_counters.clone();
+        dialog.section_cursors = self.section_cursors.clone();
+        dialog.section_scrolls = self.section_scrolls.clone();
+        dialog.collapsed_pastes = self.collapsed_pastes.clone();
+        // Reset transient UI state
+        dialog.picker_mode = SectionPickerMode::None;
+        dialog.at_picker = None;
     }
 }
 
