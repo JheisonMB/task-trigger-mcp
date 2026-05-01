@@ -1,5 +1,5 @@
 use crate::tui::agent::ScreenSnapshot;
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;

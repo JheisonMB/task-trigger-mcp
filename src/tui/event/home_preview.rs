@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 // ── Home: screensaver — arrows enter Preview ────────────────────────
 

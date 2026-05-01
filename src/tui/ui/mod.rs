@@ -11,7 +11,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::Frame;
 
-use super::app::App;
+use super::app::types::App;
 
 // ── Shared palette ──────────────────────────────────────────────
 

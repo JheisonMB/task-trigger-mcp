@@ -1,5 +1,5 @@
-use super::super::AgentEntry;
-use super::super::App;
+use super::super::types::AgentEntry;
+use super::super::types::App;
 use super::new_agent::{BackgroundTrigger, NewAgentDialog, NewTaskType};
 use super::prompt::SimplePromptDialog;
 use crate::application::ports::AgentRepository;
@@ -83,7 +83,7 @@ impl App {
 
         dialog.refresh_model_suggestions();
         self.new_agent_dialog = Some(dialog);
-        self.focus = super::super::Focus::NewAgentDialog;
+        self.focus = super::super::types::Focus::NewAgentDialog;
     }
 
     pub fn open_new_agent_dialog(&mut self) {
@@ -104,7 +104,7 @@ impl App {
 
         self.new_agent_dialog = Some(NewAgentDialog::new(agent_dir));
         self.new_agent_dialog.as_mut().unwrap().prev_focus = Some(prev_focus);
-        self.focus = super::super::Focus::NewAgentDialog;
+        self.focus = super::super::types::Focus::NewAgentDialog;
     }
 
     pub fn close_new_agent_dialog(&mut self) {
@@ -112,10 +112,10 @@ impl App {
             if let Some(prev) = dialog.prev_focus {
                 self.focus = prev;
             } else {
-                self.focus = super::super::Focus::Home;
+                self.focus = super::super::types::Focus::Home;
             }
         } else {
-            self.focus = super::super::Focus::Home;
+            self.focus = super::super::types::Focus::Home;
         }
         self.new_agent_dialog = None;
     }
@@ -153,7 +153,7 @@ impl App {
         }
         dialog.prev_focus = Some(prev_focus);
         self.simple_prompt_dialog = Some(dialog);
-        self.focus = super::super::Focus::PromptTemplateDialog;
+        self.focus = super::super::types::Focus::PromptTemplateDialog;
     }
 
     /// Close simple prompt dialog and persist its state for the current workdir.
@@ -171,7 +171,7 @@ impl App {
             if let Some(prev) = dialog.prev_focus {
                 self.focus = prev;
             } else {
-                self.focus = super::super::Focus::Agent;
+                self.focus = super::super::types::Focus::Agent;
             }
             if persist {
                 let workdir = self.current_workdir();
@@ -179,7 +179,7 @@ impl App {
                 self.prompt_builder_sessions.insert(workdir, session);
             }
         } else {
-            self.focus = super::super::Focus::Agent;
+            self.focus = super::super::types::Focus::Agent;
         }
     }
 
@@ -217,7 +217,7 @@ impl App {
             }
             self.new_agent_dialog = None;
             self.refresh_agents()?;
-            self.focus = prev_focus.unwrap_or(super::super::Focus::Preview);
+            self.focus = prev_focus.unwrap_or(super::super::types::Focus::Preview);
             return Ok(());
         }
 
@@ -263,7 +263,7 @@ impl App {
         }
 
         // All new sessions start in focus mode
-        self.focus = super::super::Focus::Agent;
+        self.focus = super::super::types::Focus::Agent;
         Ok(())
     }
 

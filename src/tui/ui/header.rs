@@ -8,7 +8,7 @@ use ratatui::Frame;
 
 use super::{ACCENT, ERROR_COLOR};
 use crate::shared::banner::BANNER_GRADIENT;
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 use crate::tui::whimsg::TITLE;
 
 /// Return the first `n` chars of `s`, respecting char boundaries.

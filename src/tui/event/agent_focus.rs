@@ -7,7 +7,7 @@ use super::terminal_warp::{
     handle_terminal_direct_pty_key, handle_terminal_warp_key, record_terminal_command,
 };
 use crate::tui::agent::key_to_bytes;
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 pub fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     // Suggestion picker intercepts keys when open (terminal autocomplete)

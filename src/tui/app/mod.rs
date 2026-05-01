@@ -3,15 +3,14 @@ mod data;
 pub mod dialog;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::application::notification_service::{DefaultNotificationService, NotificationService};
+use crate::application::notification_service::DefaultNotificationService;
 use crate::application::ports::AgentRepository;
 use crate::db::Database;
-use crate::domain::models::{Agent, RunLog};
 
 use super::agent::InteractiveAgent;
 use super::context_transfer::{
@@ -19,275 +18,21 @@ use super::context_transfer::{
     ContextTransferStep,
 };
 use crate::tui::prompt_templates::PromptTemplates;
-use dialog::SimplePromptDialog;
 
 pub(crate) use data::send_mcp_task_run;
-pub use dialog::NewAgentDialog;
 pub use dialog::{BackgroundTrigger, NewTaskMode, NewTaskType};
 
 // ── Types ───────────────────────────────────────────────────────
 
-/// Unified entry in the sidebar.
-#[allow(clippy::large_enum_variant)]
-pub enum AgentEntry {
-    Agent(Agent),
-    Interactive(usize), // index into App::interactive_agents
-    Terminal(usize),    // index into App::terminal_agents
-    Group(usize),       // index into App::split_groups
-}
+pub mod session_resume;
+pub mod terminal_search;
+pub mod types;
+pub mod utils;
 
-impl AgentEntry {
-    pub fn id<'a>(&'a self, app: &'a App) -> &'a str {
-        match self {
-            Self::Agent(a) => &a.id,
-            Self::Interactive(idx) => app.interactive_agents.get(*idx).map_or("?", |a| &a.name),
-            Self::Terminal(idx) => app.terminal_agents.get(*idx).map_or("?", |a| &a.name),
-            Self::Group(idx) => app.split_groups.get(*idx).map_or("?", |g| &g.id),
-        }
-    }
-}
-
-/// Which panel has focus.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Focus {
-    Home,
-    Preview,
-    NewAgentDialog,
-    Agent,
-    ContextTransfer,
-    PromptTemplateDialog,
-}
-
-#[derive(Clone, Copy)]
-enum ContextTransferSource {
-    Interactive(usize),
-    Terminal(usize),
-}
-
-// ── App struct ──────────────────────────────────────────────────
-
-/// Main application state.
-pub struct App {
-    pub db: Arc<Database>,
-    pub data_dir: PathBuf,
-
-    // Data cache (refreshed every tick)
-    pub agents: Vec<AgentEntry>,
-    pub active_runs: HashMap<String, RunLog>,
-    pub recent_runs: Vec<RunLog>,
-    pub interactive_agents: Vec<InteractiveAgent>,
-    /// Raw terminal sessions (no AI CLI).
-    pub terminal_agents: Vec<InteractiveAgent>,
-
-    // Split group state
-    pub split_groups: Vec<crate::domain::models::SplitGroup>,
-    /// ID of the split group currently being viewed (if any).
-    pub active_split_id: Option<String>,
-    /// True = right/bottom panel is focused in split view.
-    pub split_right_focused: bool,
-    /// Whether the split picker overlay is open.
-    pub split_picker_open: bool,
-    pub split_picker_idx: usize,
-    pub split_picker_orientation: crate::domain::models::SplitOrientation,
-    /// (name, type_label) for each available session in the picker.
-    pub split_picker_sessions: Vec<(String, String)>,
-
-    // Daemon info
-    pub daemon_running: bool,
-    pub daemon_pid: Option<u32>,
-    pub daemon_version: String,
-
-    // UI state
-    pub selected: usize,
-    pub focus: Focus,
-    pub log_content: String,
-    pub log_scroll: u16,
-    pub running: bool,
-    pub new_agent_dialog: Option<NewAgentDialog>,
-    pub quit_confirm: bool,
-
-    // Brian's Brain automaton (sidebar decoration)
-    pub sidebar_brain: Option<super::brians_brain::BriansBrain>,
-    // Brian's Brain for home banner background
-    pub home_brain: Option<super::brians_brain::BriansBrain>,
-
-    // System monitoring (updated asynchronously to avoid UI freezes)
-    pub system_info: crate::system::SystemInfo,
-    system_info_rx: std::sync::mpsc::Receiver<crate::system::SystemInfo>,
-    pub last_system_update: std::time::Instant,
-    pub process_start_time: std::time::Instant,
-
-    // Layout state
-    pub sidebar_click_map: Vec<(usize, u16, u16)>,
-    pub sidebar_visible: bool,
-    pub term_width: u16,
-    pub show_legend: bool,
-    pub show_copied: bool,
-    pub copied_at: std::time::Instant,
-    pub last_scroll_at: std::time::Instant,
-    pub last_panel_inner: (u16, u16),
-    pub whimsg: super::whimsg::Whimsg,
-    /// Hash of the last log chunk scanned for whimsg triggers — avoids re-firing
-    /// on the same content every tick.
-    whimsg_last_log_hash: u64,
-    pub context_transfer_modal: Option<ContextTransferModal>,
-    pub context_transfer_config: ContextTransferConfig,
-    /// Prompt templates loaded from registry
-    #[allow(dead_code)]
-    pub prompt_templates: PromptTemplates,
-    /// Current simple prompt dialog state
-    pub simple_prompt_dialog: Option<SimplePromptDialog>,
-    /// Persisted prompt-builder sessions per workdir (cleared on send).
-    pub prompt_builder_sessions: HashMap<PathBuf, dialog::PromptBuilderSession>,
-    /// Whether to send OS-level desktop notifications (agent done/failed).
-    pub notifications_enabled: bool,
-    /// Notification service for sending cross-platform notifications.
-    pub notification_service: Arc<dyn NotificationService>,
-    /// IDs of runs that were active on the previous refresh tick.
-    prev_active_run_ids: std::collections::HashSet<String>,
-    /// Tick counter for animation (increments every refresh)
-    pub animation_tick: u32,
-    /// Preferred unit for sysinfo temperature labels.
-    pub temperature_unit: crate::domain::canopy_config::TemperatureUnit,
-    /// Terminal autocomplete suggestion picker (shown on Tab).
-    pub suggestion_picker: Option<super::terminal_history::SuggestionPicker>,
-    /// Per-session terminal histories (loaded on demand, cached in memory).
-    pub terminal_histories: HashMap<String, super::terminal_history::SessionHistory>,
-    /// Terminal scrollback search state (Ctrl+F).
-    pub terminal_search: Option<TerminalSearch>,
-    /// CLI launch usage counters (persisted to disk).
-    pub cli_usage: crate::domain::usage_stats::CliUsage,
-}
-
-fn args_contain_flag(args: &str, flag: &str) -> bool {
-    args.split_whitespace().any(|arg| arg == flag)
-}
-
-fn append_flag_if_missing(
-    base_args: Option<&str>,
-    yolo_flag: Option<&str>,
-    should_include_yolo: bool,
-) -> Option<String> {
-    let base = base_args.map(str::trim).filter(|args| !args.is_empty());
-
-    match (base, yolo_flag, should_include_yolo) {
-        (Some(args), Some(flag), true) if !args_contain_flag(args, flag) => {
-            Some(format!("{args} {flag}"))
-        }
-        (Some(args), _, _) => Some(args.to_string()),
-        (None, Some(flag), true) => Some(flag.to_string()),
-        (None, _, _) => None,
-    }
-}
-
-fn build_resumed_session_args(
-    session: &crate::db::session::InteractiveSession,
-    interactive_args: Option<&str>,
-    yolo_flag: Option<&str>,
-) -> Option<String> {
-    let original_args = session
-        .args
-        .as_deref()
-        .map(str::trim)
-        .filter(|args| !args.is_empty());
-    let inter_args = interactive_args
-        .map(str::trim)
-        .filter(|args| !args.is_empty());
-    let had_yolo = yolo_flag
-        .is_some_and(|flag| original_args.is_some_and(|args| args_contain_flag(args, flag)));
-
-    // Prefer original args (they were already constructed by launch_interactive).
-    // If none were persisted (legacy session), fall back to interactive_args from config.
-    append_flag_if_missing(original_args.or(inter_args), yolo_flag, had_yolo)
-}
-
-/// Search state for terminal scrollback.
-pub struct TerminalSearch {
-    /// Index of the terminal agent being searched.
-    pub agent_idx: usize,
-    /// Whether this is an interactive or terminal agent.
-    pub is_terminal: bool,
-    /// Current search query.
-    pub query: String,
-    /// Row indices (in the vt100 screen) where matches were found.
-    pub match_rows: Vec<usize>,
-    /// Current match index (cycles through match_rows).
-    pub current_match: usize,
-}
-
-impl TerminalSearch {
-    pub fn new(idx: usize) -> Self {
-        Self {
-            agent_idx: idx,
-            is_terminal: true,
-            query: String::new(),
-            match_rows: Vec::new(),
-            current_match: 0,
-        }
-    }
-
-    pub fn new_interactive(idx: usize) -> Self {
-        Self {
-            agent_idx: idx,
-            is_terminal: false,
-            query: String::new(),
-            match_rows: Vec::new(),
-            current_match: 0,
-        }
-    }
-
-    /// Search the agent's output for the query and populate match_rows.
-    pub fn search(&mut self, agent: &InteractiveAgent) {
-        self.match_rows.clear();
-        if self.query.is_empty() {
-            return;
-        }
-        let output = agent.output();
-        let query_lower = self.query.to_lowercase();
-        for (i, line) in output.lines().enumerate() {
-            if line.to_lowercase().contains(&query_lower) {
-                self.match_rows.push(i);
-            }
-        }
-        if !self.match_rows.is_empty() {
-            self.current_match = self.current_match.min(self.match_rows.len() - 1);
-        }
-    }
-
-    /// Jump to the current match by setting the agent's scroll_offset.
-    pub fn jump_to_match(&self, agent: &mut InteractiveAgent) {
-        if let Some(&row) = self.match_rows.get(self.current_match) {
-            let total = agent.total_depth();
-            let (_, screen_rows) = agent
-                .vt
-                .lock()
-                .map(|vt| vt.screen().size())
-                .unwrap_or((40, 80));
-            let screen_h = screen_rows as usize;
-            // Convert absolute row to scroll offset from bottom
-            if total > screen_h && row < total.saturating_sub(screen_h) {
-                agent.scroll_offset = total - screen_h - row;
-            } else {
-                agent.scroll_offset = 0;
-            }
-        }
-    }
-
-    pub fn next_match(&mut self) {
-        if !self.match_rows.is_empty() {
-            self.current_match = (self.current_match + 1) % self.match_rows.len();
-        }
-    }
-
-    pub fn prev_match(&mut self) {
-        if !self.match_rows.is_empty() {
-            self.current_match = self
-                .current_match
-                .checked_sub(1)
-                .unwrap_or(self.match_rows.len() - 1);
-        }
-    }
-}
+pub(crate) use session_resume::build_resumed_session_args;
+pub use terminal_search::TerminalSearch;
+pub(crate) use types::ContextTransferSource;
+pub use types::{AgentEntry, App, Focus};
 
 impl App {
     pub fn new(db: Arc<Database>, data_dir: &Path) -> Result<Self> {
@@ -1101,33 +846,6 @@ impl App {
         }
     }
 }
-
-// ── Free functions ──────────────────────────────────────────────
-
-pub fn relative_time(dt: &DateTime<Utc>) -> String {
-    let delta = Utc::now().signed_duration_since(*dt);
-    let secs = delta.num_seconds();
-    if secs < 60 {
-        "just now".to_string()
-    } else if secs < 3600 {
-        format!("{}m ago", secs / 60)
-    } else if secs < 86400 {
-        format!("{}h ago", secs / 3600)
-    } else {
-        format!("{}d ago", secs / 86400)
-    }
-}
-
-pub(super) fn tail_lines(content: &str, n: usize) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].join("\n")
-}
-
-pub(super) fn is_process_running(pid: u32) -> bool {
-    crate::daemon::process::is_process_running(pid)
-}
-
 #[cfg(test)]
 mod tests {
     use super::build_resumed_session_args;

@@ -1,4 +1,4 @@
-use super::{AgentEntry, App, Focus};
+use super::types::{AgentEntry, App, Focus};
 use crate::tui::agent::{AgentStatus, InteractiveAgent};
 
 /// Strip ANSI escape sequences from a string for plain-text display.

@@ -5,7 +5,7 @@ use ratatui::style::Color;
 use crate::domain::models::Cli;
 use crate::domain::models_db::{self, ModelCatalog, ModelEntry};
 
-use crate::tui::app::Focus;
+use crate::tui::app::types::Focus;
 
 /// Type of background_agent to create.
 #[derive(Clone, Copy, PartialEq, Eq)]

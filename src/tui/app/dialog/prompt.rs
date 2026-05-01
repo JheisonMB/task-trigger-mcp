@@ -2,7 +2,7 @@ use anyhow::Result;
 use ratatui::style::Color;
 
 use super::at_picker::AtPicker;
-use crate::tui::app::Focus;
+use crate::tui::app::types::Focus;
 use std::collections::HashMap;
 
 /// Picker state for adding/removing sections

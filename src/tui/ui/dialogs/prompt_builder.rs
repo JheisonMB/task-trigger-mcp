@@ -5,7 +5,7 @@ use ratatui::Frame;
 
 use super::{centered_rect, ACCENT, DIM};
 use crate::tui::app::dialog::SimplePromptDialog;
-use crate::tui::app::{AgentEntry, App};
+use crate::tui::app::types::{AgentEntry, App};
 
 #[allow(unused_imports)]
 use super::{BG_SELECTED, ERROR_COLOR, INTERACTIVE_COLOR};

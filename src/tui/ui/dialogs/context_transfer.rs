@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, truncate_str, ACCENT, DIM};
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 use crate::tui::context_transfer::ContextTransferStep;
 
 pub fn draw_context_transfer_modal(frame: &mut Frame, app: &App) {

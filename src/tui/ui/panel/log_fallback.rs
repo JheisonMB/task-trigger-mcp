@@ -1,4 +1,4 @@
-use crate::tui::app::{App, Focus};
+use crate::tui::app::types::{App, Focus};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{

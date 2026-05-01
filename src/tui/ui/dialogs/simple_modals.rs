@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, ACCENT, DIM};
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 
 pub fn draw_quit_confirm(frame: &mut Frame) {
     let text = "Press y/Enter to quit, any key to cancel";

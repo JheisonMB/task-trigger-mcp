@@ -9,7 +9,7 @@ use ratatui::Frame;
 use super::{
     ACCENT, DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING,
 };
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 pub mod details;
 pub mod home;

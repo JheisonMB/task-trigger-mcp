@@ -2,7 +2,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
 
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 pub fn handle_prompt_template_key(
     app: &mut App,

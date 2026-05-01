@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, ACCENT, DIM};
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 
 pub fn draw_split_picker(frame: &mut Frame, app: &App) {
     if !app.split_picker_open {
@@ -14,10 +14,12 @@ pub fn draw_split_picker(frame: &mut Frame, app: &App) {
 
     let sessions = &app.split_picker_sessions;
     let current_name = match app.selected_agent() {
-        Some(crate::tui::app::AgentEntry::Interactive(idx)) => {
+        Some(crate::tui::app::types::AgentEntry::Interactive(idx)) => {
             app.interactive_agents[*idx].name.clone()
         }
-        Some(crate::tui::app::AgentEntry::Terminal(idx)) => app.terminal_agents[*idx].name.clone(),
+        Some(crate::tui::app::types::AgentEntry::Terminal(idx)) => {
+            app.terminal_agents[*idx].name.clone()
+        }
         _ => String::new(),
     };
 

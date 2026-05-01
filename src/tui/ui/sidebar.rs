@@ -9,7 +9,7 @@ use ratatui::Frame;
 use super::{last_two_segments, truncate_str, ACCENT, BG_SELECTED, DIM, INTERACTIVE_COLOR};
 use super::{STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 use crate::tui::agent::AgentStatus;
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 use ratatui::style::Color;
 
 pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {

@@ -7,7 +7,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::DIM;
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     let hints = match app.focus {

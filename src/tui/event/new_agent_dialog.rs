@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::KeyCode;
 
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 
 // ── Dialog: new agent creation ──────────────────────────────────────
 //

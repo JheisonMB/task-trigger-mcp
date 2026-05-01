@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use super::search_picker::resolve_cd_path;
 use crate::tui::agent::key_to_bytes;
-use crate::tui::app::{App, TerminalSearch};
+use crate::tui::app::terminal_search::TerminalSearch;
+use crate::tui::app::types::App;
 
 // ── Terminal warp-mode key handling ─────────────────────────────────
 

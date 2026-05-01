@@ -1,5 +1,5 @@
 use crate::shared::banner::BANNER_GRADIENT;
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 use crate::tui::brians_brain::{BriansBrain, CellState};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};

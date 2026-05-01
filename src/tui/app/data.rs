@@ -2,7 +2,8 @@ use anyhow::Result;
 
 use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
 
-use super::{is_process_running, relative_time, tail_lines, AgentEntry, App};
+use super::types::{AgentEntry, App};
+use super::utils::{is_process_running, relative_time, tail_lines};
 
 impl App {
     pub(super) fn refresh_daemon_status(&mut self) {

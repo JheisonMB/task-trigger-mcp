@@ -3,7 +3,7 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use super::context_transfer::resolve_session;
 use super::handle_key;
 use super::terminal_warp::sync_terminal_warp_buffer_from_pty;
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 
 // ── Paste handling (bracketed paste) ─────────────────────────────────
 

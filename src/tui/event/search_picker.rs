@@ -2,7 +2,7 @@ use anyhow::Result;
 use ratatui::crossterm::event::KeyCode;
 use std::path::PathBuf;
 
-use crate::tui::app::{AgentEntry, App};
+use crate::tui::app::types::{AgentEntry, App};
 
 // ── Suggestion picker (terminal Tab autocomplete) ───────────────────
 

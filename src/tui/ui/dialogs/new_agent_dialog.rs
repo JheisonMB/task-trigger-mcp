@@ -4,7 +4,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use super::{centered_rect, truncate_str, DIM};
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 
 pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let Some(dialog) = &app.new_agent_dialog else {

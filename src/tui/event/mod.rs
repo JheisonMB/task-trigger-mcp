@@ -14,7 +14,7 @@ use ratatui::crossterm::event::{
 };
 use std::time::Duration;
 
-use crate::tui::app::{AgentEntry, App, Focus};
+use crate::tui::app::types::{AgentEntry, App, Focus};
 use crate::tui::ui;
 
 use agent_focus::handle_agent_key;

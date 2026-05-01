@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use crate::db::Database;
 
-use app::App;
+use crate::tui::app::types::App;
 use event::run_event_loop;
 
 /// Entry point for `canopy tui`.

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::KeyCode;
 
-use crate::tui::app::App;
+use crate::tui::app::types::App;
 use crate::tui::context_transfer::ContextTransferStep;
 
 // ── Context Transfer modal ───────────────────────────────────────
@@ -16,7 +16,7 @@ pub fn ctx_rebuild_preview(app: &mut App) {
 
 pub fn handle_context_transfer_key(app: &mut App, code: KeyCode) -> Result<()> {
     let Some(modal) = app.context_transfer_modal.as_ref() else {
-        app.focus = crate::tui::app::Focus::Agent;
+        app.focus = crate::tui::app::types::Focus::Agent;
         return Ok(());
     };
 
