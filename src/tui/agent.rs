@@ -1310,6 +1310,99 @@ impl InteractiveAgent {
             .unwrap_or(false)
     }
 
+    /// Forward a mouse event to the PTY.
+    ///
+    /// Checks the child's mouse protocol mode. If mouse reporting is
+    /// active, sends the event in the correct encoding (SGR or X10).
+    /// Returns `true` if the event was forwarded, `false` if no mouse
+    /// protocol is active (caller should handle the event internally).
+    pub fn forward_mouse(
+        &self,
+        kind: ratatui::crossterm::event::MouseEventKind,
+        button: ratatui::crossterm::event::MouseButton,
+        col: u16,
+        row: u16,
+    ) -> Result<bool> {
+        let (mode, encoding, _cols) = {
+            let vt = self.vt.lock().map_err(|_| anyhow::anyhow!("vt lock"))?;
+            let s = vt.screen();
+            (
+                s.mouse_protocol_mode(),
+                s.mouse_protocol_encoding(),
+                s.size().1,
+            )
+        };
+
+        use vt100::MouseProtocolEncoding as MPE;
+        use vt100::MouseProtocolMode as MPM;
+
+        match mode {
+            MPM::None => Ok(false),
+            _ => {
+                let (btn_code, is_release) = match kind {
+                    ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Left,
+                    ) => (0u8, false),
+                    ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Middle,
+                    ) => (1, false),
+                    ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Right,
+                    ) => (2, false),
+                    ratatui::crossterm::event::MouseEventKind::Up(_) => (3, true),
+                    ratatui::crossterm::event::MouseEventKind::Drag(_) => {
+                        let base = match button {
+                            ratatui::crossterm::event::MouseButton::Left => 0,
+                            ratatui::crossterm::event::MouseButton::Middle => 1,
+                            ratatui::crossterm::event::MouseButton::Right => 2,
+                        };
+                        (base + 32, false)
+                    }
+                    ratatui::crossterm::event::MouseEventKind::Moved => {
+                        return Ok(false);
+                    }
+                    ratatui::crossterm::event::MouseEventKind::ScrollUp => (64, false),
+                    ratatui::crossterm::event::MouseEventKind::ScrollDown => (65, false),
+                    _ => return Ok(false),
+                };
+
+                let x = col + 1;
+                let y = row + 1;
+
+                let seq = match encoding {
+                    MPE::Sgr => {
+                        let term = if is_release { 'm' } else { 'M' };
+                        format!("\x1b[<{};{};{}{}", btn_code, x, y, term).into_bytes()
+                    }
+                    _ => {
+                        if is_release {
+                            vec![
+                                0x1b,
+                                b'[',
+                                b'M',
+                                (3 + 32) as u8,
+                                (x as u8).saturating_add(32),
+                                (y as u8).saturating_add(32),
+                            ]
+                        } else {
+                            vec![
+                                0x1b,
+                                b'[',
+                                b'M',
+                                btn_code.wrapping_add(32),
+                                (x as u8).saturating_add(32),
+                                (y as u8).saturating_add(32),
+                            ]
+                        }
+                    }
+                };
+
+                self.write_to_pty(&seq)?;
+                Ok(true)
+            }
+        }
+    }
+
     /// Forward a mouse scroll event to the PTY.
     ///
     /// Checks the child's mouse protocol mode.  If mouse reporting is
