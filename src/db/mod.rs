@@ -110,4 +110,9 @@ pub mod session;
 pub mod state;
 
 #[cfg(test)]
+pub use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
+#[cfg(test)]
+pub use session::{InteractiveSession, TerminalSession};
+
+#[cfg(test)]
 mod tests;

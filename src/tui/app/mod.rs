@@ -1131,7 +1131,7 @@ pub(super) fn is_process_running(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::build_resumed_session_args;
-    use crate::db::InteractiveSession;
+    use crate::db::session::InteractiveSession;
 
     #[test]
     fn test_yolo_mode_preservation_in_session_relaunch() {
