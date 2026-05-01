@@ -1,0 +1,890 @@
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::Frame;
+
+use super::{centered_rect, ACCENT, DIM};
+use crate::tui::app::dialog::SimplePromptDialog;
+use crate::tui::app::{AgentEntry, App};
+
+#[allow(unused_imports)]
+use super::{BG_SELECTED, ERROR_COLOR, INTERACTIVE_COLOR};
+
+// Old function removed - using simple prompt dialog instead
+
+fn draw_section_picker_modal(
+    frame: &mut Frame,
+    app: &App,
+    accent: Color,
+    mode: &crate::tui::app::dialog::SectionPickerMode,
+) {
+    use crate::tui::app::dialog::SectionPickerMode;
+
+    let Some(dialog) = &app.simple_prompt_dialog else {
+        return;
+    };
+
+    match mode {
+        SectionPickerMode::AddSection { selected } => {
+            let addable = dialog.get_addable_sections();
+            let height = (addable.len() as u16 + 4).min(15);
+            let area = centered_rect(50, height, frame.area());
+            frame.render_widget(Clear, area);
+
+            let title = " Add Section ";
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            for (y_pos, (i, (_, label))) in (inner.y..).zip(addable.iter().enumerate()) {
+                let is_selected = i == *selected;
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let line = Line::from(vec![Span::styled(format!("  {} ", label), style)]);
+                let line_area = ratatui::layout::Rect {
+                    x: inner.x,
+                    y: y_pos,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame.render_widget(Paragraph::new(line), line_area);
+            }
+
+            let hint = Line::from(vec![
+                Span::styled("↑↓ ", Style::default().fg(DIM)),
+                Span::styled("select  ", Style::default().fg(Color::White)),
+                Span::styled("c ", Style::default().fg(DIM)),
+                Span::styled("custom  ", Style::default().fg(Color::White)),
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("add  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            let hint_area = ratatui::layout::Rect {
+                x: inner.x,
+                y: inner.y + inner.height.saturating_sub(1),
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(hint), hint_area);
+        }
+        SectionPickerMode::AddCustom { input } => {
+            let area = centered_rect(50, 6, frame.area());
+            frame.render_widget(Clear, area);
+
+            let title = " Custom Section ";
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let label_line = Line::from(vec![Span::styled("Name: ", Style::default().fg(accent))]);
+            let label_area = ratatui::layout::Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(label_line), label_area);
+
+            let mut display = input.clone();
+            display.push('│');
+            let input_line = Line::from(vec![Span::styled(
+                display,
+                Style::default().fg(ACCENT).bg(Color::Rgb(20, 35, 20)),
+            )]);
+            let input_area = ratatui::layout::Rect {
+                x: inner.x + 1,
+                y: inner.y + 1,
+                width: inner.width - 2,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(input_line), input_area);
+
+            let hint = Line::from(vec![
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("add  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            let hint_area = ratatui::layout::Rect {
+                x: inner.x,
+                y: inner.y + 3,
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(hint), hint_area);
+        }
+        SectionPickerMode::RemoveSection { selected } => {
+            let removable = dialog.get_removable_sections();
+            let height = (removable.len() as u16 + 4).min(15);
+            let area = centered_rect(50, height, frame.area());
+            frame.render_widget(Clear, area);
+
+            let title = " Remove Section ";
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            for (y_pos, (i, (_, display_label))) in (inner.y..).zip(removable.iter().enumerate()) {
+                let is_selected = i == *selected;
+
+                let style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(ERROR_COLOR)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let line = Line::from(vec![Span::styled(format!("  {} ", display_label), style)]);
+                let line_area = ratatui::layout::Rect {
+                    x: inner.x,
+                    y: y_pos,
+                    width: inner.width,
+                    height: 1,
+                };
+                frame.render_widget(Paragraph::new(line), line_area);
+            }
+
+            let hint = Line::from(vec![
+                Span::styled("↑↓ ", Style::default().fg(DIM)),
+                Span::styled("select  ", Style::default().fg(Color::White)),
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("remove  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            let hint_area = ratatui::layout::Rect {
+                x: inner.x,
+                y: inner.y + inner.height.saturating_sub(1),
+                width: inner.width,
+                height: 1,
+            };
+            frame.render_widget(Paragraph::new(hint), hint_area);
+        }
+        SectionPickerMode::SkillsPicker {
+            selected, entries, ..
+        } => {
+            let height = (entries.len() as u16 + 5).min(16);
+            let area = centered_rect(55, height, frame.area());
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Tools — Pick a Skill ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(10, 20, 30)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            if entries.is_empty() {
+                let msg = Line::from(vec![Span::styled(
+                    "  No skills found",
+                    Style::default().fg(Color::DarkGray),
+                )]);
+                frame.render_widget(
+                    Paragraph::new(msg),
+                    ratatui::layout::Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            } else {
+                for (y_pos, (i, (_label, raw_name, prefix))) in
+                    (inner.y..).zip(entries.iter().enumerate())
+                {
+                    if y_pos >= inner.y + inner.height.saturating_sub(1) {
+                        break;
+                    }
+                    let is_selected = i == *selected;
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    // Picker shows [prefix]:name for clarity (skill vs global)
+                    let display = format!("  [{prefix}]:{raw_name} ");
+                    let line = Line::from(vec![Span::styled(display, style)]);
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        ratatui::layout::Rect {
+                            x: inner.x,
+                            y: y_pos,
+                            width: inner.width,
+                            height: 1,
+                        },
+                    );
+                }
+            }
+
+            let hint = Line::from(vec![
+                Span::styled("↑↓ ", Style::default().fg(DIM)),
+                Span::styled("select  ", Style::default().fg(Color::White)),
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("add  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(hint),
+                ratatui::layout::Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height.saturating_sub(1),
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        }
+        SectionPickerMode::None => {}
+    }
+}
+
+/// Generate a top border line with title dynamically based on width
+fn generate_top_border(title: &str, width: u16, style: Style) -> Line<'static> {
+    let title_with_spaces = format!(" {} ", title);
+    let available_width = width.saturating_sub(title_with_spaces.len() as u16 + 2);
+    let left_dashes = available_width / 2;
+    let right_dashes = available_width - left_dashes;
+
+    let border = format!(
+        "┌{}{}{}┐",
+        "─".repeat(left_dashes as usize),
+        title_with_spaces,
+        "─".repeat(right_dashes as usize)
+    );
+    Line::from(vec![Span::styled(border, style)])
+}
+
+/// Generate a bottom border line dynamically based on width
+fn generate_bottom_border(width: u16, style: Style) -> Line<'static> {
+    let border = format!("└{}┘", "─".repeat((width - 2) as usize));
+    Line::from(vec![Span::styled(border, style)])
+}
+
+/// Inline `@`-file picker — a compact dropdown below the dialog box.
+fn draw_at_picker_dropdown(
+    frame: &mut Frame,
+    dialog_area: ratatui::layout::Rect,
+    anchor_area: ratatui::layout::Rect,
+    accent: Color,
+    dialog: &SimplePromptDialog,
+) {
+    let Some(picker) = &dialog.at_picker else {
+        return;
+    };
+
+    const MAX_VISIBLE: usize = 8;
+    let screen_h = frame.area().height;
+    let available_below = screen_h.saturating_sub(anchor_area.y + anchor_area.height);
+    let available_above = anchor_area.y.saturating_sub(dialog_area.y);
+
+    let prefer_below = available_below >= 3 || available_below >= available_above;
+    let available_space = if prefer_below {
+        available_below
+    } else {
+        available_above
+    };
+    let visible_items = picker
+        .entries
+        .len()
+        .clamp(1, MAX_VISIBLE)
+        .min(available_space.saturating_sub(2) as usize);
+    if visible_items == 0 {
+        return;
+    }
+    let drop_h = visible_items as u16 + 2;
+    let drop_y = if prefer_below {
+        anchor_area.y + anchor_area.height
+    } else {
+        anchor_area.y.saturating_sub(drop_h)
+    };
+
+    let drop_area = ratatui::layout::Rect {
+        x: anchor_area.x.saturating_sub(1).max(dialog_area.x),
+        y: drop_y,
+        width: dialog_area.width,
+        height: drop_h,
+    };
+    frame.render_widget(Clear, drop_area);
+
+    let title = format!(" {} ", picker.title());
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().bg(Color::Rgb(10, 20, 10)));
+    let inner = block.inner(drop_area);
+    frame.render_widget(block, drop_area);
+
+    if picker.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  no matches",
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner,
+        );
+        return;
+    }
+
+    let scroll = if picker.selected >= MAX_VISIBLE {
+        picker.selected - MAX_VISIBLE + 1
+    } else {
+        0
+    };
+
+    let items: Vec<ListItem> = picker
+        .entries
+        .iter()
+        .skip(scroll)
+        .take(visible_items)
+        .enumerate()
+        .map(|(i, entry)| {
+            let abs_idx = i + scroll;
+            let icon = if entry.is_dir { "📁 " } else { "   " };
+
+            // Show relative path when in recursive search mode (query active)
+            let label = if picker.query.is_empty() {
+                // Flat mode: just show filename
+                format!("{}{}", icon, entry.name)
+            } else {
+                // Recursive mode: show relative path to distinguish files with same name
+                let relative_path = entry
+                    .path
+                    .strip_prefix(&picker.workdir)
+                    .unwrap_or(&entry.path);
+                let display_path = if relative_path.to_string_lossy() == entry.name {
+                    // Same directory as workdir
+                    entry.name.clone()
+                } else {
+                    // Show relative path
+                    relative_path.to_string_lossy().to_string()
+                };
+                format!("{}{}", icon, display_path)
+            };
+
+            let style = if abs_idx == picker.selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Span::styled(label, style))
+        })
+        .collect();
+
+    frame.render_widget(List::new(items), inner);
+}
+
+pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
+    let Some(dialog) = &app.simple_prompt_dialog else {
+        return;
+    };
+
+    // Get agent accent color
+    let accent = app
+        .selected_agent()
+        .and_then(|a| match a {
+            AgentEntry::Interactive(idx) => {
+                app.interactive_agents.get(*idx).map(|ia| ia.accent_color)
+            }
+            _ => None,
+        })
+        .unwrap_or(ACCENT);
+
+    // Use 65% of terminal width (responsive, not edge-to-edge)
+    let percent_x = 65u16;
+    let dialog_width = (frame.area().width * percent_x / 100).max(40);
+    let inner_width = dialog_width.saturating_sub(2);
+    let field_width = inner_width.saturating_sub(2).max(10) as usize;
+
+    let is_instruction_focused = dialog.focused_section == 0;
+
+    // Instruction height: expanded (1-5) when focused, collapsed (1) otherwise
+    let instruction_content = dialog
+        .sections
+        .get("instruction")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    let instruction_display_height = if is_instruction_focused {
+        let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+            instruction_content,
+            field_width,
+        );
+        (vis as u16).clamp(1, 5)
+    } else {
+        1u16
+    };
+
+    // Optional sections: expanded when focused, collapsed (1) otherwise
+    let mut optional_section_height: u16 = 0;
+    for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
+        if section_name == "instruction" {
+            continue;
+        }
+        let h = if dialog.focused_section == i {
+            let content = dialog
+                .sections
+                .get(section_name)
+                .map(|s| s.as_str())
+                .unwrap_or("");
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+                content,
+                field_width,
+            );
+            let max_h =
+                crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            (vis as u16).clamp(1, max_h as u16)
+        } else {
+            1u16
+        };
+        optional_section_height += 1 + h + 1 + 1;
+    }
+
+    let total_height =
+        2 + 1 + 1 + 1 + instruction_display_height + 1 + 1 + optional_section_height + 1;
+
+    // Cap dialog height — leave at least 4 rows margin, minimum 10 rows.
+    let max_dialog_h = frame.area().height.saturating_sub(4).max(10);
+    let height = total_height.min(max_dialog_h);
+
+    // Pre-compute render height for each section (label + content + border + gap = h + 3).
+    let section_heights: Vec<u16> = dialog
+        .enabled_sections
+        .iter()
+        .enumerate()
+        .map(|(i, section_name)| {
+            let is_focused = dialog.focused_section == i;
+            let content_h = if i == 0 {
+                // instruction
+                instruction_display_height
+            } else if is_focused {
+                let content = dialog
+                    .sections
+                    .get(section_name)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
+                let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+                    content,
+                    field_width,
+                );
+                let max_h =
+                    crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+                (vis as u16).clamp(1, max_h as u16)
+            } else {
+                1u16
+            };
+            content_h + 3 // label(1) + content + bottom_border(1) + gap(1)
+        })
+        .collect();
+
+    let area = centered_rect(percent_x, height, frame.area());
+    frame.render_widget(Clear, area);
+
+    let title = " Prompt Builder ";
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(accent))
+        .style(Style::default().bg(Color::Rgb(15, 25, 15)));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Draw hint line
+    let instructions = Line::from(vec![
+        Span::styled("↑↓ ", Style::default().fg(DIM)),
+        Span::styled("fields  ", Style::default().fg(Color::White)),
+        Span::styled("⇧↑↓←→ ", Style::default().fg(DIM)),
+        Span::styled("cursor  ", Style::default().fg(Color::White)),
+        Span::styled("@ ", Style::default().fg(DIM)),
+        Span::styled("file  ", Style::default().fg(Color::White)),
+        Span::styled("Ctrl+A ", Style::default().fg(DIM)),
+        Span::styled("add  ", Style::default().fg(Color::White)),
+        Span::styled("Ctrl+X ", Style::default().fg(DIM)),
+        Span::styled("remove  ", Style::default().fg(Color::White)),
+        Span::styled("Ctrl+S ", Style::default().fg(DIM)),
+        Span::styled("send  ", Style::default().fg(Color::White)),
+        Span::styled("Esc  ", Style::default().fg(DIM)),
+        Span::styled("hide", Style::default().fg(Color::White)),
+    ]);
+
+    let instructions_area = ratatui::layout::Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    };
+    frame.render_widget(Paragraph::new(instructions), instructions_area);
+
+    // ── Scroll computation ─────────────────────────────────────────────────
+    // sections_available_h = inner height minus hint(1) + blank(1).
+    let sections_top = inner.y + 2;
+    let sections_available_h = inner.height.saturating_sub(2);
+    let mut picker_anchor_area: Option<ratatui::layout::Rect> = None;
+
+    // Work backwards from focused_section to find the first section that fits.
+    let start_idx = {
+        let focused = dialog.focused_section;
+        let focused_h = section_heights.get(focused).copied().unwrap_or(4);
+        let mut remaining = sections_available_h.saturating_sub(focused_h);
+        let mut start = focused;
+        while start > 0 {
+            let prev_h = section_heights.get(start - 1).copied().unwrap_or(4);
+            if prev_h > remaining {
+                break;
+            }
+            remaining -= prev_h;
+            start -= 1;
+        }
+        start
+    };
+
+    // Scroll indicators
+    let inner_bottom = inner.y + inner.height;
+    if start_idx > 0 {
+        let arrow = Span::styled(" ▲ ", Style::default().fg(accent));
+        let a = ratatui::layout::Rect {
+            x: inner.x,
+            y: sections_top,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right),
+            a,
+        );
+    }
+
+    let mut y_pos = sections_top;
+
+    // ── Draw Instruction field ──────────────────────────────────────────────
+    if start_idx == 0 {
+        let label_style = if is_instruction_focused {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(accent)
+        };
+
+        let label_line = generate_top_border("Instruction", inner.width, label_style);
+        let label_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: y_pos,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(label_line), label_area);
+        y_pos += 1;
+
+        let instruction_bg = if is_instruction_focused {
+            Color::Rgb(40, 40, 40)
+        } else {
+            Color::Rgb(30, 30, 30)
+        };
+
+        let instruction_content = dialog
+            .sections
+            .get("instruction")
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let instruction_real = dialog
+            .collapsed_pastes
+            .get("instruction")
+            .map(|s| s.as_str())
+            .unwrap_or(instruction_content);
+
+        let (instruction_render_text, instr_scroll) = if is_instruction_focused {
+            let cursor_idx = dialog
+                .cursor("instruction")
+                .min(instruction_real.chars().count());
+            let before: String = instruction_real.chars().take(cursor_idx).collect();
+            let after: String = instruction_real.chars().skip(cursor_idx).collect();
+            (
+                format!("{}│{}", before, after),
+                dialog.scroll("instruction") as u16,
+            )
+        } else {
+            let first_line = instruction_content
+                .lines()
+                .next()
+                .unwrap_or(instruction_content);
+            let text = if first_line.chars().count() > field_width {
+                format!(
+                    "{}…",
+                    first_line
+                        .chars()
+                        .take(field_width.saturating_sub(1))
+                        .collect::<String>()
+                )
+            } else {
+                first_line.to_string()
+            };
+            (text, 0u16)
+        };
+
+        let content_style = Style::default().fg(Color::White).bg(instruction_bg);
+        let instruction_paragraph = Paragraph::new(instruction_render_text)
+            .style(content_style)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((instr_scroll, 0));
+
+        let content_area = ratatui::layout::Rect {
+            x: inner.x + 1,
+            y: y_pos,
+            width: inner.width.saturating_sub(2),
+            height: instruction_display_height,
+        };
+        if is_instruction_focused {
+            picker_anchor_area = Some(content_area);
+        }
+        frame.render_widget(instruction_paragraph, content_area);
+        y_pos += instruction_display_height;
+
+        let bottom_border = generate_bottom_border(inner.width, label_style);
+        let border_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: y_pos,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(bottom_border), border_area);
+        y_pos += 2;
+    }
+
+    // ── Draw optional sections (starting from start_idx, skipping instruction) ──
+    for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
+        if section_name == "instruction" {
+            continue;
+        }
+        // Skip sections before start_idx
+        if i < start_idx {
+            continue;
+        }
+        // Stop if we've run out of vertical space (leave 1 row for ▼ indicator)
+        if y_pos + 3 >= inner_bottom {
+            break;
+        }
+
+        let is_focused = dialog.focused_section == i;
+
+        let section_type = {
+            let known = [
+                "tools",
+                "instruction",
+                "context",
+                "resources",
+                "examples",
+                "constraints",
+            ];
+            known
+                .iter()
+                .find(|k| section_name.starts_with(*k))
+                .copied()
+                .unwrap_or(section_name.as_str())
+        };
+
+        let label = crate::tui::app::dialog::SimplePromptDialog::get_available_sections()
+            .into_iter()
+            .find(|(name, _)| *name == section_type)
+            .map(|(_, label)| label)
+            .unwrap_or(section_type);
+
+        let suffix = section_name.strip_prefix(section_type).unwrap_or("");
+        let is_tools = section_type == "tools";
+        let display_label = if is_tools && suffix.is_empty() {
+            "Tools".to_string()
+        } else if is_tools {
+            format!("Tools {}", suffix.trim_start_matches('_'))
+        } else if suffix.is_empty() {
+            label.to_string()
+        } else {
+            format!("{} {}", label, suffix.trim_start_matches('_'))
+        };
+
+        let label_style = if is_focused {
+            Style::default().fg(accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(accent)
+        };
+
+        let label_line = generate_top_border(&display_label, inner.width, label_style);
+        let label_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: y_pos,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(label_line), label_area);
+        y_pos += 1;
+
+        let section_bg = if is_focused {
+            Color::Rgb(40, 40, 40)
+        } else {
+            Color::Rgb(30, 30, 30)
+        };
+
+        let content_raw = dialog
+            .sections
+            .get(section_name)
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        let content_real = dialog
+            .collapsed_pastes
+            .get(section_name)
+            .map(|s| s.as_str())
+            .unwrap_or(content_raw);
+
+        let (render_text, content_height, scroll_offset) = if is_tools {
+            // Tools section: read-only, always 1 line — shows skill label or placeholder
+            let display = if content_raw.trim().is_empty() {
+                "  (empty — Ctrl+A to pick a skill)".to_string()
+            } else {
+                content_raw.trim().to_string()
+            };
+            (display, 1u16, 0u16)
+        } else if is_focused {
+            let cursor_idx = dialog
+                .cursor(section_name)
+                .min(content_real.chars().count());
+            let before: String = content_real.chars().take(cursor_idx).collect();
+            let after: String = content_real.chars().skip(cursor_idx).collect();
+            let text = format!("{}│{}", before, after);
+            let max_h =
+                crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
+            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
+                content_real,
+                field_width,
+            );
+            // Clamp content height to available space
+            let max_avail = inner_bottom.saturating_sub(y_pos).saturating_sub(2);
+            (
+                text,
+                (vis as u16).clamp(1, max_h as u16).min(max_avail),
+                dialog.scroll(section_name) as u16,
+            )
+        } else {
+            let first_line = content_raw.lines().next().unwrap_or(content_raw);
+            let text = if first_line.chars().count() > field_width {
+                format!(
+                    "{}…",
+                    first_line
+                        .chars()
+                        .take(field_width.saturating_sub(1))
+                        .collect::<String>()
+                )
+            } else {
+                first_line.to_string()
+            };
+            (text, 1u16, 0u16)
+        };
+
+        let styled_content = dialog.get_file_reference_with_styling(&render_text, accent);
+        let mut spans = Vec::new();
+        for (text, color) in styled_content {
+            let span_style = if let Some(c) = color {
+                Style::default().fg(c).bg(section_bg)
+            } else {
+                Style::default().fg(Color::White).bg(section_bg)
+            };
+            spans.push(Span::styled(text, span_style));
+        }
+
+        let content_paragraph = Paragraph::new(Line::from(spans))
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .scroll((scroll_offset, 0));
+
+        let content_area = ratatui::layout::Rect {
+            x: inner.x + 1,
+            y: y_pos,
+            width: inner.width.saturating_sub(2),
+            height: content_height,
+        };
+        if is_focused {
+            picker_anchor_area = Some(content_area);
+        }
+        frame.render_widget(content_paragraph, content_area);
+        y_pos += content_height;
+
+        let bottom_border = generate_bottom_border(inner.width, label_style);
+        let border_area = ratatui::layout::Rect {
+            x: inner.x,
+            y: y_pos,
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(bottom_border), border_area);
+        y_pos += 2;
+    }
+
+    // ▼ indicator when there are more sections below
+    let last_visible_section = {
+        let mut last = start_idx;
+        let mut yy = sections_top;
+        if start_idx == 0 {
+            yy += section_heights.first().copied().unwrap_or(0);
+        }
+        for (i, _) in dialog.enabled_sections.iter().enumerate() {
+            if i == 0 || i < start_idx {
+                continue;
+            }
+            let sh = section_heights.get(i).copied().unwrap_or(4);
+            if yy + sh + 3 >= inner_bottom {
+                break;
+            }
+            yy += sh;
+            last = i;
+        }
+        last
+    };
+    if last_visible_section < dialog.enabled_sections.len().saturating_sub(1) {
+        let arrow = Span::styled(" ▼ ", Style::default().fg(accent));
+        let a = ratatui::layout::Rect {
+            x: inner.x,
+            y: inner_bottom.saturating_sub(1),
+            width: inner.width,
+            height: 1,
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(arrow)).alignment(ratatui::layout::Alignment::Right),
+            a,
+        );
+    }
+
+    // Draw @ file picker dropdown if active
+    if dialog.at_picker.is_some() {
+        let anchor = picker_anchor_area.unwrap_or(inner);
+        draw_at_picker_dropdown(frame, area, anchor, accent, dialog);
+    }
+
+    // Draw picker modal if open
+    draw_section_picker_modal(frame, app, accent, &dialog.picker_mode);
+}
