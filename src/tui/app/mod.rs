@@ -181,7 +181,7 @@ fn append_flag_if_missing(
 }
 
 fn build_resumed_session_args(
-    session: &crate::db::InteractiveSession,
+    session: &crate::db::session::InteractiveSession,
     interactive_args: Option<&str>,
     yolo_flag: Option<&str>,
 ) -> Option<String> {
