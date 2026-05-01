@@ -1932,7 +1932,6 @@ impl SimplePromptDialog {
             self.set_section_content(section_id, real);
         }
     }
-
 }
 
 /// Snapshot of `SimplePromptDialog` state used to persist the prompt builder
