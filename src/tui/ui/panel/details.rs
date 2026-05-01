@@ -1,11 +1,11 @@
+use super::{DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
+use crate::domain::models::{Agent, Trigger};
+use crate::tui::app::{relative_time, App};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 use ratatui::Frame;
-use crate::domain::models::{Agent, Trigger};
-use crate::tui::app::{relative_time, App};
-use super::{DIM, INTERACTIVE_COLOR, STATUS_DISABLED, STATUS_FAIL, STATUS_OK, STATUS_RUNNING};
 
 pub fn draw_group_details(frame: &mut Frame, area: Rect, app: &App, group_idx: usize) {
     let Some(group) = app.split_groups.get(group_idx) else {
@@ -105,12 +105,7 @@ pub fn draw_group_details(frame: &mut Frame, area: Rect, app: &App, group_idx: u
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-pub fn draw_agent_details(
-    frame: &mut Frame,
-    area: Rect,
-    agent: &Agent,
-    app: &App,
-) {
+pub fn draw_agent_details(frame: &mut Frame, area: Rect, agent: &Agent, app: &App) {
     let has_active = app.active_runs.contains_key(&agent.id);
     let (status_text, status_color) = if !agent.enabled {
         ("DISABLED", STATUS_DISABLED)

@@ -11,22 +11,22 @@ use super::{
 };
 use crate::tui::app::{AgentEntry, App, Focus};
 
-pub mod vt100;
-pub mod home;
 pub mod details;
+pub mod home;
 pub mod log_fallback;
+pub mod vt100;
 pub mod warp;
 
-pub use vt100::render_vt_screen;
-pub(crate) use home::draw_brians_brain;
 pub use details::{draw_agent_details, draw_group_details};
+pub(crate) use home::draw_brians_brain;
 pub use log_fallback::draw_log_text;
-pub use warp::{draw_warp_input_box, render_command_chips};
+pub use vt100::render_vt_screen;
 #[allow(unused_imports)]
 pub use warp::compact_cwd;
+pub use warp::{draw_warp_input_box, render_command_chips};
 
-use vt100::{render_indicators, render_vt_screen_with_mask};
 use home::draw_canopy_banner_glitch;
+use vt100::{render_indicators, render_vt_screen_with_mask};
 
 pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let border_color = match app.focus {

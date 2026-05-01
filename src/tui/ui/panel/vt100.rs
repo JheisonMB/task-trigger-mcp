@@ -1,9 +1,9 @@
+use crate::tui::agent::ScreenSnapshot;
+use crate::tui::app::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use crate::tui::agent::ScreenSnapshot;
-use crate::tui::app::App;
 
 pub fn render_vt_screen(frame: &mut Frame, area: Rect, snap: &ScreenSnapshot) {
     render_vt_screen_with_mask(frame, area, snap, false);

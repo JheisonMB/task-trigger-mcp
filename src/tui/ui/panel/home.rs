@@ -1,9 +1,9 @@
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
-use ratatui::Frame;
 use crate::shared::banner::BANNER_GRADIENT;
 use crate::tui::app::App;
 use crate::tui::brians_brain::{BriansBrain, CellState};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::Frame;
 
 pub(super) fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
     let banner = crate::shared::banner::BANNER.trim_matches('\n');
@@ -89,11 +89,7 @@ fn sample_mirrored_gradient(phase: f32) -> (u8, u8, u8) {
     (lerp(r0, r1), lerp(g0, g1), lerp(b0, b1))
 }
 
-pub(crate) fn draw_brians_brain(
-    frame: &mut Frame,
-    area: Rect,
-    brain: &BriansBrain,
-) {
+pub(crate) fn draw_brians_brain(frame: &mut Frame, area: Rect, brain: &BriansBrain) {
     const BRAIN_ON_GLYPHS: [&str; 5] = ["⠆", "⠒", "⠶", "⡷", "⣿"];
     const BRAIN_DYING_GLYPHS: [&str; 4] = ["⠖", "⠒", "⠂", "·"];
     let buf = frame.buffer_mut();

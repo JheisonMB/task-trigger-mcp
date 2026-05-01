@@ -1,8 +1,10 @@
+use crate::tui::app::{App, Focus};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 use ratatui::Frame;
-use crate::tui::app::{App, Focus};
 
 pub fn draw_log_text(frame: &mut Frame, area: Rect, inner: Rect, app: &App) {
     let title = app.selected_id();

@@ -1,9 +1,9 @@
+use crate::tui::app::App;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use crate::tui::app::App;
 
 pub fn draw_warp_input_box(frame: &mut Frame, area: Rect, app: &App, idx: usize) {
     let Some(agent) = app.terminal_agents.get(idx) else {

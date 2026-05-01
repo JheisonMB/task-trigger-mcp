@@ -91,11 +91,7 @@ pub fn draw_split_picker(frame: &mut Frame, app: &App) {
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
-pub fn draw_suggestion_picker(
-    frame: &mut Frame,
-    app: &App,
-    panel_area: ratatui::layout::Rect,
-) {
+pub fn draw_suggestion_picker(frame: &mut Frame, app: &App, panel_area: ratatui::layout::Rect) {
     let Some(picker) = &app.suggestion_picker else {
         return;
     };
