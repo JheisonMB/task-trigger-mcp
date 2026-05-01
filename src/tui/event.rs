@@ -548,6 +548,56 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<(
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     let kind = mouse.kind;
     let modifiers = mouse.modifiers;
+    let col = mouse.column;
+    let row = mouse.row;
+
+    // Try to forward mouse events to PTY when mouse protocol is active.
+    // This enables TUI apps (opencode, vim, htop, etc.) to receive mouse events.
+    let forwarded = if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
+        let idx = *idx;
+        if let Some(agent) = app.interactive_agents.get(idx) {
+            let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
+            let header_height = 1;
+            let clicked_in_pty = col >= sidebar_width && row >= header_height;
+
+            if clicked_in_pty {
+                let pty_col = col.saturating_sub(sidebar_width);
+                let pty_row = row.saturating_sub(header_height);
+                agent
+                    .forward_mouse(kind, MouseButton::Left, pty_col, pty_row)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
+        let idx = *idx;
+        if let Some(agent) = app.terminal_agents.get(idx) {
+            let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
+            let header_height = 1;
+            let clicked_in_pty = col >= sidebar_width && row >= header_height;
+
+            if clicked_in_pty {
+                let pty_col = col.saturating_sub(sidebar_width);
+                let pty_row = row.saturating_sub(header_height);
+                agent
+                    .forward_mouse(kind, MouseButton::Left, pty_col, pty_row)
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if forwarded {
+        return Ok(());
+    }
 
     // Normal Left click (no Shift) — copy line from PTY at click position
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
