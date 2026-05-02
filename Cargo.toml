@@ -64,6 +64,12 @@ dirs = "6.0"
 # UUID generation for execution runs
 uuid = { version = "1", features = ["v4"] }
 
+# SHA-256 for workdir_hash
+sha2 = "0.10"
+
+# Directory traversal for RAG ingestion
+walkdir = "2"
+
 # Graceful shutdown coordination
 tokio-util = { version = "0.7", features = ["rt"] }
 

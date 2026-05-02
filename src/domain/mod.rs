@@ -9,6 +9,7 @@ pub mod cli_strategy;
 pub mod models;
 pub mod models_db;
 pub mod notification;
+pub mod project;
 pub mod sync;
 pub mod usage_stats;
 pub mod validation;
