@@ -16,6 +16,7 @@ mod db;
 mod domain;
 mod executor;
 mod mcp_wizard_module;
+mod rag;
 mod scheduler;
 mod setup_module;
 mod shared;
