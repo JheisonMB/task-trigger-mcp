@@ -156,3 +156,33 @@ pub struct SyncGetContextParams {
     /// Number of recent messages to return (default: 10).
     pub limit: Option<usize>,
 }
+
+// ── RAG tool parameter types ───────────────────────────────────────────
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProjectSearchParams {
+    /// Search query matched against project name and description.
+    pub query: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProjectUpdateParams {
+    /// Project hash (workdir_hash).
+    pub project_hash: String,
+    /// New description.
+    pub description: Option<String>,
+    /// New tags list.
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RagSearchParams {
+    /// Natural-language search query.
+    pub query: String,
+    /// "global" (all projects) or "project" (single project).
+    pub scope: Option<String>,
+    /// Required when scope = "project".
+    pub project_hash: Option<String>,
+    /// Max results (default: 5).
+    pub limit: Option<usize>,
+}

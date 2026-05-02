@@ -27,6 +27,8 @@ use crate::domain::models::{Agent, Cli, Trigger, WatchEvent};
 use crate::domain::sync::{LockType, MessageKind};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
+use crate::rag::ingestion::IngestionManager;
+use crate::rag::rate_limiter::RateLimiter;
 use crate::sync_manager::SyncManager;
 use crate::watchers::WatcherEngine;
 
@@ -38,8 +40,12 @@ pub struct TaskTriggerHandler {
     pub scheduler_notify: Arc<Notify>,
     pub notification_service: Arc<dyn NotificationService>,
     pub sync_manager: Arc<SyncManager>,
+    /// Per-agent rate limiters for rag_search (10 calls/min).
+    pub rag_limiters: Arc<tokio::sync::Mutex<std::collections::HashMap<String, RateLimiter>>>,
     pub start_time: std::time::Instant,
     pub port: u16,
+    #[allow(dead_code)]
+    ingestion_cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
@@ -55,6 +61,8 @@ impl TaskTriggerHandler {
         sync_manager: Arc<SyncManager>,
         port: u16,
     ) -> Self {
+        let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
+        let ingestion_cancel = Arc::clone(&ingestion).start();
         Self {
             db,
             executor,
@@ -62,8 +70,10 @@ impl TaskTriggerHandler {
             scheduler_notify,
             notification_service,
             sync_manager,
+            rag_limiters: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             start_time: std::time::Instant::now(),
             port,
+            ingestion_cancel,
             tool_router: Self::tool_router(),
         }
     }
@@ -1124,6 +1134,134 @@ impl TaskTriggerHandler {
             "recent_activity": activity_json,
             "summary": summary,
         });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+        )]))
+    }
+
+    /// Search registered projects by name or description.
+    #[tool(
+        name = "project_search",
+        description = "Search projects by name/description, returns workdir_hash and metadata."
+    )]
+    async fn project_search(
+        &self,
+        Parameters(params): Parameters<ProjectSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let projects = self
+            .db
+            .search_projects(&params.query)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if projects.is_empty() {
+            return Ok(success_result("No projects found matching the query."));
+        }
+
+        let out: Vec<serde_json::Value> = projects
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "hash": p.hash,
+                    "name": p.name,
+                    "path": p.path,
+                    "description": p.description,
+                    "tags": p.tags,
+                })
+            })
+            .collect();
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+        )]))
+    }
+
+    /// Update project metadata (description, tags).
+    #[tool(
+        name = "project_update",
+        description = "Update project metadata. Agents can enrich description and tags discovered during a session."
+    )]
+    async fn project_update(
+        &self,
+        Parameters(params): Parameters<ProjectUpdateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let updated = self
+            .db
+            .update_project_meta(
+                &params.project_hash,
+                params.description.as_deref(),
+                params.tags.as_deref(),
+            )
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if updated {
+            Ok(success_result(&format!(
+                "Project '{}' metadata updated.",
+                params.project_hash
+            )))
+        } else {
+            Ok(error_result(&format!(
+                "Project '{}' not found.",
+                params.project_hash
+            )))
+        }
+    }
+
+    /// Semantic search over indexed project chunks (FTS5). Rate-limited: 10/min per agent.
+    #[tool(
+        name = "rag_search",
+        description = "Search indexed project content. scope: 'global' | 'project'. \
+         Default limit: 5. Rate-limited to 10 calls/min per agent."
+    )]
+    async fn rag_search(
+        &self,
+        Parameters(params): Parameters<RagSearchParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Rate limiting — keyed by project_hash or "global"
+        let limiter_key = params
+            .project_hash
+            .clone()
+            .unwrap_or_else(|| "global".to_owned());
+        {
+            let mut limiters = self.rag_limiters.lock().await;
+            let limiter = limiters
+                .entry(limiter_key)
+                .or_insert_with(|| crate::rag::rate_limiter::RateLimiter::new(10));
+            if let Err(retry_after) = limiter.check() {
+                return Ok(error_result(&format!(
+                    "rate_limited: retry_after={retry_after}s"
+                )));
+            }
+        }
+
+        let limit = params.limit.unwrap_or(5).min(20);
+        let scope = params.scope.as_deref().unwrap_or("global");
+        let project_hash = if scope == "project" {
+            params.project_hash.as_deref()
+        } else {
+            None
+        };
+
+        let chunks = self
+            .db
+            .search_chunks(&params.query, project_hash, limit)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        if chunks.is_empty() {
+            return Ok(success_result("No results found."));
+        }
+
+        let out: Vec<serde_json::Value> = chunks
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "source": c.source_path,
+                    "lang": c.lang,
+                    "chunk_index": c.chunk_index,
+                    "content": c.content,
+                })
+            })
+            .collect();
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&out).unwrap_or_default(),
