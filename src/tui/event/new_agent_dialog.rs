@@ -49,53 +49,26 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
         if dialog.cli_picker_open {
             match code {
                 KeyCode::Down => {
-                    let len = dialog.available_clis.len();
-                    if len > 0 {
-                        dialog.cli_picker_idx = (dialog.cli_picker_idx + 1) % len;
-                        dialog.cli_index = dialog.cli_picker_idx;
-                        dialog.refresh_model_suggestions();
-                        if dialog.selected_yolo_flag().is_none() {
-                            dialog.yolo_mode = false;
-                        }
-                    }
+                    dialog.move_cli_picker_next();
                 }
                 KeyCode::Up => {
-                    let len = dialog.available_clis.len();
-                    if len > 0 {
-                        dialog.cli_picker_idx =
-                            dialog.cli_picker_idx.checked_sub(1).unwrap_or(len - 1);
-                        dialog.cli_index = dialog.cli_picker_idx;
-                        dialog.refresh_model_suggestions();
-                        if dialog.selected_yolo_flag().is_none() {
-                            dialog.yolo_mode = false;
-                        }
-                    }
+                    dialog.move_cli_picker_prev();
                 }
                 KeyCode::Enter => {
-                    dialog.cli_index = dialog.cli_picker_idx;
-                    dialog.cli_picker_open = false;
-                    dialog.refresh_model_suggestions();
-                    if dialog.selected_yolo_flag().is_none() {
-                        dialog.yolo_mode = false;
+                    let filtered = dialog.filtered_cli_indices();
+                    if let Some(&idx) = filtered.get(dialog.cli_picker_idx) {
+                        dialog.set_cli_index(idx);
                     }
+                    dialog.close_cli_picker();
                 }
                 KeyCode::Esc => {
-                    dialog.cli_picker_open = false;
+                    dialog.close_cli_picker();
+                }
+                KeyCode::Backspace => {
+                    dialog.pop_cli_picker_filter();
                 }
                 KeyCode::Char(c) => {
-                    // Jump to first CLI starting with the typed letter
-                    if let Some(idx) = dialog
-                        .available_clis
-                        .iter()
-                        .position(|cli| cli.as_str().starts_with(c))
-                    {
-                        dialog.cli_picker_idx = idx;
-                        dialog.cli_index = dialog.cli_picker_idx;
-                        dialog.refresh_model_suggestions();
-                        if dialog.selected_yolo_flag().is_none() {
-                            dialog.yolo_mode = false;
-                        }
-                    }
+                    dialog.push_cli_picker_filter(c);
                 }
                 _ => {}
             }
@@ -246,27 +219,22 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                 // CLI field (field 2 for interactive/background) — Space opens picker
                 n if n == cli_field && !is_terminal => match code {
                     KeyCode::Char(' ') => {
-                        dialog.cli_picker_open = true;
-                        dialog.cli_picker_idx = dialog.cli_index;
+                        dialog.open_cli_picker();
+                    }
+                    KeyCode::Char(c) => {
+                        dialog.open_cli_picker();
+                        dialog.push_cli_picker_filter(c);
                     }
                     KeyCode::Left => {
                         let count = dialog.available_clis.len();
                         if count > 0 {
-                            dialog.cli_index = (dialog.cli_index + count - 1) % count;
-                            dialog.refresh_model_suggestions();
-                            if dialog.selected_yolo_flag().is_none() {
-                                dialog.yolo_mode = false;
-                            }
+                            dialog.set_cli_index((dialog.cli_index + count - 1) % count);
                         }
                     }
                     KeyCode::Right => {
                         let count = dialog.available_clis.len();
                         if count > 0 {
-                            dialog.cli_index = (dialog.cli_index + 1) % count;
-                            dialog.refresh_model_suggestions();
-                            if dialog.selected_yolo_flag().is_none() {
-                                dialog.yolo_mode = false;
-                            }
+                            dialog.set_cli_index((dialog.cli_index + 1) % count);
                         }
                     }
                     KeyCode::Down => {

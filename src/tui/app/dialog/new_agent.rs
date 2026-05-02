@@ -62,6 +62,7 @@ pub struct NewAgentDialog {
     // ── CLI picker ──
     pub cli_picker_open: bool,
     pub cli_picker_idx: usize,
+    pub cli_picker_filter: String,
     // ── Model suggestions ──
     pub model_catalog: Option<ModelCatalog>,
     pub model_suggestions: Vec<ModelEntry>,
@@ -120,6 +121,7 @@ impl NewAgentDialog {
             prev_focus: None,
             cli_picker_open: false,
             cli_picker_idx: 0,
+            cli_picker_filter: String::new(),
             model_catalog: catalog,
             model_suggestions: Vec::new(),
             model_suggestion_idx: 0,
@@ -313,12 +315,103 @@ impl NewAgentDialog {
     }
 
     pub fn selected_accent_color(&self) -> Color {
+        if self.task_type == NewTaskType::Terminal {
+            return crate::tui::ui::ACCENT;
+        }
+
         self.cli_configs
             .get(self.cli_index)
             .and_then(|c| c.as_ref())
             .and_then(|c| c.accent_color)
             .map(|[r, g, b]| Color::Rgb(r, g, b))
             .unwrap_or(Color::Rgb(102, 187, 106))
+    }
+
+    pub fn set_cli_index(&mut self, idx: usize) {
+        if idx >= self.available_clis.len() {
+            return;
+        }
+        self.cli_index = idx;
+        self.refresh_model_suggestions();
+        if self.selected_yolo_flag().is_none() {
+            self.yolo_mode = false;
+        }
+    }
+
+    pub fn open_cli_picker(&mut self) {
+        self.cli_picker_open = true;
+        self.cli_picker_filter.clear();
+        self.sync_cli_picker_to_current();
+    }
+
+    pub fn close_cli_picker(&mut self) {
+        self.cli_picker_open = false;
+        self.cli_picker_filter.clear();
+        self.sync_cli_picker_to_current();
+    }
+
+    pub fn filtered_cli_indices(&self) -> Vec<usize> {
+        let query = self.cli_picker_filter.trim().to_lowercase();
+        self.available_clis
+            .iter()
+            .enumerate()
+            .filter(|(_, cli)| query.is_empty() || cli.as_str().to_lowercase().contains(&query))
+            .map(|(idx, _)| idx)
+            .collect()
+    }
+
+    pub fn sync_cli_picker_to_current(&mut self) {
+        let filtered = self.filtered_cli_indices();
+        self.cli_picker_idx = filtered
+            .iter()
+            .position(|&idx| idx == self.cli_index)
+            .unwrap_or(0);
+    }
+
+    pub fn move_cli_picker_next(&mut self) {
+        let filtered = self.filtered_cli_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        self.cli_picker_idx = (self.cli_picker_idx + 1) % filtered.len();
+        self.set_cli_index(filtered[self.cli_picker_idx]);
+    }
+
+    pub fn move_cli_picker_prev(&mut self) {
+        let filtered = self.filtered_cli_indices();
+        if filtered.is_empty() {
+            return;
+        }
+        self.cli_picker_idx = self
+            .cli_picker_idx
+            .checked_sub(1)
+            .unwrap_or(filtered.len() - 1);
+        self.set_cli_index(filtered[self.cli_picker_idx]);
+    }
+
+    pub fn push_cli_picker_filter(&mut self, c: char) {
+        self.cli_picker_filter.push(c);
+        self.apply_cli_picker_filter();
+    }
+
+    pub fn pop_cli_picker_filter(&mut self) {
+        self.cli_picker_filter.pop();
+        self.apply_cli_picker_filter();
+    }
+
+    pub fn apply_cli_picker_filter(&mut self) {
+        let filtered = self.filtered_cli_indices();
+        if filtered.is_empty() {
+            self.cli_picker_idx = 0;
+            return;
+        }
+
+        if let Some(pos) = filtered.iter().position(|&idx| idx == self.cli_index) {
+            self.cli_picker_idx = pos;
+        } else {
+            self.cli_picker_idx = 0;
+            self.set_cli_index(filtered[0]);
+        }
     }
 
     pub fn refresh_dir_entries(&mut self) {
@@ -580,5 +673,37 @@ mod tests {
         assert!(dialog.working_dir.is_empty() || !dialog.working_dir.is_empty());
 
         // This verifies our code path doesn't break existing functionality
+    }
+
+    #[test]
+    fn cli_picker_filters_and_tracks_matches() {
+        let mut dialog = NewAgentDialog::new(None);
+        dialog.available_clis = vec![Cli::new("copilot"), Cli::new("claude"), Cli::new("codex")];
+        dialog.cli_configs = vec![None, None, None];
+        dialog.cli_index = 1;
+
+        dialog.open_cli_picker();
+        dialog.push_cli_picker_filter('c');
+        dialog.push_cli_picker_filter('o');
+
+        let filtered: Vec<_> = dialog
+            .filtered_cli_indices()
+            .into_iter()
+            .map(|idx| dialog.available_clis[idx].as_str().to_string())
+            .collect();
+
+        assert_eq!(filtered, vec!["copilot".to_string(), "codex".to_string()]);
+        assert_eq!(dialog.cli_index, 0);
+
+        dialog.move_cli_picker_next();
+        assert_eq!(dialog.selected_cli().as_str(), "codex");
+    }
+
+    #[test]
+    fn terminal_dialog_uses_canopy_accent() {
+        let mut dialog = NewAgentDialog::new(None);
+        dialog.task_type = NewTaskType::Terminal;
+
+        assert_eq!(dialog.selected_accent_color(), crate::tui::ui::ACCENT);
     }
 }

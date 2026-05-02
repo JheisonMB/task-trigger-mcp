@@ -17,9 +17,10 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let is_terminal = matches!(dialog.task_type, crate::tui::app::NewTaskType::Terminal);
     let is_background = matches!(dialog.task_type, crate::tui::app::NewTaskType::Background);
 
+    let filtered_clis = dialog.filtered_cli_indices();
     let cli_picker_rows: u16 = if dialog.cli_picker_open {
-        let visible = dialog.available_clis.len().min(6);
-        visible as u16 + 1
+        let visible = filtered_clis.len().clamp(1, 6);
+        visible as u16 + 2
     } else {
         0
     };
@@ -323,46 +324,80 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     lines.push(Line::from(vec![
         Span::styled("  CLI:   ", Style::default().fg(DIM)),
         Span::styled(format!(" {} ", cli_name), focus_style(cli_field)),
-        Span::styled("  (◂▸ cycle · Space pick)", Style::default().fg(DIM)),
+        Span::styled("  (◂▸ cycle · type/Space pick)", Style::default().fg(DIM)),
     ]));
 
     // CLI picker dropdown
     if dialog.cli_picker_open {
         let max_visible = 6;
         let total = dialog.available_clis.len();
+        let total_matches = filtered_clis.len();
         let sel = dialog.cli_picker_idx;
         let scroll = if sel >= max_visible {
             sel - max_visible + 1
         } else {
             0
         };
-        for (i, cli) in dialog
-            .available_clis
-            .iter()
-            .enumerate()
-            .skip(scroll)
-            .take(max_visible)
-        {
-            let is_sel = i == sel;
-            let style = if is_sel {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
-                Span::styled(cli.as_str().to_string(), style),
-            ]));
-        }
-        if total > max_visible {
+        let filter_display = if dialog.cli_picker_filter.is_empty() {
+            "type to filter".to_string()
+        } else {
+            dialog.cli_picker_filter.clone()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                "    🔍 ",
+                if dialog.field == cli_field {
+                    Style::default().fg(accent)
+                } else {
+                    Style::default().fg(DIM)
+                },
+            ),
+            Span::styled(
+                filter_display,
+                if dialog.cli_picker_filter.is_empty() {
+                    Style::default().fg(DIM)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+        ]));
+
+        if filtered_clis.is_empty() {
             lines.push(Line::from(Span::styled(
-                format!("    … {total} CLIs  ↑↓ scroll  Enter/Esc close"),
+                "    (no matches)",
                 Style::default().fg(DIM),
             )));
+        } else {
+            for (i, cli_idx) in filtered_clis
+                .iter()
+                .enumerate()
+                .skip(scroll)
+                .take(max_visible)
+            {
+                let is_sel = i == sel;
+                let style = if is_sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("    {} ", if is_sel { "›" } else { " " }), style),
+                    Span::styled(dialog.available_clis[*cli_idx].as_str().to_string(), style),
+                ]));
+            }
         }
+
+        let footer = if filtered_clis.is_empty() {
+            "    Backspace clear  Esc close".to_string()
+        } else if total_matches > max_visible {
+            format!("    … {total_matches}/{total} CLIs  ↑↓ scroll  Enter/Esc close")
+        } else {
+            format!("    {total_matches}/{total} CLIs  type to filter  Enter/Esc close")
+        };
+        lines.push(Line::from(Span::styled(footer, Style::default().fg(DIM))));
     }
 
     lines.push(Line::from(""));
