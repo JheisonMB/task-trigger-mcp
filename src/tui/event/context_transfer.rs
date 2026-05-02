@@ -6,7 +6,7 @@ use crate::tui::context_transfer::ContextTransferStep;
 
 // ── Context Transfer modal ───────────────────────────────────────
 //
-// Step 1 (Preview):  ↑↓ / ←→ adjust n_prompts, Enter → Step 2, Esc → cancel.
+// Step 1 (Preview):  ↑↓ / ←→ adjust capture range, Enter → Step 2, Esc → cancel.
 // Step 2 (Picker):   ↑↓ navigate agents, Enter → execute, Esc → back.
 
 /// Rebuild the payload_preview string from the current source agent state.

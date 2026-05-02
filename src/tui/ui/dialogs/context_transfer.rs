@@ -24,7 +24,7 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
 
     let preview_lines: Vec<&str> = modal.payload_preview.lines().collect();
     let visible_preview = preview_lines.len().min(8) as u16;
-    let height = 10 + visible_preview;
+    let height = 12 + visible_preview;
     let area = centered_rect(70, height, frame.area());
     frame.render_widget(Clear, area);
 
@@ -45,12 +45,6 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
     } else {
         "agent"
     };
-    let n_label = if modal.source_is_terminal {
-        "pages (×50 lines)"
-    } else {
-        "prompts"
-    };
-
     let block = Block::default()
         .title(format!(" Context Transfer — from: {src_id} "))
         .borders(Borders::ALL)
@@ -69,12 +63,17 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled(format!("  From {src_type}: "), Style::default().fg(DIM)),
-            Span::styled(format!(" ◀ {} ▶ ", modal.n_prompts), active_style),
+            Span::styled(format!(" ◀ {} ▶ ", modal.n_units), active_style),
             Span::styled(
-                format!("  (most recent {n_label})"),
+                format!("  ({})", modal.unit_label()),
                 Style::default().fg(DIM),
             ),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Capture: {}", modal.unit_help()),
+            Style::default().fg(DIM),
+        )),
         Line::from(""),
         Line::from(Span::styled("  Preview:", Style::default().fg(DIM))),
     ];
@@ -94,7 +93,7 @@ fn draw_ctx_preview(frame: &mut Frame, app: &App) {
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  ←→: adjust prompts · Enter: pick destination · Esc: cancel",
+        "  ←→: adjust range · Enter: pick destination · Esc: cancel",
         Style::default().fg(DIM),
     )));
 

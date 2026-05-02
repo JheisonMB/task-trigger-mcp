@@ -1,9 +1,8 @@
 //! Context Transfer — capture and inject conversation context between agents.
 //!
 //! Builds a plain-text context block from the source agent's prompt history,
+//! or from recent cleaned VT lines when the agent has no recorded prompts,
 //! then drives the two-step TUI modal (preview → agent picker).
-//! The transfer includes everything from the selected prompt number through
-//! the most recent output — no separate scrollback excerpt.
 
 use std::collections::VecDeque;
 
@@ -32,6 +31,12 @@ pub enum ContextSourceKind {
     Terminal,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextCaptureKind {
+    Prompts,
+    LinePages,
+}
+
 impl ContextSourceKind {
     fn header(self, agent: &InteractiveAgent) -> String {
         match self {
@@ -53,14 +58,18 @@ impl ContextSourceKind {
 
 pub fn build_context_payload_for(
     agent: &InteractiveAgent,
-    n_prompts: usize,
+    n_units: usize,
     source_kind: ContextSourceKind,
+    capture_kind: ContextCaptureKind,
 ) -> String {
     let mut out = source_kind.header(agent);
 
-    match source_kind {
-        ContextSourceKind::Interactive => append_interactive_context(&mut out, agent, n_prompts),
-        ContextSourceKind::Terminal => append_terminal_context(&mut out, agent, n_prompts),
+    match (source_kind, capture_kind) {
+        (ContextSourceKind::Interactive, ContextCaptureKind::Prompts) => {
+            append_interactive_prompt_context(&mut out, agent, n_units);
+        }
+        (ContextSourceKind::Interactive, ContextCaptureKind::LinePages)
+        | (ContextSourceKind::Terminal, _) => append_line_context(&mut out, agent, n_units),
     }
 
     out.push_str("--- end context ---\n");
@@ -149,7 +158,45 @@ fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<Prompt
         .collect()
 }
 
-fn append_interactive_context(out: &mut String, agent: &InteractiveAgent, n_prompts: usize) {
+pub fn interactive_capture_kind(agent: &InteractiveAgent) -> ContextCaptureKind {
+    if interactive_prompt_count(agent) > 0 {
+        ContextCaptureKind::Prompts
+    } else {
+        ContextCaptureKind::LinePages
+    }
+}
+
+pub fn initial_capture_units(max_units: usize, config: &ContextTransferConfig) -> usize {
+    if max_units == 0 {
+        1
+    } else {
+        max_units.min(config.default_prompt_history.max(1))
+    }
+}
+
+pub fn interactive_prompt_count(agent: &InteractiveAgent) -> usize {
+    agent
+        .prompt_history
+        .lock()
+        .ok()
+        .map(|history| history.len())
+        .unwrap_or(0)
+}
+
+pub fn interactive_line_page_count(agent: &InteractiveAgent) -> usize {
+    let total_depth = agent.total_depth();
+    if total_depth == 0 {
+        return 0;
+    }
+
+    if agent.last_lines(50).trim().is_empty() {
+        return 0;
+    }
+
+    total_depth.div_ceil(50)
+}
+
+fn append_interactive_prompt_context(out: &mut String, agent: &InteractiveAgent, n_prompts: usize) {
     let prompt_history = agent
         .prompt_history
         .lock()
@@ -182,7 +229,7 @@ fn append_interactive_context(out: &mut String, agent: &InteractiveAgent, n_prom
     }
 }
 
-fn append_terminal_context(out: &mut String, agent: &InteractiveAgent, n_units: usize) {
+fn append_line_context(out: &mut String, agent: &InteractiveAgent, n_units: usize) {
     let scrollback = agent.last_lines((n_units.max(1)) * 50);
     if scrollback.is_empty() {
         return;
@@ -208,7 +255,7 @@ fn response_end_line(entry: &PromptEntry, is_last_prompt: bool, total_depth: usi
 /// Which step the two-step modal is on.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ContextTransferStep {
-    /// Step 1 — adjust n_prompts and preview the payload.
+    /// Step 1 — adjust the capture range and preview the payload.
     Preview,
     /// Step 2 — pick the destination agent.
     AgentPicker,
@@ -221,8 +268,10 @@ pub struct ContextTransferModal {
     pub source_agent_idx: usize,
     /// Whether the source is a terminal session (indexes `terminal_agents`).
     pub source_is_terminal: bool,
-    /// Number of recent prompts / scroll-back pages to include (adjustable in Step 1).
-    pub n_prompts: usize,
+    /// How the source content is captured for preview/transfer.
+    pub capture_kind: ContextCaptureKind,
+    /// Number of recent prompts or line pages to include (adjustable in Step 1).
+    pub n_units: usize,
     /// Currently highlighted agent in the picker (index into the picker list).
     pub picker_selected: usize,
     /// Precomputed payload shown as preview in Step 1.
@@ -233,32 +282,48 @@ impl ContextTransferModal {
     fn new_with_kind(
         source_agent_idx: usize,
         source_kind: ContextSourceKind,
-        config: &ContextTransferConfig,
+        capture_kind: ContextCaptureKind,
+        initial_units: usize,
     ) -> Self {
         Self {
             step: ContextTransferStep::Preview,
             source_agent_idx,
             source_is_terminal: source_kind == ContextSourceKind::Terminal,
-            n_prompts: config.default_prompt_history,
+            capture_kind,
+            n_units: initial_units.max(1),
             picker_selected: 0,
             payload_preview: String::new(),
         }
     }
 
-    pub fn new(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
-        Self::new_with_kind(source_agent_idx, ContextSourceKind::Interactive, config)
+    pub fn new(
+        source_agent_idx: usize,
+        capture_kind: ContextCaptureKind,
+        initial_units: usize,
+    ) -> Self {
+        Self::new_with_kind(
+            source_agent_idx,
+            ContextSourceKind::Interactive,
+            capture_kind,
+            initial_units,
+        )
     }
 
-    pub fn new_terminal(source_agent_idx: usize, config: &ContextTransferConfig) -> Self {
-        Self::new_with_kind(source_agent_idx, ContextSourceKind::Terminal, config)
+    pub fn new_terminal(source_agent_idx: usize, initial_units: usize) -> Self {
+        Self::new_with_kind(
+            source_agent_idx,
+            ContextSourceKind::Terminal,
+            ContextCaptureKind::LinePages,
+            initial_units,
+        )
     }
 
     pub fn decrement_field(&mut self) {
-        self.n_prompts = self.n_prompts.saturating_sub(1).max(1);
+        self.n_units = self.n_units.saturating_sub(1).max(1);
     }
 
     pub fn increment_field(&mut self, max_value: usize) {
-        self.n_prompts = (self.n_prompts + 1).min(max_value.max(1));
+        self.n_units = (self.n_units + 1).min(max_value.max(1));
     }
 
     pub fn source_kind(&self) -> ContextSourceKind {
@@ -268,11 +333,34 @@ impl ContextTransferModal {
             ContextSourceKind::Interactive
         }
     }
+
+    pub fn unit_label(&self) -> &'static str {
+        match (self.source_kind(), self.capture_kind) {
+            (ContextSourceKind::Interactive, ContextCaptureKind::Prompts) => "prompts",
+            (ContextSourceKind::Interactive, ContextCaptureKind::LinePages) => "line blocks (×50)",
+            (ContextSourceKind::Terminal, _) => "pages (×50 lines)",
+        }
+    }
+
+    pub fn unit_help(&self) -> &'static str {
+        match (self.source_kind(), self.capture_kind) {
+            (ContextSourceKind::Interactive, ContextCaptureKind::Prompts) => {
+                "most recent prompt ranges"
+            }
+            (ContextSourceKind::Interactive, ContextCaptureKind::LinePages) => {
+                "most recent cleaned lines"
+            }
+            (ContextSourceKind::Terminal, _) => "most recent terminal lines",
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_context_output, collect_last_prompts, ContextSourceKind};
+    use super::{
+        clean_context_output, collect_last_prompts, initial_capture_units, ContextCaptureKind,
+        ContextSourceKind, ContextTransferConfig, ContextTransferModal,
+    };
     use crate::tui::agent::PromptEntry;
     use chrono::Utc;
     use std::collections::VecDeque;
@@ -314,10 +402,25 @@ mod tests {
 
     #[test]
     fn modal_source_kind_reflects_session_type() {
-        let config = super::ContextTransferConfig::default();
-        let interactive = super::ContextTransferModal::new(1, &config);
-        let terminal = super::ContextTransferModal::new_terminal(2, &config);
+        let interactive = ContextTransferModal::new(1, ContextCaptureKind::Prompts, 2);
+        let terminal = ContextTransferModal::new_terminal(2, 3);
         assert_eq!(interactive.source_kind(), ContextSourceKind::Interactive);
         assert_eq!(terminal.source_kind(), ContextSourceKind::Terminal);
+    }
+
+    #[test]
+    fn initial_capture_units_clamps_to_available_with_default_limit() {
+        let config = ContextTransferConfig::default();
+        assert_eq!(initial_capture_units(1, &config), 1);
+        assert_eq!(initial_capture_units(2, &config), 2);
+        assert_eq!(initial_capture_units(3, &config), 3);
+        assert_eq!(initial_capture_units(8, &config), 3);
+    }
+
+    #[test]
+    fn line_page_mode_uses_line_labels() {
+        let modal = ContextTransferModal::new(0, ContextCaptureKind::LinePages, 3);
+        assert_eq!(modal.unit_label(), "line blocks (×50)");
+        assert_eq!(modal.unit_help(), "most recent cleaned lines");
     }
 }
