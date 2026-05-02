@@ -10,6 +10,7 @@ use crate::daemon::TaskTriggerHandler;
 use crate::db::Database;
 use crate::executor::Executor;
 use crate::scheduler::cron_scheduler::CronScheduler;
+use crate::sync_manager::SyncManager;
 use crate::watchers::WatcherEngine;
 
 pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
@@ -26,6 +27,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
         Arc::clone(&notification_service),
     ));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
+    let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
     tracing::info!(
         "canopy v{} starting on port {}",
@@ -51,6 +53,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
     let handler_executor = Arc::clone(&executor);
     let handler_watcher_engine = Arc::clone(&watcher_engine);
     let handler_scheduler_notify = Arc::clone(&scheduler_notify);
+    let handler_sync_manager = Arc::clone(&sync_manager);
 
     let ct = tokio_util::sync::CancellationToken::new();
 
@@ -62,6 +65,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
                 Arc::clone(&handler_watcher_engine),
                 Arc::clone(&handler_scheduler_notify),
                 Arc::clone(&notification_service),
+                Arc::clone(&handler_sync_manager),
                 port,
             ))
         },
@@ -123,6 +127,7 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
         Arc::clone(&notification_service),
     ));
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
+    let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
@@ -138,6 +143,7 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
         Arc::clone(&watcher_engine),
         scheduler_notify,
         Arc::clone(&notification_service),
+        sync_manager,
         0,
     );
 

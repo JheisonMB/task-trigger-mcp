@@ -24,8 +24,10 @@ use crate::daemon::helpers::{
 use crate::daemon::params::*;
 use crate::db::Database;
 use crate::domain::models::{Agent, Cli, Trigger, WatchEvent};
+use crate::domain::sync::{LockType, MessageKind};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
+use crate::sync_manager::SyncManager;
 use crate::watchers::WatcherEngine;
 
 #[derive(Clone)]
@@ -35,6 +37,7 @@ pub struct TaskTriggerHandler {
     pub watcher_engine: Arc<WatcherEngine>,
     pub scheduler_notify: Arc<Notify>,
     pub notification_service: Arc<dyn NotificationService>,
+    pub sync_manager: Arc<SyncManager>,
     pub start_time: std::time::Instant,
     pub port: u16,
     #[allow(dead_code)]
@@ -49,6 +52,7 @@ impl TaskTriggerHandler {
         watcher_engine: Arc<WatcherEngine>,
         scheduler_notify: Arc<Notify>,
         notification_service: Arc<dyn NotificationService>,
+        sync_manager: Arc<SyncManager>,
         port: u16,
     ) -> Self {
         Self {
@@ -57,6 +61,7 @@ impl TaskTriggerHandler {
             watcher_engine,
             scheduler_notify,
             notification_service,
+            sync_manager,
             start_time: std::time::Instant::now(),
             port,
             tool_router: Self::tool_router(),
@@ -952,6 +957,177 @@ impl TaskTriggerHandler {
             "Run '{}' status updated to '{}'.",
             params.run_id, status
         )))
+    }
+
+    /// Acquire a collaborative lock on a resource or command (BLOCKING).
+    #[tool(
+        name = "sync_acquire_lock",
+        description = "Acquire a collaborative lock on a resource path or exclusive command. \
+         BLOCKING — the call returns only when the lock is granted or the timeout expires. \
+         lock_type: 'resource' (file/dir path) | 'command' (exclusive command like 'cargo test'). \
+         Returns the lock_id needed to release the lock."
+    )]
+    async fn sync_acquire_lock(
+        &self,
+        Parameters(params): Parameters<SyncAcquireLockParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(lock_type) = LockType::from_str(&params.lock_type) else {
+            return Ok(error_result(
+                "Invalid lock_type. Must be 'resource' or 'command'.",
+            ));
+        };
+
+        match self
+            .sync_manager
+            .acquire_lock(
+                &params.workdir,
+                &params.agent_id,
+                &params.agent_name,
+                lock_type,
+                &params.resource,
+                params.timeout_secs,
+            )
+            .await
+        {
+            Ok(lock_id) => Ok(success_result(&format!(
+                "Lock acquired. lock_id={lock_id} resource='{}'",
+                params.resource
+            ))),
+            Err(e) => Ok(error_result(&e.to_string())),
+        }
+    }
+
+    /// Release a previously acquired lock.
+    #[tool(
+        name = "sync_release",
+        description = "Release a lock previously acquired with sync_acquire_lock."
+    )]
+    async fn sync_release(
+        &self,
+        Parameters(params): Parameters<SyncReleaseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        match self
+            .sync_manager
+            .release_lock(
+                &params.workdir,
+                &params.agent_id,
+                &params.agent_name,
+                &params.lock_id,
+                &params.resource,
+            )
+            .await
+        {
+            Ok(true) => Ok(success_result(&format!(
+                "Lock '{}' released.",
+                params.lock_id
+            ))),
+            Ok(false) => Ok(error_result(&format!(
+                "Lock '{}' not found or already released.",
+                params.lock_id
+            ))),
+            Err(e) => Ok(error_result(&e.to_string())),
+        }
+    }
+
+    /// Broadcast a message to the workdir sync channel (non-blocking).
+    #[tool(
+        name = "sync_broadcast",
+        description = "Broadcast a message to the workdir sync channel. Non-blocking. \
+         kind: intent | info | query | answer | status."
+    )]
+    async fn sync_broadcast(
+        &self,
+        Parameters(params): Parameters<SyncBroadcastParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(kind) = MessageKind::from_str(&params.kind) else {
+            return Ok(error_result(
+                "Invalid kind. Must be: intent, info, query, answer, status.",
+            ));
+        };
+
+        let payload = params.metadata.as_ref().map(|m| m.to_string());
+        match self
+            .sync_manager
+            .broadcast(
+                &params.workdir,
+                &params.agent_id,
+                &params.agent_name,
+                kind,
+                &params.message,
+                payload.as_deref(),
+            )
+            .await
+        {
+            Ok(_) => Ok(success_result("Message broadcast.")),
+            Err(e) => Ok(error_result(&e.to_string())),
+        }
+    }
+
+    /// Get active locks and recent channel activity for a workdir.
+    #[tool(
+        name = "sync_get_context",
+        description = "Get active locks and recent sync channel activity for a workdir. \
+         Use before starting work to check if other agents are active."
+    )]
+    async fn sync_get_context(
+        &self,
+        Parameters(params): Parameters<SyncGetContextParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = params.limit.unwrap_or(10);
+
+        let active_locks = self
+            .db
+            .list_active_sync_locks(&params.workdir)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let recent = self
+            .db
+            .list_sync_messages(&params.workdir, limit)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let locks_json: Vec<serde_json::Value> = active_locks
+            .iter()
+            .map(|l| {
+                serde_json::json!({
+                    "lock_id": l.id,
+                    "agent_id": l.agent_id,
+                    "lock_type": l.lock_type.as_str(),
+                    "resource": l.resource,
+                })
+            })
+            .collect();
+
+        let activity_json: Vec<serde_json::Value> = recent
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "agent": m.agent_name,
+                    "kind": m.kind.as_str(),
+                    "message": m.message,
+                    "ts": m.created_at,
+                })
+            })
+            .collect();
+
+        let summary = if active_locks.is_empty() {
+            "No active locks.".to_owned()
+        } else {
+            let parts: Vec<String> = active_locks
+                .iter()
+                .map(|l| format!("{} holds '{}'", l.agent_id, l.resource))
+                .collect();
+            parts.join("; ")
+        };
+
+        let out = serde_json::json!({
+            "active_locks": locks_json,
+            "recent_activity": activity_json,
+            "summary": summary,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+        )]))
     }
 }
 
