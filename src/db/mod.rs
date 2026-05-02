@@ -118,7 +118,33 @@ impl Database {
                 acquired_at  INTEGER NOT NULL,
                 expires_at   INTEGER,
                 released_at  INTEGER
+            );
+
+            CREATE TABLE IF NOT EXISTS projects (
+                hash        TEXT PRIMARY KEY,
+                path        TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                description TEXT,
+                tags        TEXT,
+                indexed_at  INTEGER,
+                created_at  INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS rag_chunks (
+                id           TEXT NOT NULL,
+                project_hash TEXT NOT NULL,
+                source_path  TEXT NOT NULL,
+                chunk_index  INTEGER NOT NULL,
+                content      TEXT NOT NULL,
+                lang         TEXT NOT NULL,
+                updated_at   INTEGER NOT NULL,
+                PRIMARY KEY (project_hash, source_path, chunk_index)
             );",
+        )?;
+
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts
+             USING fts5(content, content=rag_chunks, content_rowid=rowid);",
         )?;
 
         Ok(())
@@ -127,6 +153,7 @@ impl Database {
 
 pub mod agent;
 pub mod group;
+pub mod project;
 pub mod run;
 pub mod session;
 pub mod state;
