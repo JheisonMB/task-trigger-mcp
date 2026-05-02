@@ -165,6 +165,15 @@ impl InteractiveAgent {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
 
+        // Pass Canopy's UX accent color to child CLIs so they respect
+        // the original color scheme instead of using their own ANSI color map.
+        // Extract RGB components from ratatui::style::Color
+        if let Color::Rgb(r, g, b) = accent_color {
+            cmd.env("CANOPY_ACCENT_R", r.to_string());
+            cmd.env("CANOPY_ACCENT_G", g.to_string());
+            cmd.env("CANOPY_ACCENT_B", b.to_string());
+        }
+
         let child = pair.slave.spawn_command(cmd)?;
         // Drop slave so the PTY closes when the child exits
         drop(pair.slave);
