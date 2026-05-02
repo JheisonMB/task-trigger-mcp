@@ -96,6 +96,28 @@ impl Database {
                 session_a TEXT NOT NULL,
                 session_b TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                workdir     TEXT NOT NULL,
+                agent_id    TEXT NOT NULL,
+                agent_name  TEXT NOT NULL,
+                kind        TEXT NOT NULL,
+                message     TEXT NOT NULL,
+                payload     TEXT,
+                created_at  INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sync_locks (
+                id           TEXT PRIMARY KEY,
+                workdir      TEXT NOT NULL,
+                agent_id     TEXT NOT NULL,
+                lock_type    TEXT NOT NULL,
+                resource     TEXT NOT NULL,
+                acquired_at  INTEGER NOT NULL,
+                expires_at   INTEGER,
+                released_at  INTEGER
             );",
         )?;
 
@@ -108,6 +130,7 @@ pub mod group;
 pub mod run;
 pub mod session;
 pub mod state;
+pub mod sync;
 
 #[cfg(test)]
 pub use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
