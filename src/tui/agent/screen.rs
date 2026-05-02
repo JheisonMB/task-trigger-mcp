@@ -91,8 +91,8 @@ impl InteractiveAgent {
             for col in 0..cols {
                 row_cells.push(screen.cell(row, col).map(|c| VtCell {
                     ch: c.contents().to_string(),
-                    fg: convert_color(c.fgcolor()),
-                    bg: convert_color(c.bgcolor()),
+                    fg: from_vt100(c.fgcolor()),
+                    bg: from_vt100(c.bgcolor()),
                     bold: c.bold(),
                     underline: c.underline(),
                     inverse: c.inverse(),
@@ -491,36 +491,12 @@ pub struct VtCell {
 }
 /// Convert vt100 color to ratatui color.
 ///
-/// For ANSI indices 0-15 uses the standard xterm-256color palette
-/// (what modern terminals and CLIs expect).  For 256-color extensions
-/// (indices 16-255) delegates to `Color::Indexed` since those are
-/// well‑standardised (6×6×6 colour cube + grayscale).  Truecolor RGB
-/// passes through unchanged.
-fn convert_color(color: vt100::Color) -> ratatui::style::Color {
+/// Passes through indexed colors (0-255) and truecolor RGB unchanged,
+/// preserving each agent's original color scheme.
+fn from_vt100(color: vt100::Color) -> ratatui::style::Color {
     use ratatui::style::Color;
     match color {
         vt100::Color::Default => Color::Reset,
-        vt100::Color::Idx(i) if i < 16 => {
-            const XTERM_16: [Color; 16] = [
-                Color::Rgb(0, 0, 0),       // 0  black
-                Color::Rgb(205, 0, 0),     // 1  red
-                Color::Rgb(0, 205, 0),     // 2  green
-                Color::Rgb(205, 205, 0),   // 3  yellow
-                Color::Rgb(0, 0, 238),     // 4  blue
-                Color::Rgb(180, 0, 180),   // 5  purple (Kiro's brand color)
-                Color::Rgb(0, 205, 205),   // 6  cyan
-                Color::Rgb(229, 229, 229), // 7  white
-                Color::Rgb(127, 127, 127), // 8  bright black
-                Color::Rgb(255, 0, 0),     // 9  bright red
-                Color::Rgb(0, 255, 0),     // 10 bright green
-                Color::Rgb(255, 255, 0),   // 11 bright yellow
-                Color::Rgb(92, 92, 255),   // 12 bright blue
-                Color::Rgb(200, 50, 255),  // 13 bright purple
-                Color::Rgb(0, 255, 255),   // 14 bright cyan
-                Color::Rgb(255, 255, 255), // 15 bright white
-            ];
-            XTERM_16[i as usize]
-        }
         vt100::Color::Idx(i) => Color::Indexed(i),
         vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
     }
