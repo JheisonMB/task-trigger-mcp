@@ -14,8 +14,9 @@ use crate::db::Database;
 
 use super::agent::InteractiveAgent;
 use super::context_transfer::{
-    build_context_payload_for, ContextSourceKind, ContextTransferConfig, ContextTransferModal,
-    ContextTransferStep,
+    build_context_payload_for, initial_capture_units, interactive_capture_kind,
+    interactive_line_page_count, interactive_prompt_count, ContextCaptureKind, ContextSourceKind,
+    ContextTransferConfig, ContextTransferModal, ContextTransferStep,
 };
 use crate::tui::prompt_templates::PromptTemplates;
 
@@ -541,14 +542,17 @@ impl App {
     }
 
     pub(crate) fn refresh_context_transfer_preview(&mut self) {
-        let Some((source, n_prompts)) = self.context_transfer_modal.as_ref().and_then(|modal| {
-            self.modal_source(modal)
-                .map(|source| (source, modal.n_prompts))
-        }) else {
+        let Some((source, n_units, capture_kind)) =
+            self.context_transfer_modal.as_ref().and_then(|modal| {
+                self.modal_source(modal)
+                    .map(|source| (source, modal.n_units, modal.capture_kind))
+            })
+        else {
             return;
         };
 
-        let Some(preview) = self.build_context_transfer_payload_from_source(source, n_prompts)
+        let Some(preview) =
+            self.build_context_transfer_payload_from_source(source, n_units, capture_kind)
         else {
             return;
         };
@@ -564,12 +568,9 @@ impl App {
             ContextTransferSource::Interactive(idx) => self
                 .interactive_agents
                 .get(idx)
-                .and_then(|agent| {
-                    agent
-                        .prompt_history
-                        .lock()
-                        .ok()
-                        .map(|history| history.len())
+                .map(|agent| match modal.capture_kind {
+                    ContextCaptureKind::Prompts => interactive_prompt_count(agent),
+                    ContextCaptureKind::LinePages => interactive_line_page_count(agent),
                 })
                 .unwrap_or(0)
                 .max(1),
@@ -641,14 +642,22 @@ impl App {
         source: ContextTransferSource,
     ) -> Option<ContextTransferModal> {
         match source {
-            ContextTransferSource::Interactive(idx) => self
-                .interactive_agents
-                .get(idx)
-                .map(|_| ContextTransferModal::new(idx, &self.context_transfer_config)),
-            ContextTransferSource::Terminal(idx) => self
-                .terminal_agents
-                .get(idx)
-                .map(|_| ContextTransferModal::new_terminal(idx, &self.context_transfer_config)),
+            ContextTransferSource::Interactive(idx) => {
+                self.interactive_agents.get(idx).map(|agent| {
+                    let capture_kind = interactive_capture_kind(agent);
+                    let max_units = match capture_kind {
+                        ContextCaptureKind::Prompts => interactive_prompt_count(agent),
+                        ContextCaptureKind::LinePages => interactive_line_page_count(agent),
+                    };
+                    let initial_units =
+                        initial_capture_units(max_units, &self.context_transfer_config);
+                    ContextTransferModal::new(idx, capture_kind, initial_units)
+                })
+            }
+            ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx).map(|_| {
+                let initial_units = initial_capture_units(20, &self.context_transfer_config);
+                ContextTransferModal::new_terminal(idx, initial_units)
+            }),
         }
     }
 
@@ -666,22 +675,32 @@ impl App {
     }
 
     fn build_context_transfer_payload(&self, modal: &ContextTransferModal) -> Option<String> {
-        self.build_context_transfer_payload_from_source(self.modal_source(modal)?, modal.n_prompts)
+        self.build_context_transfer_payload_from_source(
+            self.modal_source(modal)?,
+            modal.n_units,
+            modal.capture_kind,
+        )
     }
 
     fn build_context_transfer_payload_from_source(
         &self,
         source: ContextTransferSource,
-        n_prompts: usize,
+        n_units: usize,
+        capture_kind: ContextCaptureKind,
     ) -> Option<String> {
         match source {
             ContextTransferSource::Interactive(idx) => {
                 self.interactive_agents.get(idx).map(|agent| {
-                    build_context_payload_for(agent, n_prompts, ContextSourceKind::Interactive)
+                    build_context_payload_for(
+                        agent,
+                        n_units,
+                        ContextSourceKind::Interactive,
+                        capture_kind,
+                    )
                 })
             }
             ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx).map(|agent| {
-                build_context_payload_for(agent, n_prompts, ContextSourceKind::Terminal)
+                build_context_payload_for(agent, n_units, ContextSourceKind::Terminal, capture_kind)
             }),
         }
     }
@@ -730,6 +749,8 @@ impl App {
             // Get CLI config for interactive args and accent color
             let cli_config = canopy_config.get_cli(cli.as_str());
             let interactive_args = cli_config.and_then(|c| c.interactive_args.as_deref());
+            let resume_args = cli_config.and_then(|c| c.resume_args.as_deref());
+            let session_resume_cmd = cli_config.and_then(|c| c.session_resume_cmd.as_deref());
             let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
             let accent = cli_config
                 .and_then(|c| c.accent_color)
@@ -737,7 +758,13 @@ impl App {
                 .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
 
             let yolo_flag = cli_config.and_then(|c| c.yolo_flag.as_deref());
-            let args_str = build_resumed_session_args(session, interactive_args, yolo_flag);
+            let args_str = build_resumed_session_args(
+                session,
+                interactive_args,
+                resume_args,
+                session_resume_cmd,
+                yolo_flag,
+            );
             let args = args_str.as_deref();
             let model: Option<String> = None; // No model info in session registry
             let model_flag = cli_config.and_then(|c| c.model_flag.clone());
@@ -863,9 +890,11 @@ mod tests {
             status: "active".to_string(),
         };
 
-        assert!(build_resumed_session_args(&session, None, Some("--yolo"))
-            .as_deref()
-            .is_some_and(|args| args.contains("--yolo")));
+        assert!(
+            build_resumed_session_args(&session, None, None, None, Some("--yolo"))
+                .as_deref()
+                .is_some_and(|args| args.contains("--yolo"))
+        );
     }
 
     #[test]
@@ -880,45 +909,76 @@ mod tests {
             status: "active".to_string(),
         };
 
-        let args = build_resumed_session_args(&session, None, Some("--yolo")).unwrap();
+        let args = build_resumed_session_args(&session, None, None, None, Some("--yolo")).unwrap();
         assert_eq!(args.matches("--yolo").count(), 1);
     }
 
     #[test]
-    fn test_original_args_preserved_over_config_args() {
+    fn test_original_resume_args_preserved_over_reconstructed_args() {
         let session = InteractiveSession {
             id: "test-session".to_string(),
             name: "test-session".to_string(),
             cli: "opencode".to_string(),
             working_dir: "/tmp".to_string(),
-            args: Some("--tui --yolo".to_string()),
+            args: Some("--session abc123 --yolo".to_string()),
             started_at: "2023-01-01T00:00:00Z".to_string(),
             status: "active".to_string(),
         };
 
-        // Even if config has different interactive_args, original persisted args win.
-        let args = build_resumed_session_args(&session, Some("--chat"), Some("--yolo")).unwrap();
-        assert!(args.contains("--tui"));
+        let args = build_resumed_session_args(
+            &session,
+            Some("--chat"),
+            Some("-c"),
+            Some("--session"),
+            Some("--yolo"),
+        )
+        .unwrap();
+        assert!(args.contains("--session abc123"));
         assert!(args.contains("--yolo"));
-        assert!(!args.contains("--chat"));
+        assert!(!args.contains("-c"));
     }
 
     #[test]
-    fn test_falls_back_to_config_interactive_args_when_no_original() {
+    fn test_rebuilds_resume_args_for_fresh_session() {
         let session = InteractiveSession {
             id: "test-session".to_string(),
             name: "test-session".to_string(),
-            cli: "kiro".to_string(),
+            cli: "copilot".to_string(),
             working_dir: "/tmp".to_string(),
             args: None,
             started_at: "2023-01-01T00:00:00Z".to_string(),
             status: "active".to_string(),
         };
 
-        // When no original args are persisted, fall back to config interactive_args.
-        // Yolo is not added because we don't know if the original session had it.
-        let args = build_resumed_session_args(&session, Some("--tui"), Some("--yolo")).unwrap();
-        assert!(args.contains("--tui"));
+        let args =
+            build_resumed_session_args(&session, None, Some("--continue"), None, Some("--yolo"))
+                .unwrap();
+        assert!(args.contains("--continue"));
         assert!(!args.contains("--yolo"));
+    }
+
+    #[test]
+    fn test_appends_resume_args_to_original_interactive_command() {
+        let session = InteractiveSession {
+            id: "test-session".to_string(),
+            name: "test-session".to_string(),
+            cli: "kiro".to_string(),
+            working_dir: "/tmp".to_string(),
+            args: Some("chat --trust-all-tools".to_string()),
+            started_at: "2023-01-01T00:00:00Z".to_string(),
+            status: "active".to_string(),
+        };
+
+        let args = build_resumed_session_args(
+            &session,
+            Some("chat"),
+            Some("--resume-picker"),
+            None,
+            Some("--trust-all-tools"),
+        )
+        .unwrap();
+        assert!(args.contains("chat"));
+        assert!(args.contains("--resume-picker"));
+        assert_eq!(args.matches("--trust-all-tools").count(), 1);
     }
 }
