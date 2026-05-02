@@ -20,6 +20,7 @@ mod scheduler;
 mod setup_module;
 mod shared;
 mod skills_module;
+mod sync_manager;
 mod system;
 mod tui;
 mod watchers;
