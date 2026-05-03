@@ -11,6 +11,7 @@ pub fn draw_log_text(frame: &mut Frame, area: Rect, inner: Rect, app: &App) {
     let title_suffix = match app.focus {
         Focus::Agent => " (Esc → back)",
         Focus::Preview => " (Enter → focus)",
+        Focus::RagTransfer => " (Esc → cancel)",
         _ => "",
     };
     let title_block = Block::default()

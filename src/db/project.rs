@@ -29,6 +29,14 @@ pub struct RagQueueItem {
     pub queued_at: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RagInfoSummary {
+    pub total_chunks: i64,
+    pub indexed_projects: i64,
+    pub queued_items: i64,
+    pub processing_items: i64,
+}
+
 impl Database {
     // ── projects ───────────────────────────────────────────────────────
 
@@ -94,17 +102,68 @@ impl Database {
                 for entry in entries.flatten() {
                     if let Ok(metadata) = entry.metadata() {
                         if metadata.is_dir() {
+                            // Skip common non-source directories to avoid queue bloat.
+                            let name = entry.file_name();
+                            let name_str = name.to_string_lossy();
+                            if matches!(
+                                name_str.as_ref(),
+                                "node_modules"
+                                    | ".git"
+                                    | "target"
+                                    | "dist"
+                                    | "build"
+                                    | ".cache"
+                                    | "__pycache__"
+                                    | ".venv"
+                                    | "vendor"
+                            ) {
+                                continue;
+                            }
                             queue.push((entry.path(), depth + 1));
                         } else if metadata.len() <= MAX_FILE_SIZE {
                             let file_path = entry.path();
                             if let Some(file_path_str) = file_path.to_str() {
-                                let _ = self.enqueue_rag_item(project_hash, file_path_str, now);
+                                // Only queue files that the indexer can actually process.
+                                if is_indexable_path(file_path_str) {
+                                    let _ = self.enqueue_rag_item(project_hash, file_path_str, now);
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        Ok(())
+    }
+
+    pub fn delete_project(&self, hash: &str) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        conn.execute(
+            "DELETE FROM rag_queue WHERE project_hash=?1",
+            rusqlite::params![hash],
+        )?;
+        conn.execute(
+            "DELETE FROM rag_chunks WHERE project_hash=?1",
+            rusqlite::params![hash],
+        )?;
+        conn.execute(
+            "DELETE FROM projects WHERE hash=?1",
+            rusqlite::params![hash],
+        )?;
+        Ok(())
+    }
+
+    /// Remove all entries from the RAG queue (used on daemon startup to purge
+    /// stale entries queued without the language filter in older versions).
+    pub fn clear_rag_queue(&self) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        conn.execute("DELETE FROM rag_queue", [])?;
         Ok(())
     }
 
@@ -288,6 +347,38 @@ impl Database {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
+    pub fn rag_info_summary(&self) -> Result<RagInfoSummary> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+
+        let total_chunks =
+            conn.query_row("SELECT COUNT(*) FROM rag_chunks", [], |row| row.get(0))?;
+        let indexed_projects = conn.query_row(
+            "SELECT COUNT(DISTINCT project_hash) FROM rag_chunks",
+            [],
+            |row| row.get(0),
+        )?;
+        let queued_items = conn.query_row(
+            "SELECT COUNT(*) FROM rag_queue WHERE status='queued'",
+            [],
+            |row| row.get(0),
+        )?;
+        let processing_items = conn.query_row(
+            "SELECT COUNT(*) FROM rag_queue WHERE status='processing'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        Ok(RagInfoSummary {
+            total_chunks,
+            indexed_projects,
+            queued_items,
+            processing_items,
+        })
+    }
+
     // ── RAG chunks (FTS5) ──────────────────────────────────────────────
 
     /// Delete all chunks for a file, then insert new ones.
@@ -395,4 +486,34 @@ fn row_to_rag_queue_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RagQueueIt
         status: row.get(3)?,
         queued_at: row.get(4)?,
     })
+}
+
+/// Returns true if the file at `path` has an extension the RAG indexer can process.
+/// Mirrors the extension list in `crate::rag::chunker::detect_lang` without
+/// creating a cross-module dependency cycle (db → rag → db).
+fn is_indexable_path(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    matches!(
+        ext,
+        "rs" | "py"
+            | "java"
+            | "kt"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "go"
+            | "c"
+            | "cpp"
+            | "h"
+            | "md"
+            | "mdx"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "txt"
+    )
 }

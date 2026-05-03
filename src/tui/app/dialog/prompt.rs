@@ -429,7 +429,10 @@ impl SimplePromptDialog {
                 RagScope::Global => None,
                 RagScope::Project(hash) => Some(hash),
             };
-            for chunk in db.search_chunks(resolved_query, project_hash, 5).unwrap_or_default() {
+            for chunk in db
+                .search_chunks(resolved_query, project_hash, 5)
+                .unwrap_or_default()
+            {
                 resources.push(Self::format_rag_chunk(resolved_query, &chunk));
             }
         }

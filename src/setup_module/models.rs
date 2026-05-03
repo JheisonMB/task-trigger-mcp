@@ -141,8 +141,6 @@ pub(crate) fn is_binary_available(binary: &str) -> bool {
     which::which(binary).is_ok()
 }
 
-
-
 #[allow(dead_code)]
 pub fn is_configured() -> bool {
     dirs::home_dir()

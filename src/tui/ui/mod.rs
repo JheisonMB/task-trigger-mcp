@@ -112,6 +112,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         dialogs::draw_context_transfer_modal(frame, app);
     }
 
+    if app.rag_transfer_modal.is_some() {
+        dialogs::draw_rag_transfer_modal(frame, app);
+    }
+
     if app.simple_prompt_dialog.is_some() {
         dialogs::draw_simple_prompt_dialog(frame, app);
     }

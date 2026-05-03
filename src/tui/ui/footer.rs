@@ -16,17 +16,30 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("n", "new"),
             ("F2", "projects"),
             ("F3", "sync"),
+            ("Shift+←→", "panels"),
             ("F10", "preview"),
             ("F1", "stats"),
         ],
         Focus::Preview => {
             if app.sidebar_mode == crate::tui::app::SidebarMode::Projects {
-                vec![
-                    ("↑↓", "nav"),
-                    ("F2", "agents"),
-                    ("F3", "sync"),
-                    ("Esc", "home"),
-                ]
+                if app.playground_active {
+                    vec![
+                        ("type", "search"),
+                        ("↑↓", "results"),
+                        ("Ctrl+T", "transfer"),
+                        ("Esc", "close"),
+                        ("F2", "agents"),
+                    ]
+                } else {
+                    vec![
+                        ("↑↓", "nav"),
+                        ("Shift+←→", "panels"),
+                        ("Enter", "open"),
+                        ("F2", "agents"),
+                        ("F3", "sync"),
+                        ("Esc", "home"),
+                    ]
+                }
             } else {
                 let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));
                 let mut h = vec![("↑↓", "nav"), ("Enter", "focus")];
@@ -101,6 +114,7 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
             ("Tab/Enter", "next step"),
             ("Esc", "cancel"),
         ],
+        Focus::RagTransfer => vec![("↑↓", "select"), ("Enter", "transfer"), ("Esc", "cancel")],
         Focus::PromptTemplateDialog => vec![
             ("↑↓", "fields"),
             ("⇧↑↓←→", "cursor"),

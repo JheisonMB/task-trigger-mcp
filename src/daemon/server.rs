@@ -176,7 +176,13 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
 }
 
 /// Enqueue all registered projects that have never been indexed.
+/// Also clears any stale queue entries left from a previous (unfiltered) run.
 async fn startup_enqueue_unindexed(ingestion: Arc<IngestionManager>, db: Arc<Database>) {
+    // Purge stale queue entries so non-code files don't clog the view.
+    if let Err(e) = db.clear_rag_queue() {
+        tracing::warn!("startup_enqueue: failed to clear stale queue: {}", e);
+    }
+
     let projects = match db.list_projects() {
         Ok(p) => p,
         Err(e) => {

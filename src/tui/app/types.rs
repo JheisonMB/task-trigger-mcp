@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::application::notification_service::NotificationService;
+use crate::db::project::{Chunk, RagInfoSummary, RagQueueItem};
 use crate::db::Database;
 use crate::domain::models::{Agent, RunLog};
 use crate::domain::project::Project;
@@ -39,7 +40,15 @@ pub enum Focus {
     NewAgentDialog,
     Agent,
     ContextTransfer,
+    RagTransfer,
     PromptTemplateDialog,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ProjectsPanelFocus {
+    Projects,
+    RagQueue,
+    RagInfo,
 }
 
 #[derive(Clone, Copy)]
@@ -55,6 +64,13 @@ pub(crate) struct SyncPanelState {
     pub vibe: WorkspaceStatus,
     pub active_intents: Vec<ActiveIntent>,
     pub recent_messages: Vec<SyncMessage>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RagTransferModal {
+    pub picker_selected: usize,
+    pub query: String,
+    pub context_payload: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -121,6 +137,10 @@ pub struct App {
     pub(crate) sidebar_click_map: Vec<(usize, u16, u16)>,
     pub(crate) projects: Vec<Project>,
     pub(crate) selected_project: usize,
+    pub(crate) projects_panel_focus: ProjectsPanelFocus,
+    pub(crate) global_rag_queue: Vec<RagQueueItem>,
+    pub(crate) selected_rag_queue: usize,
+    pub(crate) rag_info: RagInfoSummary,
     pub(crate) sidebar_visible: bool,
     pub(crate) sync_panel_visible: bool,
     pub(crate) term_width: u16,
@@ -134,6 +154,7 @@ pub struct App {
     /// on the same content every tick.
     pub(crate) whimsg_last_log_hash: u64,
     pub(crate) context_transfer_modal: Option<crate::tui::context_transfer::ContextTransferModal>,
+    pub(crate) rag_transfer_modal: Option<RagTransferModal>,
     pub(crate) context_transfer_config: crate::tui::context_transfer::ContextTransferConfig,
     /// Prompt templates loaded from registry
     #[allow(dead_code)]
@@ -161,10 +182,17 @@ pub struct App {
     pub(crate) terminal_search: Option<TerminalSearch>,
     /// CLI launch usage counters (persisted to disk).
     pub(crate) cli_usage: crate::domain::usage_stats::CliUsage,
-    
+
+    // RAG pause state (synced from daemon_state table)
+    pub(crate) rag_paused: bool,
+    /// Whether the RagInfo panel has focus in Agents sidebar mode.
+    pub(crate) agents_rag_focused: bool,
+
     // RAG Playground state
     pub(crate) playground_active: bool,
     pub(crate) playground_query: String,
-    pub(crate) playground_results: Vec<crate::db::project::Chunk>,
+    pub(crate) playground_results: Vec<Chunk>,
+    pub(crate) playground_selected: usize,
     pub(crate) playground_last_search: std::time::Instant,
+    pub(crate) playground_last_executed_query: String,
 }

@@ -322,6 +322,41 @@ fn test_rag_queue_roundtrip() {
         .is_empty());
 }
 
+#[test]
+fn test_rag_info_summary_counts_chunks_and_queue_states() {
+    let db = test_db();
+    let project = crate::domain::project::Project::new("/tmp/project");
+    db.upsert_project(&project).unwrap();
+
+    db.enqueue_rag_item(&project.hash, "/tmp/project/src/lib.rs", 111)
+        .unwrap();
+    db.enqueue_rag_item(&project.hash, "/tmp/project/src/main.rs", 112)
+        .unwrap();
+    db.mark_rag_item_processing(&project.hash, "/tmp/project/src/main.rs", 113)
+        .unwrap();
+
+    db.replace_chunks(
+        &project.hash,
+        "/tmp/project/src/lib.rs",
+        &[crate::db::project::Chunk {
+            id: "chunk-1".to_string(),
+            project_hash: project.hash.clone(),
+            source_path: "/tmp/project/src/lib.rs".to_string(),
+            chunk_index: 0,
+            content: "needle".to_string(),
+            lang: "rust".to_string(),
+            updated_at: 114,
+        }],
+    )
+    .unwrap();
+
+    let summary = db.rag_info_summary().unwrap();
+    assert_eq!(summary.total_chunks, 1);
+    assert_eq!(summary.indexed_projects, 1);
+    assert_eq!(summary.queued_items, 1);
+    assert_eq!(summary.processing_items, 1);
+}
+
 // ── Agent CRUD ─────────────────────────────────────────────────────
 
 #[test]

@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
+use crate::application::ports::StateRepository;
 use crate::db::project::Chunk;
 use crate::db::Database;
 use crate::domain::project::Project;
@@ -126,15 +127,29 @@ impl IngestionManager {
                 _ = self.notify.notified() => {
                     // Debounce: wait 3 s for burst to settle
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    self.drain_queue().await;
+                    self.drain_queue(&ct).await;
                 }
             }
         }
     }
 
-    async fn drain_queue(&self) {
+    fn is_paused(&self) -> bool {
+        self.db.get_state("rag_paused").ok().flatten().as_deref() == Some("1")
+    }
+
+    async fn drain_queue(&self, ct: &tokio_util::sync::CancellationToken) {
         let mut processed = 0usize;
         loop {
+            // Honour pause: spin-wait until unpaused or cancelled.
+            while self.is_paused() {
+                tokio::select! {
+                    _ = ct.cancelled() => return,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                }
+            }
+            if ct.is_cancelled() {
+                break;
+            }
             let item = {
                 let mut q = self.queue.lock().await;
                 q.pop()

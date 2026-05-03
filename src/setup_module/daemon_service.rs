@@ -1,6 +1,4 @@
-use crate::setup_module::models::{
-    is_platform_available, Platform,
-};
+use crate::setup_module::models::{is_platform_available, Platform};
 use crate::setup_module::platform_adapter::run_install_our_servers;
 use crate::setup_module::registry_fetch::fetch_registry;
 use crate::setup_module::PlatformWithCli;

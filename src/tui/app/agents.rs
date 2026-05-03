@@ -573,7 +573,9 @@ impl App {
         if self.selected >= self.agents.len() && !self.agents.is_empty() {
             self.selected = self.agents.len() - 1;
         }
-        if self.focus == Focus::Agent || matches!(self.focus, Focus::ContextTransfer) {
+        if self.focus == Focus::Agent
+            || matches!(self.focus, Focus::ContextTransfer | Focus::RagTransfer)
+        {
             self.focus = Focus::Preview;
         }
     }

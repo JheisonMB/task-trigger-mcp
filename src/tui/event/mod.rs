@@ -23,6 +23,7 @@ use home_preview::{handle_home_key, handle_preview_key};
 use new_agent_dialog::handle_dialog_key;
 use paste::handle_paste;
 use prompt_template::handle_prompt_template_key;
+use rag_transfer::handle_rag_transfer_key;
 
 type Terminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
 
@@ -38,6 +39,7 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
             Focus::Agent
             | Focus::NewAgentDialog
             | Focus::ContextTransfer
+            | Focus::RagTransfer
             | Focus::PromptTemplateDialog => Duration::from_millis(50),
             Focus::Preview => Duration::from_millis(100),
             Focus::Home if app.home_brain.is_some() => Duration::from_millis(50),
@@ -83,6 +85,7 @@ mod home_preview;
 mod new_agent_dialog;
 mod paste;
 mod prompt_template;
+mod rag_transfer;
 mod search_picker;
 mod terminal_warp;
 
@@ -110,6 +113,11 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
 
     if code == KeyCode::F(2) {
         app.toggle_sidebar_mode();
+        // When in agent focus, step back to Preview so sidebar navigation
+        // keys (Shift+arrows, Up/Down) go to the correct handler.
+        if matches!(app.focus, Focus::Agent) {
+            app.focus = Focus::Preview;
+        }
         return Ok(());
     }
 
@@ -146,6 +154,7 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
         Focus::NewAgentDialog => handle_dialog_key(app, code),
         Focus::Agent => handle_agent_key(app, code, modifiers),
         Focus::ContextTransfer => handle_context_transfer_key(app, code),
+        Focus::RagTransfer => handle_rag_transfer_key(app, code),
         Focus::PromptTemplateDialog => handle_prompt_template_key(app, code, modifiers),
     }
 }
@@ -374,6 +383,7 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
             }
         }
         Focus::ContextTransfer => {}
+        Focus::RagTransfer => {}
         Focus::PromptTemplateDialog => {}
     }
     Ok(())

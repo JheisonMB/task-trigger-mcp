@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::application::notification_service::DefaultNotificationService;
-use crate::application::ports::AgentRepository;
+use crate::application::ports::{AgentRepository, StateRepository};
 use crate::db::Database;
 
 use super::agent::InteractiveAgent;
@@ -34,7 +34,8 @@ pub mod utils;
 pub(crate) use session_resume::build_resumed_session_args;
 pub use terminal_search::TerminalSearch;
 pub(crate) use types::ContextTransferSource;
-pub use types::{AgentEntry, App, Focus, SidebarMode};
+use types::RagTransferModal;
+pub use types::{AgentEntry, App, Focus, ProjectsPanelFocus, SidebarMode};
 
 impl App {
     pub fn new(db: Arc<Database>, data_dir: &Path) -> Result<Self> {
@@ -85,6 +86,10 @@ impl App {
             sidebar_click_map: Vec::new(),
             projects: Vec::new(),
             selected_project: 0,
+            projects_panel_focus: ProjectsPanelFocus::Projects,
+            global_rag_queue: Vec::new(),
+            selected_rag_queue: 0,
+            rag_info: crate::db::project::RagInfoSummary::default(),
             sidebar_visible: true,
             sync_panel_visible: true,
             term_width: 0,
@@ -96,6 +101,7 @@ impl App {
             whimsg: super::whimsg::Whimsg::new(),
             whimsg_last_log_hash: 0,
             context_transfer_modal: None,
+            rag_transfer_modal: None,
             context_transfer_config: ContextTransferConfig::default(),
             prompt_templates: PromptTemplates::load_from_registry()
                 .unwrap_or_else(|_| PromptTemplates::internal_templates()),
@@ -126,7 +132,11 @@ impl App {
             playground_active: false,
             playground_query: String::new(),
             playground_results: Vec::new(),
+            playground_selected: 0,
             playground_last_search: std::time::Instant::now(),
+            playground_last_executed_query: String::new(),
+            rag_paused: false,
+            agents_rag_focused: false,
         };
         app.refresh()?;
         Ok(app)
@@ -138,6 +148,7 @@ impl App {
         self.refresh_daemon_status();
         self.refresh_agents()?;
         self.refresh_projects()?;
+        self.refresh_rag_state()?;
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
         self.poll_terminal_agents();
@@ -164,27 +175,30 @@ impl App {
         if !self.playground_active {
             return Ok(());
         }
-        
+
         // Only search if query changed and debounce time has passed (300ms)
         let since_last = self.playground_last_search.elapsed().as_millis();
         if since_last < 300 {
             return Ok(());
         }
-        
-        if self.playground_query.is_empty() {
+
+        let query = self.playground_query.trim().to_string();
+        if query.is_empty() {
             self.playground_results.clear();
+            self.playground_selected = 0;
+            self.playground_last_executed_query.clear();
             return Ok(());
         }
-        
-        // Search in the default RAG index (global FTS)
-        let query = &self.playground_query;
-        
-        // Use the FTS5 search to find chunks
-        if let Ok(results) = self.db.search_chunks(query, None, 50) {
-            self.playground_results = results;
+
+        if self.playground_last_executed_query == query {
+            return Ok(());
         }
-        
-        self.playground_last_search = std::time::Instant::now();
+
+        if let Ok(results) = self.db.search_chunks(&query, None, 50) {
+            self.playground_results = results;
+            self.playground_selected = 0;
+        }
+        self.playground_last_executed_query = query;
         Ok(())
     }
 
@@ -192,10 +206,21 @@ impl App {
 
     pub fn select_next(&mut self) {
         if self.sidebar_mode == SidebarMode::Projects {
-            if !self.projects.is_empty() {
-                let total_items = self.projects.len() + 1; // projects + playground
-                self.selected_project = (self.selected_project + 1) % total_items;
-                self.log_scroll = 0;
+            match self.projects_panel_focus {
+                ProjectsPanelFocus::Projects => {
+                    if !self.projects.is_empty() {
+                        self.selected_project = (self.selected_project + 1) % self.projects.len();
+                        self.log_scroll = 0;
+                    }
+                }
+                ProjectsPanelFocus::RagQueue => {
+                    if !self.global_rag_queue.is_empty() {
+                        self.selected_rag_queue =
+                            (self.selected_rag_queue + 1) % self.global_rag_queue.len();
+                        self.log_scroll = 0;
+                    }
+                }
+                ProjectsPanelFocus::RagInfo => {}
             }
         } else if !self.agents.is_empty() {
             self.selected = (self.selected + 1) % self.agents.len();
@@ -205,13 +230,26 @@ impl App {
 
     pub fn select_prev(&mut self) {
         if self.sidebar_mode == SidebarMode::Projects {
-            if !self.projects.is_empty() {
-                let total_items = self.projects.len() + 1; // projects + playground
-                self.selected_project = self
-                    .selected_project
-                    .checked_sub(1)
-                    .unwrap_or(total_items - 1);
-                self.log_scroll = 0;
+            match self.projects_panel_focus {
+                ProjectsPanelFocus::Projects => {
+                    if !self.projects.is_empty() {
+                        self.selected_project = self
+                            .selected_project
+                            .checked_sub(1)
+                            .unwrap_or(self.projects.len() - 1);
+                        self.log_scroll = 0;
+                    }
+                }
+                ProjectsPanelFocus::RagQueue => {
+                    if !self.global_rag_queue.is_empty() {
+                        self.selected_rag_queue = self
+                            .selected_rag_queue
+                            .checked_sub(1)
+                            .unwrap_or(self.global_rag_queue.len() - 1);
+                        self.log_scroll = 0;
+                    }
+                }
+                ProjectsPanelFocus::RagInfo => {}
             }
         } else if !self.agents.is_empty() {
             self.selected = self
@@ -240,6 +278,37 @@ impl App {
         Ok(())
     }
 
+    fn refresh_rag_state(&mut self) -> Result<()> {
+        self.global_rag_queue = self.db.list_rag_queue(None, 50)?;
+        self.rag_info = self.db.rag_info_summary()?;
+        self.rag_paused = self
+            .db
+            .get_state("rag_paused")?
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
+        if self.global_rag_queue.is_empty() {
+            self.selected_rag_queue = 0;
+            if self.projects_panel_focus == ProjectsPanelFocus::RagQueue {
+                self.projects_panel_focus = ProjectsPanelFocus::Projects;
+            }
+        } else {
+            self.selected_rag_queue = self
+                .selected_rag_queue
+                .min(self.global_rag_queue.len().saturating_sub(1));
+        }
+
+        // If RagInfo becomes unavailable (no chunks), reset focus away from it.
+        if self.rag_info.total_chunks == 0 {
+            if self.projects_panel_focus == ProjectsPanelFocus::RagInfo {
+                self.projects_panel_focus = ProjectsPanelFocus::Projects;
+            }
+            self.agents_rag_focused = false;
+        }
+
+        Ok(())
+    }
+
     pub fn selected_agent(&self) -> Option<&AgentEntry> {
         self.agents.get(self.selected)
     }
@@ -248,18 +317,64 @@ impl App {
         self.projects.get(self.selected_project)
     }
 
-    pub fn is_playground_selected(&self) -> bool {
-        self.sidebar_mode == SidebarMode::Projects && self.selected_project == self.projects.len()
+    pub fn delete_selected_project(&mut self) -> Result<()> {
+        let Some(hash) = self.selected_project().map(|p| p.hash.clone()) else {
+            return Ok(());
+        };
+        self.db.delete_project(&hash)?;
+        self.refresh_projects()?;
+        self.refresh_rag_state()?;
+        Ok(())
+    }
+
+    pub fn visible_projects_panels(&self) -> Vec<ProjectsPanelFocus> {
+        let mut panels = vec![ProjectsPanelFocus::Projects];
+        if !self.global_rag_queue.is_empty() {
+            panels.push(ProjectsPanelFocus::RagQueue);
+        }
+        if self.rag_info.total_chunks > 0 {
+            panels.push(ProjectsPanelFocus::RagInfo);
+        }
+        panels
+    }
+
+    pub fn cycle_projects_panel_focus(&mut self, forward: bool) {
+        let panels = self.visible_projects_panels();
+        let current = panels
+            .iter()
+            .position(|panel| *panel == self.projects_panel_focus)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % panels.len()
+        } else {
+            current.checked_sub(1).unwrap_or(panels.len() - 1)
+        };
+        self.projects_panel_focus = panels[next];
+        self.log_scroll = 0;
     }
 
     pub fn activate_playground(&mut self) {
         self.playground_active = true;
         self.playground_query.clear();
         self.playground_results.clear();
+        self.playground_selected = 0;
+        self.playground_last_executed_query.clear();
     }
 
     pub fn deactivate_playground(&mut self) {
         self.playground_active = false;
+        self.playground_query.clear();
+        self.playground_results.clear();
+        self.playground_selected = 0;
+        self.playground_last_executed_query.clear();
+    }
+
+    pub fn toggle_rag_pause(&mut self) {
+        let new_val = !self.rag_paused;
+        let _ = self
+            .db
+            .set_state("rag_paused", if new_val { "1" } else { "0" });
+        self.rag_paused = new_val;
     }
 
     pub fn toggle_sidebar_mode(&mut self) {
@@ -267,7 +382,12 @@ impl App {
             SidebarMode::Agents => SidebarMode::Projects,
             SidebarMode::Projects => SidebarMode::Agents,
         };
+        self.agents_rag_focused = false;
         self.log_scroll = 0;
+    }
+
+    pub fn selected_playground_chunk(&self) -> Option<&crate::db::project::Chunk> {
+        self.playground_results.get(self.playground_selected)
     }
 
     pub fn toggle_sync_panel(&mut self) {
@@ -807,6 +927,65 @@ impl App {
             .enumerate()
             .map(|(i, _)| i)
             .collect()
+    }
+
+    pub fn open_rag_transfer_modal(&mut self) {
+        let Some(chunk) = self.selected_playground_chunk() else {
+            return;
+        };
+
+        let query = self.playground_query.trim().to_string();
+        let context_payload = format!(
+            "kind: rag_chunk\nquery: {}\nproject_hash: {}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
+            query,
+            chunk.project_hash,
+            chunk.source_path,
+            chunk.chunk_index,
+            chunk.lang,
+            chunk.content
+        );
+
+        self.rag_transfer_modal = Some(RagTransferModal {
+            picker_selected: 0,
+            query,
+            context_payload,
+        });
+        self.focus = Focus::RagTransfer;
+    }
+
+    pub fn close_rag_transfer_modal(&mut self) {
+        self.rag_transfer_modal = None;
+        self.focus = Focus::Preview;
+    }
+
+    pub fn execute_rag_transfer(&mut self, dest_entry_idx: usize) {
+        let Some(modal) = self.rag_transfer_modal.take() else {
+            return;
+        };
+
+        let dest_agent_idx = {
+            let picker_entries = self.picker_interactive_entries();
+            picker_entries.get(dest_entry_idx).copied()
+        };
+        let Some(dest_ia_idx) = dest_agent_idx else {
+            return;
+        };
+
+        if let Some(entry_pos) = self
+            .agents
+            .iter()
+            .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
+        {
+            self.selected = entry_pos;
+        }
+        self.focus = Focus::Agent;
+
+        let mut initial_content = HashMap::new();
+        initial_content.insert("context".to_string(), modal.context_payload);
+        if !modal.query.trim().is_empty() {
+            initial_content.insert("rag_search".to_string(), format!("global: {}", modal.query));
+        }
+        self.open_simple_prompt_dialog(Some(initial_content));
     }
 
     /// Auto-resume previously active interactive sessions from the registry.
