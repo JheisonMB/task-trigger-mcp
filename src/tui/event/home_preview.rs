@@ -53,11 +53,39 @@ pub fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -
 // ── Preview: navigate agents, Enter → Focus ─────────────────────────
 
 pub fn handle_preview_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Result<()> {
+    // If playground is active, handle playground-specific inputs
+    if app.playground_active {
+        match code {
+            KeyCode::Esc => {
+                app.deactivate_playground();
+            }
+            KeyCode::Backspace => {
+                app.playground_query.pop();
+                app.playground_last_search = std::time::Instant::now();
+            }
+            KeyCode::Char(c) => {
+                app.playground_query.push(c);
+                app.playground_last_search = std::time::Instant::now();
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
+    
     match code {
         KeyCode::Esc | KeyCode::Char('h') => {
             app.focus = Focus::Home;
         }
         KeyCode::Enter | KeyCode::Char('l') => {
+            // Check if Playground is selected (in Projects view)
+            if app.is_playground_selected() {
+                app.activate_playground();
+                return Ok(());
+            }
+            // When browsing Projects, entering an agent auto-switches back to Agents view.
+            if app.sidebar_mode == crate::tui::app::SidebarMode::Projects {
+                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+            }
             // For Group entries: Enter activates the split and enters focus
             if let Some(AgentEntry::Group(idx)) = app.selected_agent() {
                 let idx = *idx;

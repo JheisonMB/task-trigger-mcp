@@ -17,6 +17,7 @@ pub fn handle_prompt_template_key(
     let field_width = ((app.term_width as usize * 65 / 100).max(40))
         .saturating_sub(4)
         .max(10);
+    let db = app.db.clone();
 
     // Resolve workdir for @ file picker (needs agent borrow before dialog borrow).
     let workdir: PathBuf = app
@@ -70,6 +71,13 @@ pub fn handle_prompt_template_key(
                                     selected: 0,
                                     entries,
                                     replace_id: None,
+                                };
+                            } else if *name == "project_context" {
+                                let entries =
+                                    crate::tui::app::dialog::SimplePromptDialog::collect_projects_for_picker(&app.db)?;
+                                dialog.picker_mode = SectionPickerMode::ProjectPicker {
+                                    selected: 0,
+                                    entries,
                                 };
                             } else {
                                 dialog.add_section(name);
@@ -193,6 +201,45 @@ pub fn handle_prompt_template_key(
             }
             return Ok(());
         }
+        SectionPickerMode::ProjectPicker { selected, entries } => {
+            let selected = *selected;
+            let count = entries.len();
+            match code {
+                KeyCode::Esc => {
+                    dialog.picker_mode = SectionPickerMode::None;
+                }
+                KeyCode::Up if selected > 0 => {
+                    if let SectionPickerMode::ProjectPicker {
+                        selected: ref mut s,
+                        ..
+                    } = dialog.picker_mode
+                    {
+                        *s = selected - 1;
+                    }
+                }
+                KeyCode::Down if selected + 1 < count => {
+                    if let SectionPickerMode::ProjectPicker {
+                        selected: ref mut s,
+                        ..
+                    } = dialog.picker_mode
+                    {
+                        *s = selected + 1;
+                    }
+                }
+                KeyCode::Enter | KeyCode::Tab => {
+                    if let SectionPickerMode::ProjectPicker { entries, selected } =
+                        std::mem::replace(&mut dialog.picker_mode, SectionPickerMode::None)
+                    {
+                        if let Some(project) = entries.get(selected) {
+                            dialog
+                                .add_section_with_content("project_context", project.path.clone());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         SectionPickerMode::None => {}
     }
 
@@ -308,7 +355,7 @@ pub fn handle_prompt_template_key(
         }
         // Ctrl+S → send prompt (reliable across all terminals)
         KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
-            if let Ok(prompt) = dialog.build_prompt() {
+            if let Ok(prompt) = dialog.build_prompt_with_resolved_resources(&db, &workdir) {
                 if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                     let idx = *idx;
                     if idx < app.interactive_agents.len() {
@@ -329,7 +376,7 @@ pub fn handle_prompt_template_key(
                 dialog.insert_newline_at_cursor(&section_name, field_width);
             } else if !is_instruction && modifiers.is_empty() {
                 // Enter in non-instruction fields also sends
-                if let Ok(prompt) = dialog.build_prompt() {
+                if let Ok(prompt) = dialog.build_prompt_with_resolved_resources(&db, &workdir) {
                     if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
                         let idx = *idx;
                         if idx < app.interactive_agents.len() {

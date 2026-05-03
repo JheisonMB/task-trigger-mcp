@@ -139,12 +139,38 @@ impl Database {
                 lang         TEXT NOT NULL,
                 updated_at   INTEGER NOT NULL,
                 PRIMARY KEY (project_hash, source_path, chunk_index)
+            );
+
+            CREATE TABLE IF NOT EXISTS rag_queue (
+                project_hash TEXT NOT NULL,
+                source_path  TEXT NOT NULL,
+                status       TEXT NOT NULL,
+                queued_at    INTEGER NOT NULL,
+                updated_at   INTEGER NOT NULL,
+                PRIMARY KEY (project_hash, source_path)
             );",
         )?;
 
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts
-             USING fts5(content, content=rag_chunks, content_rowid=rowid);",
+             USING fts5(content, content=rag_chunks, content_rowid=rowid);
+
+             CREATE TRIGGER IF NOT EXISTS rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN
+                 INSERT INTO rag_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN
+                 INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+                 VALUES('delete', old.rowid, old.content);
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN
+                 INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+                 VALUES('delete', old.rowid, old.content);
+                 INSERT INTO rag_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+             END;
+
+             INSERT INTO rag_chunks_fts(rag_chunks_fts) VALUES('rebuild');",
         )?;
 
         Ok(())
@@ -161,8 +187,6 @@ pub mod sync;
 
 #[cfg(test)]
 pub use crate::application::ports::{AgentRepository, RunRepository, StateRepository};
-#[cfg(test)]
-pub use session::{InteractiveSession, TerminalSession};
 
 #[cfg(test)]
 mod tests;

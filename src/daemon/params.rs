@@ -104,33 +104,33 @@ pub struct TaskReportParams {
 // ── Sync tool parameter types ──────────────────────────────────────────
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SyncAcquireLockParams {
-    /// Workdir this lock applies to.
+pub struct SyncDeclareIntentParams {
+    /// Workdir this mission belongs to.
     pub workdir: String,
-    /// Agent ID requesting the lock.
-    pub agent_id: String,
-    /// Human-readable agent name (e.g. "kiro", "opencode").
-    pub agent_name: String,
-    /// Lock type: "resource" (path) or "command" (exclusive command).
-    pub lock_type: String,
-    /// Path or command to lock.
-    pub resource: String,
-    /// Timeout in seconds (0 = no timeout). Default: 300.
-    pub timeout_secs: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SyncReleaseParams {
-    /// Workdir the lock belongs to.
-    pub workdir: String,
-    /// Agent ID that holds the lock.
+    /// Agent ID announcing the mission.
     pub agent_id: String,
     /// Human-readable agent name.
     pub agent_name: String,
-    /// Lock ID returned by sync_acquire_lock.
-    pub lock_id: String,
-    /// Resource that was locked (for the release message).
-    pub resource: String,
+    /// High-level mission being started.
+    pub mission: String,
+    /// Impact on the workspace: low | high | breaking.
+    pub impact: String,
+    /// Optional human-readable details.
+    pub description: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SyncReportStatusParams {
+    /// Workdir this status applies to.
+    pub workdir: String,
+    /// Agent ID reporting workspace state.
+    pub agent_id: String,
+    /// Human-readable agent name.
+    pub agent_name: String,
+    /// Workspace state: stable | unstable | testing.
+    pub status: String,
+    /// Optional status details shown to peers.
+    pub message: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -141,7 +141,7 @@ pub struct SyncBroadcastParams {
     pub agent_id: String,
     /// Human-readable agent name.
     pub agent_name: String,
-    /// Message kind: intent | info | query | answer | status.
+    /// Message kind: info | query | answer.
     pub kind: String,
     /// Human-readable message.
     pub message: String,
@@ -179,6 +179,8 @@ pub struct ProjectUpdateParams {
 pub struct RagSearchParams {
     /// Natural-language search query.
     pub query: String,
+    /// Optional caller identity used for per-agent throttling.
+    pub agent_id: Option<String>,
     /// "global" (all projects) or "project" (single project).
     pub scope: Option<String>,
     /// Required when scope = "project".

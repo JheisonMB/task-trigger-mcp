@@ -328,7 +328,9 @@ pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
                 "tools",
                 "instruction",
                 "context",
+                "project_context",
                 "resources",
+                "rag_search",
                 "examples",
                 "constraints",
             ];

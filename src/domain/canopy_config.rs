@@ -6,7 +6,7 @@ use std::path::Path;
 use super::cli_config::CliConfig;
 
 /// Top-level canopy configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanopyConfig {
     /// RFC 3339 timestamp of when setup was last completed.
     /// If `None`, setup has not been run yet.
@@ -24,6 +24,18 @@ pub struct CanopyConfig {
     /// Temperature unit used by sysinfo widgets.
     #[serde(default)]
     pub temperature_unit: TemperatureUnit,
+
+    /// Embeddings model identifier used by the knowledge layer.
+    #[serde(default = "default_embeddings_model")]
+    pub embeddings_model: String,
+
+    /// Root path for personal RAG documents/files.
+    #[serde(default = "default_rag_personal_root")]
+    pub rag_personal_root: String,
+
+    /// Root path used to discover or group related projects.
+    #[serde(default = "default_projects_root")]
+    pub projects_root: String,
 }
 
 /// Preferred unit for temperature display.
@@ -39,6 +51,27 @@ fn default_mcp_root() -> String {
     dirs::home_dir()
         .map(|h| h.to_string_lossy().to_string())
         .unwrap_or_else(|| "/".to_string())
+}
+
+fn default_embeddings_model() -> String {
+    "text-embedding-3-small".to_string()
+}
+
+fn default_rag_personal_root() -> String {
+    dirs::home_dir()
+        .map(|h| h.join(".canopy").join("rag").to_string_lossy().to_string())
+        .unwrap_or_else(|| ".canopy/rag".to_string())
+}
+
+fn default_projects_root() -> String {
+    if let Some(home) = dirs::home_dir() {
+        let preferred = home.join("Documents").join("Projects");
+        if preferred.exists() {
+            return preferred.to_string_lossy().to_string();
+        }
+        return home.to_string_lossy().to_string();
+    }
+    "/".to_string()
 }
 
 impl CanopyConfig {
@@ -79,6 +112,20 @@ impl CanopyConfig {
     }
 }
 
+impl Default for CanopyConfig {
+    fn default() -> Self {
+        Self {
+            configured_at: None,
+            mcp_filesystem_root: default_mcp_root(),
+            clis: Vec::new(),
+            temperature_unit: TemperatureUnit::default(),
+            embeddings_model: default_embeddings_model(),
+            rag_personal_root: default_rag_personal_root(),
+            projects_root: default_projects_root(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +137,7 @@ mod tests {
         assert!(!config.is_configured());
         assert!(config.clis.is_empty());
         assert_eq!(config.temperature_unit, TemperatureUnit::Celsius);
+        assert_eq!(config.embeddings_model, "text-embedding-3-small");
     }
 
     #[test]
@@ -101,6 +149,9 @@ mod tests {
         config.mark_configured();
         config.mcp_filesystem_root = "/custom/path".to_string();
         config.temperature_unit = TemperatureUnit::Fahrenheit;
+        config.embeddings_model = "custom-embed".to_string();
+        config.rag_personal_root = "/rag/home".to_string();
+        config.projects_root = "/projects".to_string();
 
         config.save(&canopy_dir).unwrap();
 
@@ -108,6 +159,9 @@ mod tests {
         assert!(loaded.is_configured());
         assert_eq!(loaded.mcp_filesystem_root, "/custom/path");
         assert_eq!(loaded.temperature_unit, TemperatureUnit::Fahrenheit);
+        assert_eq!(loaded.embeddings_model, "custom-embed");
+        assert_eq!(loaded.rag_personal_root, "/rag/home");
+        assert_eq!(loaded.projects_root, "/projects");
     }
 
     #[test]

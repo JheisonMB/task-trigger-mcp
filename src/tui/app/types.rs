@@ -5,6 +5,8 @@ use std::sync::Arc;
 use crate::application::notification_service::NotificationService;
 use crate::db::Database;
 use crate::domain::models::{Agent, RunLog};
+use crate::domain::project::Project;
+use crate::domain::sync::{ActiveIntent, SyncMessage, WorkspaceStatus};
 use crate::tui::agent::InteractiveAgent;
 use crate::tui::app::dialog::{NewAgentDialog, SimplePromptDialog};
 use crate::tui::app::terminal_search::TerminalSearch;
@@ -46,6 +48,21 @@ pub(crate) enum ContextTransferSource {
     Terminal(usize),
 }
 
+#[derive(Clone)]
+pub(crate) struct SyncPanelState {
+    pub workdir: String,
+    pub participant_count: usize,
+    pub vibe: WorkspaceStatus,
+    pub active_intents: Vec<ActiveIntent>,
+    pub recent_messages: Vec<SyncMessage>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SidebarMode {
+    Agents,
+    Projects,
+}
+
 // ── App struct ──────────────────────────────────────────────────
 
 /// Main application state.
@@ -82,6 +99,7 @@ pub struct App {
     // UI state
     pub(crate) selected: usize,
     pub(crate) focus: Focus,
+    pub(crate) sidebar_mode: SidebarMode,
     pub(crate) log_content: String,
     pub(crate) log_scroll: u16,
     pub(crate) running: bool,
@@ -101,7 +119,10 @@ pub struct App {
 
     // Layout state
     pub(crate) sidebar_click_map: Vec<(usize, u16, u16)>,
+    pub(crate) projects: Vec<Project>,
+    pub(crate) selected_project: usize,
     pub(crate) sidebar_visible: bool,
+    pub(crate) sync_panel_visible: bool,
     pub(crate) term_width: u16,
     pub(crate) show_legend: bool,
     pub(crate) show_copied: bool,
@@ -140,4 +161,10 @@ pub struct App {
     pub(crate) terminal_search: Option<TerminalSearch>,
     /// CLI launch usage counters (persisted to disk).
     pub(crate) cli_usage: crate::domain::usage_stats::CliUsage,
+    
+    // RAG Playground state
+    pub(crate) playground_active: bool,
+    pub(crate) playground_query: String,
+    pub(crate) playground_results: Vec<crate::db::project::Chunk>,
+    pub(crate) playground_last_search: std::time::Instant,
 }

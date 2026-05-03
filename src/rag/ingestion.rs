@@ -78,6 +78,10 @@ impl IngestionManager {
         let mut q = self.queue.lock().await;
         let ok = q.push(project_hash, source_path);
         if ok {
+            let now = chrono::Utc::now().timestamp();
+            if let Err(e) = self.db.enqueue_rag_item(project_hash, source_path, now) {
+                tracing::warn!("RAG queue state error {source_path}: {e}");
+            }
             self.notify.notify_one();
         }
         ok
@@ -138,11 +142,16 @@ impl IngestionManager {
             let Some((project_hash, source_path)) = item else {
                 break;
             };
+            let now = chrono::Utc::now().timestamp();
+            let _ = self
+                .db
+                .mark_rag_item_processing(&project_hash, &source_path, now);
             if let Err(e) = self.index_file(&project_hash, &source_path).await {
                 tracing::warn!("RAG index error {source_path}: {e}");
             } else {
                 processed += 1;
             }
+            let _ = self.db.remove_rag_item(&project_hash, &source_path);
         }
         if processed > 0 {
             tracing::info!("RAG: indexed {processed} file(s)");
@@ -186,6 +195,7 @@ impl IngestionManager {
             .collect();
 
         self.db.replace_chunks(project_hash, source_path, &chunks)?;
+        self.db.mark_project_indexed(project_hash, now)?;
         Ok(())
     }
 }

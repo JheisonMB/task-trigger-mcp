@@ -108,6 +108,16 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
         return Ok(());
     }
 
+    if code == KeyCode::F(2) {
+        app.toggle_sidebar_mode();
+        return Ok(());
+    }
+
+    if code == KeyCode::F(3) {
+        app.toggle_sync_panel();
+        return Ok(());
+    }
+
     // Ctrl+F: search in scrollback (interactive or terminal agents)
     if code == KeyCode::Char('f')
         && modifiers.contains(KeyModifiers::CONTROL)
@@ -155,7 +165,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
         if let Some(agent) = app.interactive_agents.get(idx) {
             let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
             let header_height = 1;
-            let clicked_in_pty = col >= sidebar_width && row >= header_height;
+            let clicked_in_pty = col >= sidebar_width
+                && col < sidebar_width + app.last_panel_inner.0
+                && row >= header_height
+                && row < header_height + app.last_panel_inner.1;
 
             if clicked_in_pty {
                 let pty_col = col.saturating_sub(sidebar_width);
@@ -174,7 +187,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
         if let Some(agent) = app.terminal_agents.get(idx) {
             let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
             let header_height = 1;
-            let clicked_in_pty = col >= sidebar_width && row >= header_height;
+            let clicked_in_pty = col >= sidebar_width
+                && col < sidebar_width + app.last_panel_inner.0
+                && row >= header_height
+                && row < header_height + app.last_panel_inner.1;
 
             if clicked_in_pty {
                 let pty_col = col.saturating_sub(sidebar_width);
@@ -200,39 +216,39 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     if matches!(kind, MouseEventKind::Up(MouseButton::Left))
         && !modifiers.contains(KeyModifiers::SHIFT)
     {
-        // Only handle clicks when focused on an interactive agent
-        if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-            let idx = *idx;
-            if let Some(agent) = app.interactive_agents.get(idx) {
-                // Calculate relative position within PTY area
-                let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-                let header_height = 1; // Header is always 1 line
+        let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
+        let header_height = 1;
+        let clicked_in_sidebar = mouse.column < sidebar_width;
+        let clicked_in_header = mouse.row < header_height;
+        let clicked_outside_pty = mouse.column >= sidebar_width + app.last_panel_inner.0
+            || mouse.row >= header_height + app.last_panel_inner.1;
 
-                // Check if click was in sidebar or header area
-                let clicked_in_sidebar = mouse.column < sidebar_width;
-                let clicked_in_header = mouse.row < header_height;
+        if clicked_in_sidebar || clicked_in_header || clicked_outside_pty {
+            return Ok(());
+        }
 
-                if clicked_in_sidebar || clicked_in_header {
-                    return Ok(()); // Click was outside PTY area
-                }
+        let pty_col = mouse.column.saturating_sub(sidebar_width);
+        let pty_row = mouse.row.saturating_sub(header_height);
 
-                // Calculate relative position within PTY area
-                let pty_col = mouse.column.saturating_sub(sidebar_width);
-                let pty_row = mouse.row.saturating_sub(header_height);
+        let line_text = match app.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => app
+                .interactive_agents
+                .get(*idx)
+                .and_then(|agent| agent.get_clean_pty_line_at_position(pty_col, pty_row)),
+            Some(AgentEntry::Terminal(idx)) => app
+                .terminal_agents
+                .get(*idx)
+                .and_then(|agent| agent.get_clean_pty_line_at_position(pty_col, pty_row)),
+            _ => None,
+        };
 
-                // Try to get clean PTY line text (non-blocking)
-                if let Some(line_text) = agent.get_clean_pty_line_at_position(pty_col, pty_row) {
-                    // Spawn a separate thread for clipboard operations to avoid UI freezing
-                    std::thread::spawn(move || {
-                        let _ = arboard::Clipboard::new()
-                            .and_then(|mut clipboard| clipboard.set_text(&line_text));
-                    });
-
-                    // Show copy feedback in UI
-                    app.show_copied = true;
-                    app.copied_at = std::time::Instant::now();
-                }
-            }
+        if let Some(line_text) = line_text {
+            std::thread::spawn(move || {
+                let _ = arboard::Clipboard::new()
+                    .and_then(|mut clipboard| clipboard.set_text(&line_text));
+            });
+            app.show_copied = true;
+            app.copied_at = std::time::Instant::now();
         }
         return Ok(());
     }
@@ -245,15 +261,21 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
         app.copied_at = std::time::Instant::now();
 
         // Also copy plain text to clipboard for better external paste
-        if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-            let idx = *idx;
-            if let Some(agent) = app.interactive_agents.get(idx) {
-                if let Some(plain_text) = agent.get_plain_text_from_screen() {
-                    // Try to copy to clipboard
-                    let _ = arboard::Clipboard::new()
-                        .and_then(|mut clipboard| clipboard.set_text(&plain_text));
-                }
-            }
+        let plain_text = match app.selected_agent() {
+            Some(AgentEntry::Interactive(idx)) => app
+                .interactive_agents
+                .get(*idx)
+                .and_then(|agent| agent.get_plain_text_from_screen()),
+            Some(AgentEntry::Terminal(idx)) => app
+                .terminal_agents
+                .get(*idx)
+                .and_then(|agent| agent.get_plain_text_from_screen()),
+            _ => None,
+        };
+
+        if let Some(plain_text) = plain_text {
+            let _ =
+                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(&plain_text));
         }
 
         return Ok(());

@@ -14,21 +14,34 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Focus::Home => vec![
             ("↑↓", "select"),
             ("n", "new"),
+            ("F2", "projects"),
+            ("F3", "sync"),
             ("F10", "preview"),
             ("F1", "stats"),
         ],
         Focus::Preview => {
-            let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));
-            let mut h = vec![("↑↓", "nav"), ("Enter", "focus")];
-            if is_bg {
-                h.push(("e", "edit"));
-                h.push(("d", "toggle"));
-                h.push(("F4", "delete"));
-                h.push(("r", "rerun"));
+            if app.sidebar_mode == crate::tui::app::SidebarMode::Projects {
+                vec![
+                    ("↑↓", "nav"),
+                    ("F2", "agents"),
+                    ("F3", "sync"),
+                    ("Esc", "home"),
+                ]
+            } else {
+                let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));
+                let mut h = vec![("↑↓", "nav"), ("Enter", "focus")];
+                if is_bg {
+                    h.push(("e", "edit"));
+                    h.push(("d", "toggle"));
+                    h.push(("F4", "delete"));
+                    h.push(("r", "rerun"));
+                }
+                h.push(("n", "new"));
+                h.push(("F2", "projects"));
+                h.push(("F3", "sync"));
+                h.push(("Esc", "home"));
+                h
             }
-            h.push(("n", "new"));
-            h.push(("Esc", "home"));
-            h
         }
         Focus::NewAgentDialog => vec![
             ("↑↓", "fields"),
@@ -66,6 +79,8 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                 if matches!(app.selected_agent(), Some(AgentEntry::Interactive(_))) {
                     h.push(("Ctrl+B", "prompt"));
                 }
+                h.push(("F2", "projects"));
+                h.push(("F3", "sync"));
                 h.push(("Ctrl+N", "new"));
                 h.push(("F1", "legend"));
                 h
@@ -74,6 +89,8 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                     ("↑↓/jk", "scroll"),
                     ("F10", "preview"),
                     ("Esc", "home"),
+                    ("F2", "projects"),
+                    ("F3", "sync"),
                     ("Ctrl+N", "new"),
                     ("F1", "legend"),
                 ]

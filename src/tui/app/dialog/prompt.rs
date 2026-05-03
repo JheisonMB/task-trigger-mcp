@@ -1,9 +1,12 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ratatui::style::Color;
 
 use super::at_picker::AtPicker;
+use crate::db::Database;
+use crate::domain::project::Project;
 use crate::tui::app::types::Focus;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Picker state for adding/removing sections
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -27,6 +30,23 @@ pub enum SectionPickerMode {
         /// `None` → create a new tools section on confirm; `Some(id)` → replace content of that section
         replace_id: Option<String>,
     },
+    ProjectPicker {
+        selected: usize,
+        entries: Vec<ProjectPickerEntry>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPickerEntry {
+    pub hash: String,
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RagScope<'a> {
+    Global,
+    Project(&'a str),
 }
 
 /// New simplified prompt template dialog with dynamic sections
@@ -106,6 +126,14 @@ impl SimplePromptDialog {
         id
     }
 
+    fn section_type(section_id: &str) -> &str {
+        Self::get_available_sections()
+            .into_iter()
+            .map(|(name, _)| name)
+            .find(|name| section_id == *name || section_id.starts_with(&format!("{name}_")))
+            .unwrap_or(section_id)
+    }
+
     /// Add a section instance (can be same type multiple times)
     pub fn add_section(&mut self, section_name: &str) {
         let unique_id = self.generate_section_id(section_name);
@@ -148,7 +176,9 @@ impl SimplePromptDialog {
         vec![
             ("instruction", "Instruction"),
             ("context", "Context"),
+            ("project_context", "Project Context"),
             ("resources", "Resources"),
+            ("rag_search", "RAG Search"),
             ("examples", "Examples"),
             ("constraints", "Constraints"),
             ("tools", "Tools"),
@@ -199,6 +229,20 @@ impl SimplePromptDialog {
         entries
     }
 
+    pub fn collect_projects_for_picker(db: &Database) -> Result<Vec<ProjectPickerEntry>> {
+        let mut entries = db
+            .list_projects()?
+            .into_iter()
+            .map(|project| ProjectPickerEntry {
+                hash: project.hash,
+                name: project.name,
+                path: project.path,
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.name.cmp(&right.name).then(left.path.cmp(&right.path)));
+        Ok(entries)
+    }
+
     /// Set the content of a specific tools section to a single skill label.
     /// Used by the SkillsPicker to replace the skill in an existing tools section.
     pub fn set_tools_section_skill(&mut self, section_id: &str, label: &str) {
@@ -217,8 +261,7 @@ impl SimplePromptDialog {
             .iter()
             .filter(|s| *s != "instruction")
             .map(|section_id| {
-                // Extract section name from ID (e.g., "context_1" -> "context")
-                let section_name = section_id.split('_').next().unwrap_or(section_id.as_str());
+                let section_name = Self::section_type(section_id);
                 let label = Self::get_available_sections()
                     .into_iter()
                     .find(|(name, _)| *name == section_name)
@@ -252,6 +295,174 @@ impl SimplePromptDialog {
             .get(section_id)
             .map(|s| s.as_str())
             .or_else(|| self.sections.get(section_id).map(|s| s.as_str()))
+    }
+
+    fn section_lines(&self, prefix: &str) -> Vec<String> {
+        self.enabled_sections
+            .iter()
+            .filter(|section_id| {
+                *section_id == prefix || section_id.starts_with(&format!("{prefix}_"))
+            })
+            .filter_map(|section_id| self.section_content_for_build(section_id))
+            .flat_map(|content| content.lines())
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn format_project_block(project: &Project) -> String {
+        let mut lines = vec![
+            format!("name: {}", project.name),
+            format!("workdir_hash: {}", project.hash),
+            format!("path: {}", project.path),
+        ];
+        if let Some(description) = project.description.as_deref() {
+            lines.push(format!("description: {}", description));
+        }
+        if let Some(tags) = project.tags.as_deref() {
+            lines.push(format!("tags: {}", tags));
+        }
+        if let Some(indexed_at) = project.indexed_at {
+            lines.push(format!("indexed_at: {}", indexed_at));
+        }
+        lines.join("\n")
+    }
+
+    fn format_file_resource(path: &Path, content: &str) -> String {
+        format!(
+            "path: {}\nkind: file\ncontent:\n{}",
+            path.display(),
+            content
+        )
+    }
+
+    fn format_rag_chunk(query: &str, chunk: &crate::db::project::Chunk) -> String {
+        format!(
+            "kind: rag_chunk\nquery: {query}\nproject_hash: {}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
+            chunk.project_hash, chunk.source_path, chunk.chunk_index, chunk.lang, chunk.content
+        )
+    }
+
+    fn lookup_project_reference(db: &Database, entry: &str) -> Result<Option<Project>> {
+        if let Some(project) = db.get_project(entry)? {
+            return Ok(Some(project));
+        }
+        let path = Path::new(entry);
+        if path.exists() {
+            return db.get_project_by_path(path);
+        }
+        Ok(None)
+    }
+
+    fn resolve_path_resource(db: &Database, raw: &str) -> Result<Option<String>> {
+        let path = Path::new(raw);
+        if !path.exists() {
+            return Ok(None);
+        }
+        if path.is_dir() {
+            if let Some(project) = db.get_project_by_path(path)? {
+                return Ok(Some(Self::format_project_block(&project)));
+            }
+            return Ok(Some(format!("path: {}\nkind: directory", path.display())));
+        }
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read resource file {}", path.display()))?;
+        Ok(Some(Self::format_file_resource(path, &content)))
+    }
+
+    fn resolve_rag_scope<'a>(
+        query: &'a str,
+        default_project_hash: Option<&'a str>,
+    ) -> (RagScope<'a>, &'a str) {
+        if let Some(rest) = query.strip_prefix("global:") {
+            return (RagScope::Global, rest.trim());
+        }
+        if let Some(rest) = query.strip_prefix("project:") {
+            if let Some((project_hash, query)) = rest.split_once(':') {
+                return (RagScope::Project(project_hash.trim()), query.trim());
+            }
+        }
+        match default_project_hash {
+            Some(project_hash) => (RagScope::Project(project_hash), query.trim()),
+            None => (RagScope::Global, query.trim()),
+        }
+    }
+
+    pub fn build_prompt_with_resolved_resources(
+        &self,
+        db: &Database,
+        current_workdir: &Path,
+    ) -> Result<String> {
+        let mut result = self.build_prompt()?;
+        let mut project_contexts = Vec::new();
+        let mut resources = Vec::new();
+        // Resource resolution failures are non-fatal: an unreachable path or missing DB
+        // entry should never block the user from sending their prompt.
+        let default_project_hash = db
+            .get_project_by_path(current_workdir)
+            .ok()
+            .flatten()
+            .map(|project| project.hash);
+
+        for entry in self.section_lines("project_context") {
+            if let Some(project) = Self::lookup_project_reference(db, &entry).ok().flatten() {
+                project_contexts.push(Self::format_project_block(&project));
+            }
+        }
+
+        for entry in self.section_lines("resources") {
+            if let Some(resource) = Self::resolve_path_resource(db, &entry).ok().flatten() {
+                resources.push(resource);
+            } else {
+                resources.push(entry);
+            }
+        }
+
+        for query in self.section_lines("rag_search") {
+            let (scope, resolved_query) =
+                Self::resolve_rag_scope(&query, default_project_hash.as_deref());
+            if resolved_query.is_empty() {
+                continue;
+            }
+            let project_hash = match scope {
+                RagScope::Global => None,
+                RagScope::Project(hash) => Some(hash),
+            };
+            for chunk in db.search_chunks(resolved_query, project_hash, 5).unwrap_or_default() {
+                resources.push(Self::format_rag_chunk(resolved_query, &chunk));
+            }
+        }
+
+        if !project_contexts.is_empty() {
+            let mut section = String::from("# [PROJECT CONTEXT]: Registered Project Metadata\n");
+            section.push_str("<project_context>\n");
+            for (idx, project) in project_contexts.iter().enumerate() {
+                section.push_str(&format!("  <project_{}>\n", idx + 1));
+                for line in project.lines() {
+                    section.push_str(&format!("    {}\n", line));
+                }
+                section.push_str(&format!("  </project_{}>\n\n", idx + 1));
+            }
+            section.push_str("</project_context>\n\n");
+            result = format!("{section}{result}");
+        }
+
+        if !resources.is_empty() {
+            let mut section = String::from("# [RESOURCES]: Knowledge Base & Data\n<resources>\n");
+            for (idx, resource) in resources.iter().enumerate() {
+                section.push_str(&format!("  <resource_{}>\n", idx + 1));
+                for line in resource.lines() {
+                    section.push_str(&format!("    {}\n", line));
+                }
+                section.push_str(&format!("  </resource_{}>\n\n", idx + 1));
+            }
+            section.push_str("</resources>\n\n");
+            result = strip_resources_section(&result);
+            result.push_str(&section);
+        }
+
+        Ok(result)
     }
 
     /// Build the final prompt from the filled sections with structured format
@@ -689,6 +900,93 @@ impl SimplePromptDialog {
         if let Some(real) = self.collapsed_pastes.remove(section_id) {
             self.set_section_content(section_id, real);
         }
+    }
+}
+
+fn strip_resources_section(prompt: &str) -> String {
+    let header = "# [RESOURCES]: Knowledge Base & Data\n<resources>\n";
+    if let Some(start) = prompt.find(header) {
+        if let Some(end_rel) = prompt[start..].find("</resources>\n\n") {
+            let end = start + end_rel + "</resources>\n\n".len();
+            let mut stripped = String::with_capacity(prompt.len().saturating_sub(end - start));
+            stripped.push_str(&prompt[..start]);
+            stripped.push_str(&prompt[end..]);
+            return stripped;
+        }
+    }
+    prompt.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::project::Chunk;
+    use tempfile::tempdir;
+
+    #[test]
+    fn build_prompt_resolves_project_context_file_resources_and_rag_queries() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("canopy.db");
+        let db = Database::new(&db_path).unwrap();
+
+        let project_dir = temp.path().join("sample-project");
+        std::fs::create_dir(&project_dir).unwrap();
+        let project = db.register_project_path(&project_dir).unwrap();
+
+        let resource = project_dir.join("guide.txt");
+        std::fs::write(&resource, "hello from resource").unwrap();
+        db.replace_chunks(
+            &project.hash,
+            "src/lib.rs",
+            &[Chunk {
+                id: "chunk-1".to_string(),
+                project_hash: project.hash.clone(),
+                source_path: "src/lib.rs".to_string(),
+                chunk_index: 0,
+                content: "needle semantic chunk body".to_string(),
+                lang: "rust".to_string(),
+                updated_at: 1,
+            }],
+        )
+        .unwrap();
+
+        let mut dialog = SimplePromptDialog::new();
+        dialog.set_section_content("instruction", "do the thing".to_string());
+        dialog.add_section_with_content("project_context", project.path.clone());
+        dialog.add_section_with_content("resources", resource.display().to_string());
+        dialog.add_section_with_content("rag_search", "needle".to_string());
+
+        let prompt = dialog
+            .build_prompt_with_resolved_resources(&db, &project_dir)
+            .unwrap();
+
+        assert!(prompt.contains("# [PROJECT CONTEXT]: Registered Project Metadata"));
+        assert!(prompt.contains(&project.hash));
+        assert!(prompt.contains("hello from resource"));
+        assert!(prompt.contains("kind: rag_chunk"));
+        assert!(prompt.contains("semantic chunk body"));
+    }
+
+    #[test]
+    fn build_prompt_resolves_project_directory_in_resources() {
+        let temp = tempdir().unwrap();
+        let db_path = temp.path().join("canopy.db");
+        let db = Database::new(&db_path).unwrap();
+
+        let project_dir = temp.path().join("dir-project");
+        std::fs::create_dir(&project_dir).unwrap();
+        let project = db.register_project_path(&project_dir).unwrap();
+
+        let mut dialog = SimplePromptDialog::new();
+        dialog.set_section_content("instruction", "summarize".to_string());
+        dialog.add_section_with_content("resources", project.path.clone());
+
+        let prompt = dialog
+            .build_prompt_with_resolved_resources(&db, &project_dir)
+            .unwrap();
+
+        assert!(prompt.contains("workdir_hash:"));
+        assert!(prompt.contains(&project.hash));
     }
 }
 

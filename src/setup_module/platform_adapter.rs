@@ -143,7 +143,7 @@ fn infer_server_type_index(config: &serde_json::Map<String, serde_json::Value>) 
 /// Interactive directory picker using arrow-key navigation.
 ///
 /// Keys: ↑↓ navigate  →  enter directory  ←  go up  Enter  confirm  Esc  cancel
-fn browse_directory(start_dir: &str) -> String {
+pub(crate) fn browse_directory(start_dir: &str) -> String {
     use ratatui::crossterm::event::{read, Event, KeyCode, KeyEventKind};
     use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 

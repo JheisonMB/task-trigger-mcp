@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
@@ -14,12 +14,14 @@ use crate::tui::app::types::{AgentEntry, App, Focus};
 pub mod details;
 pub mod home;
 pub mod log_fallback;
+pub mod sync;
 pub mod vt100;
 pub mod warp;
 
 pub use details::{draw_agent_details, draw_group_details};
 pub(crate) use home::draw_brians_brain;
 pub use log_fallback::draw_log_text;
+pub(crate) use sync::draw_sync_panel;
 pub use vt100::render_vt_screen;
 #[allow(unused_imports)]
 pub use warp::compact_cwd;
@@ -69,7 +71,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Store actual inner dimensions so PTY resize matches exactly
+    // Store actual PTY area dimensions so resize and mouse forwarding match exactly.
     app.last_panel_inner = (inner.width, inner.height);
 
     // When there are no agents, show the home view instead of "No agent selected"
@@ -88,6 +90,10 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     match app.focus {
         Focus::Home => {
+            if app.sidebar_mode == crate::tui::app::SidebarMode::Projects {
+                draw_project_overview(frame, inner, app);
+                return;
+            }
             if let Some(brain) = app.home_brain.as_ref() {
                 draw_brians_brain(frame, inner, brain);
             }
@@ -96,6 +102,10 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         }
 
         Focus::Preview => match app.selected_agent() {
+            _ if app.sidebar_mode == crate::tui::app::SidebarMode::Projects => {
+                draw_project_overview(frame, inner, app);
+                return;
+            }
             Some(AgentEntry::Agent(a)) => {
                 draw_agent_details(frame, inner, a, app);
                 return;
@@ -159,6 +169,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                         }
 
                         draw_warp_input_box(frame, input_area, app, idx);
+                        app.last_panel_inner = (pty_area.width, pty_area.height);
                         return;
                     }
 
@@ -204,6 +215,45 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 
     // ── Log / text content fallback ──
     draw_log_text(frame, area, inner, app);
+}
+
+fn draw_project_overview(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(project) = app.selected_project() else {
+        frame.render_widget(
+            Paragraph::new("No registered projects").style(Style::default().fg(DIM)),
+            area,
+        );
+        return;
+    };
+
+    let tags = project.tags.as_deref().unwrap_or("none");
+    let indexed = project
+        .indexed_at
+        .map(|ts| ts.to_string())
+        .unwrap_or_else(|| "pending".to_string());
+    let description = project
+        .description
+        .as_deref()
+        .unwrap_or("No description extracted yet.");
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Project ", Style::default().fg(DIM)),
+            Span::styled(
+                &project.name,
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(format!("Hash: {}", project.hash)),
+        Line::from(format!("Path: {}", project.path)),
+        Line::from(format!("Indexed: {}", indexed)),
+        Line::from(format!("Tags: {}", tags)),
+        Line::from(""),
+        Line::from(description),
+    ];
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        area,
+    );
 }
 
 // ── Split panel ─────────────────────────────────────────────────

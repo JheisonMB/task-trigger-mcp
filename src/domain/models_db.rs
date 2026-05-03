@@ -25,6 +25,10 @@ pub struct ModelEntry {
     pub name: String,
     /// Provider slug (e.g. `anthropic`).
     pub provider: String,
+    /// Release date from models.dev when available.
+    pub release_date: Option<String>,
+    /// Human-friendly size heuristic derived from the model identifier/name.
+    pub size_hint: Option<String>,
 }
 
 /// Full catalog of models.
@@ -133,6 +137,8 @@ fn fetch_and_cache() -> Option<ModelCatalog> {
                 id: model.id.clone(),
                 name: model.name.clone().unwrap_or_else(|| model.id.clone()),
                 provider: provider_id.clone(),
+                release_date: model.release_date.clone(),
+                size_hint: infer_size_hint(&model.id, model.name.as_deref()),
             });
         }
     }
@@ -177,6 +183,40 @@ struct ProviderRaw {
 struct ModelRaw {
     id: String,
     name: Option<String>,
+    release_date: Option<String>,
+}
+
+fn infer_size_hint(id: &str, name: Option<&str>) -> Option<String> {
+    let combined = match name {
+        Some(name) => format!("{id} {name}"),
+        None => id.to_string(),
+    };
+    let lower = combined.to_lowercase();
+
+    for token in lower.split(|c: char| !c.is_ascii_alphanumeric() && c != '.') {
+        if let Some(stripped) = token.strip_suffix('b') {
+            if !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                return Some(format!("{}B", stripped.to_uppercase()));
+            }
+        }
+        if let Some(stripped) = token.strip_suffix('m') {
+            if !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                return Some(format!("{}M", stripped.to_uppercase()));
+            }
+        }
+    }
+
+    if lower.contains("small") {
+        return Some("small".to_string());
+    }
+    if lower.contains("large") {
+        return Some("large".to_string());
+    }
+    if lower.contains("base") {
+        return Some("base".to_string());
+    }
+
+    None
 }
 
 // ── Timestamp serde helper ──────────────────────────────────────────

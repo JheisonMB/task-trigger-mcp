@@ -1,7 +1,10 @@
 use super::*;
 use crate::domain::models::{Agent, Cli, RunLog, RunStatus, Trigger, TriggerType, WatchEvent};
+use crate::domain::sync::{
+    IntentPayload, MessageKind, MissionImpact, StatusPayload, WorkspaceStatus,
+};
 use chrono::{Duration, Utc};
-use tempfile::NamedTempFile;
+use tempfile::{tempdir, NamedTempFile};
 
 /// Create an in-memory-like DB backed by a temp file (`SQLite` needs a real file for WAL).
 fn test_db() -> Database {
@@ -105,6 +108,218 @@ fn test_mark_orphaned_terminal_sessions_clears_idle_records() {
     assert_eq!(db.get_active_terminal_sessions().unwrap().len(), 2);
     db.mark_orphaned_terminal_sessions().unwrap();
     assert!(db.get_active_terminal_sessions().unwrap().is_empty());
+}
+
+// ── Sync message lifecycle ───────────────────────────────────────
+
+#[test]
+fn test_list_sync_messages_returns_chronological_order() {
+    let db = test_db();
+    db.insert_sync_message(
+        "/tmp/project",
+        "agent-a",
+        "copilot",
+        MessageKind::Info,
+        "one",
+        None,
+    )
+    .unwrap();
+    db.insert_sync_message(
+        "/tmp/project",
+        "agent-b",
+        "claude",
+        MessageKind::Query,
+        "two",
+        None,
+    )
+    .unwrap();
+
+    let messages = db.list_sync_messages("/tmp/project", 10).unwrap();
+
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].message, "one");
+    assert_eq!(messages[1].message, "two");
+}
+
+#[test]
+fn test_list_active_sync_agent_ids_includes_live_sessions_and_running_background_agents() {
+    let db = test_db();
+    db.insert_interactive_session("ix-1", "copilot", "copilot", "/tmp/project", None)
+        .unwrap();
+    db.insert_terminal_session("term-1", "shell", "bash", "/tmp/project")
+        .unwrap();
+    db.upsert_agent(&sample_cron_agent("bg-1")).unwrap();
+    let run = RunLog {
+        id: uuid::Uuid::new_v4().to_string(),
+        background_agent_id: "bg-1".to_string(),
+        status: RunStatus::InProgress,
+        trigger_type: TriggerType::Scheduled,
+        summary: None,
+        started_at: Utc::now(),
+        finished_at: None,
+        exit_code: None,
+        timeout_at: None,
+    };
+    db.insert_run(&run).unwrap();
+
+    let mut ids = db.list_active_sync_agent_ids("/tmp/project").unwrap();
+    ids.sort();
+
+    assert_eq!(
+        ids,
+        vec!["bg-1".to_string(), "ix-1".to_string(), "term-1".to_string()]
+    );
+}
+
+#[test]
+fn test_sync_message_payload_roundtrip() {
+    let db = test_db();
+    let payload = serde_json::to_string(&IntentPayload {
+        mission: "Refactor auth".to_string(),
+        impact: MissionImpact::High,
+        description: "touching login flow".to_string(),
+    })
+    .unwrap();
+    db.insert_sync_message(
+        "/tmp/project",
+        "agent-a",
+        "copilot",
+        MessageKind::Intent,
+        "copilot: Refactor auth",
+        Some(&payload),
+    )
+    .unwrap();
+    let status_payload = serde_json::to_string(&StatusPayload {
+        status: WorkspaceStatus::Testing,
+        message: "running smoke tests".to_string(),
+    })
+    .unwrap();
+    db.insert_sync_message(
+        "/tmp/project",
+        "agent-a",
+        "copilot",
+        MessageKind::Status,
+        "running smoke tests",
+        Some(&status_payload),
+    )
+    .unwrap();
+
+    let messages = db.list_sync_messages("/tmp/project", 10).unwrap();
+
+    assert_eq!(messages[0].kind, MessageKind::Intent);
+    assert_eq!(messages[1].kind, MessageKind::Status);
+    assert!(messages[0]
+        .payload
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Refactor auth"));
+    assert!(messages[1]
+        .payload
+        .as_deref()
+        .unwrap_or_default()
+        .contains("testing"));
+}
+
+// ── Project registry / RAG metadata ──────────────────────────────
+
+#[test]
+fn test_register_project_path_extracts_readme_description() {
+    let db = test_db();
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("README.md"),
+        "# Title\n\nThis project description has enough words to satisfy the extractor and should become the default description for the registered project before any manual edits.\n",
+    )
+    .unwrap();
+
+    let project = db.register_project_path(dir.path()).unwrap();
+
+    assert_eq!(
+        project.name,
+        dir.path().file_name().unwrap().to_string_lossy()
+    );
+    assert!(project
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .contains("enough words"));
+}
+
+#[test]
+fn test_upsert_project_preserves_existing_manual_description() {
+    let db = test_db();
+    let mut project = crate::domain::project::Project::new("/tmp/project");
+    project.description = Some("Manual description".to_string());
+    db.upsert_project(&project).unwrap();
+
+    let mut updated = crate::domain::project::Project::new("/tmp/project");
+    updated.description = Some("README description".to_string());
+    db.upsert_project(&updated).unwrap();
+
+    let stored = db.get_project(&project.hash).unwrap().unwrap();
+    assert_eq!(stored.description.as_deref(), Some("Manual description"));
+}
+
+#[test]
+fn test_mark_project_indexed_updates_timestamp() {
+    let db = test_db();
+    let project = crate::domain::project::Project::new("/tmp/project");
+    db.upsert_project(&project).unwrap();
+
+    let updated = db.mark_project_indexed(&project.hash, 1234).unwrap();
+    assert!(updated);
+
+    let stored = db.get_project(&project.hash).unwrap().unwrap();
+    assert_eq!(stored.indexed_at, Some(1234));
+}
+
+#[test]
+fn test_search_chunks_returns_recently_indexed_content() {
+    let db = test_db();
+    let project = crate::domain::project::Project::new("/tmp/project");
+    db.upsert_project(&project).unwrap();
+    db.replace_chunks(
+        &project.hash,
+        "src/lib.rs",
+        &[crate::db::project::Chunk {
+            id: "chunk-1".to_string(),
+            project_hash: project.hash.clone(),
+            source_path: "src/lib.rs".to_string(),
+            chunk_index: 0,
+            content: "needle indexed chunk".to_string(),
+            lang: "rust".to_string(),
+            updated_at: 1,
+        }],
+    )
+    .unwrap();
+
+    let results = db.search_chunks("needle", Some(&project.hash), 5).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].content.contains("needle indexed chunk"));
+}
+
+#[test]
+fn test_rag_queue_roundtrip() {
+    let db = test_db();
+    let project = crate::domain::project::Project::new("/tmp/project");
+    db.upsert_project(&project).unwrap();
+
+    db.enqueue_rag_item(&project.hash, "/tmp/project/src/lib.rs", 111)
+        .unwrap();
+    db.mark_rag_item_processing(&project.hash, "/tmp/project/src/lib.rs", 222)
+        .unwrap();
+
+    let items = db.list_rag_queue(Some(&project.hash), 10).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].status, "processing");
+
+    db.remove_rag_item(&project.hash, "/tmp/project/src/lib.rs")
+        .unwrap();
+    assert!(db
+        .list_rag_queue(Some(&project.hash), 10)
+        .unwrap()
+        .is_empty());
 }
 
 // ── Agent CRUD ─────────────────────────────────────────────────────

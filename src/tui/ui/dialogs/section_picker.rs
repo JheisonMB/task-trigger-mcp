@@ -260,6 +260,80 @@ pub(crate) fn draw_section_picker_modal(
                 },
             );
         }
+        SectionPickerMode::ProjectPicker { selected, entries } => {
+            let height = (entries.len() as u16 + 5).min(16);
+            let area = centered_rect(60, height.max(6), frame.area());
+            frame.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Project Context ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(accent))
+                .style(Style::default().bg(Color::Rgb(10, 20, 30)));
+
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            if entries.is_empty() {
+                let msg = Line::from(vec![Span::styled(
+                    "  No registered projects found",
+                    Style::default().fg(Color::DarkGray),
+                )]);
+                frame.render_widget(
+                    Paragraph::new(msg),
+                    ratatui::layout::Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                );
+            } else {
+                for (y_pos, (i, entry)) in (inner.y..).zip(entries.iter().enumerate()) {
+                    if y_pos >= inner.y + inner.height.saturating_sub(1) {
+                        break;
+                    }
+                    let is_selected = i == *selected;
+                    let style = if is_selected {
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+                    let display = format!("  {} [{}] ", entry.name, entry.hash);
+                    let line = Line::from(vec![Span::styled(display, style)]);
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        ratatui::layout::Rect {
+                            x: inner.x,
+                            y: y_pos,
+                            width: inner.width,
+                            height: 1,
+                        },
+                    );
+                }
+            }
+
+            let hint = Line::from(vec![
+                Span::styled("↑↓ ", Style::default().fg(DIM)),
+                Span::styled("select  ", Style::default().fg(Color::White)),
+                Span::styled("Enter ", Style::default().fg(DIM)),
+                Span::styled("add  ", Style::default().fg(Color::White)),
+                Span::styled("Esc ", Style::default().fg(DIM)),
+                Span::styled("cancel", Style::default().fg(Color::White)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(hint),
+                ratatui::layout::Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height.saturating_sub(1),
+                    width: inner.width,
+                    height: 1,
+                },
+            );
+        }
         SectionPickerMode::None => {}
     }
 }

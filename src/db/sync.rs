@@ -1,13 +1,11 @@
-//! SQLite repositories for sync_messages and sync_locks.
+//! SQLite repositories for collaborative sync messages and participant lookup.
 
 use anyhow::Result;
 
 use crate::db::Database;
-use crate::domain::sync::{LockType, MessageKind, SyncLock, SyncMessage};
+use crate::domain::sync::{MessageKind, SyncMessage};
 
 impl Database {
-    // ── sync_messages ──────────────────────────────────────────────────
-
     pub fn insert_sync_message(
         &self,
         workdir: &str,
@@ -28,6 +26,7 @@ impl Database {
             rusqlite::params![workdir, agent_id, agent_name, kind.as_str(), message, payload, now],
         )?;
         let id = conn.last_insert_rowid();
+
         Ok(SyncMessage {
             id,
             workdir: workdir.to_owned(),
@@ -50,6 +49,7 @@ impl Database {
              FROM sync_messages WHERE workdir = ?1
              ORDER BY id DESC LIMIT ?2",
         )?;
+
         let rows = stmt.query_map(rusqlite::params![workdir, limit as i64], |row| {
             let kind_str: String = row.get(4)?;
             Ok(SyncMessage {
@@ -63,86 +63,32 @@ impl Database {
                 created_at: row.get(7)?,
             })
         })?;
-        let mut msgs: Vec<SyncMessage> = rows.filter_map(|r| r.ok()).collect();
-        msgs.reverse();
-        Ok(msgs)
+
+        let mut messages: Vec<SyncMessage> = rows.filter_map(|row| row.ok()).collect();
+        messages.reverse();
+        Ok(messages)
     }
 
-    // ── sync_locks ─────────────────────────────────────────────────────
-
-    pub fn insert_sync_lock(&self, lock: &SyncLock) -> Result<()> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
-            "INSERT INTO sync_locks (id, workdir, agent_id, lock_type, resource, acquired_at, expires_at, released_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            rusqlite::params![
-                lock.id,
-                lock.workdir,
-                lock.agent_id,
-                lock.lock_type.as_str(),
-                lock.resource,
-                lock.acquired_at,
-                lock.expires_at,
-                lock.released_at,
-            ],
-        )?;
-        Ok(())
-    }
-
-    pub fn release_sync_lock(&self, lock_id: &str, agent_id: &str) -> Result<bool> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let now = chrono::Utc::now().timestamp();
-        let n = conn.execute(
-            "UPDATE sync_locks SET released_at = ?1 WHERE id = ?2 AND agent_id = ?3 AND released_at IS NULL",
-            rusqlite::params![now, lock_id, agent_id],
-        )?;
-        Ok(n > 0)
-    }
-
-    pub fn list_active_sync_locks(&self, workdir: &str) -> Result<Vec<SyncLock>> {
+    pub fn list_active_sync_agent_ids(&self, workdir: &str) -> Result<Vec<String>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let mut stmt = conn.prepare(
-            "SELECT id, workdir, agent_id, lock_type, resource, acquired_at, expires_at, released_at
-             FROM sync_locks WHERE workdir = ?1 AND released_at IS NULL",
+            "SELECT id FROM interactive_sessions
+             WHERE status = 'active' AND working_dir = ?1
+             UNION
+             SELECT id FROM terminal_sessions
+             WHERE status = 'idle' AND working_dir = ?1
+             UNION
+             SELECT runs.background_agent_id
+             FROM runs
+             JOIN agents ON agents.id = runs.background_agent_id
+             WHERE runs.status IN ('pending', 'in_progress')
+               AND agents.working_dir = ?1",
         )?;
-        let rows = stmt.query_map(rusqlite::params![workdir], |row| {
-            let lt: String = row.get(3)?;
-            Ok(SyncLock {
-                id: row.get(0)?,
-                workdir: row.get(1)?,
-                agent_id: row.get(2)?,
-                lock_type: LockType::from_str(&lt).unwrap_or(LockType::Resource),
-                resource: row.get(4)?,
-                acquired_at: row.get(5)?,
-                expires_at: row.get(6)?,
-                released_at: row.get(7)?,
-            })
-        })?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
-    }
 
-    /// Release all locks held by `agent_id` in `workdir`.
-    #[allow(dead_code)]
-    pub fn release_all_agent_locks(&self, workdir: &str, agent_id: &str) -> Result<usize> {
-        let conn = self
-            .conn
-            .lock()
-            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let now = chrono::Utc::now().timestamp();
-        let n = conn.execute(
-            "UPDATE sync_locks SET released_at = ?1
-             WHERE workdir = ?2 AND agent_id = ?3 AND released_at IS NULL",
-            rusqlite::params![now, workdir, agent_id],
-        )?;
-        Ok(n)
+        let rows = stmt.query_map(rusqlite::params![workdir], |row| row.get::<_, String>(0))?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
     }
 }

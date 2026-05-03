@@ -116,28 +116,35 @@ fn is_status_noise(line: &str) -> bool {
         return line.chars().any(|c| c.is_ascii_digit());
     }
     // OpenCode/Claude/Copilot status bar fragments
-    let noise = [
-        "ctrl+p commands",
-        "ctrl+p ",
+    let trimmed = line.trim();
+    let exact_noise = [
+        "Context",
+        "LSP",
+        "MCP",
+        "Build",
+        "Sessions",
+        "Environment",
         "for shortcuts",
         "Shift+Tab",
         "MCP issues",
         "MCP servers",
-        "workspace (",
-        "Environment",
-        "remaining",
-        "LSPs will activate",
     ];
-    if noise.iter().any(|n| line.contains(n)) {
+    if exact_noise.contains(&trimmed) {
         return true;
     }
-    // Lines that are just "Context" or "LSP" headers from sidebars
-    if matches!(line, "Context" | "LSP" | "MCP" | "Build" | "Sessions") {
+    let prefix_noise = ["ctrl+p commands", "workspace ("];
+    if prefix_noise.iter().any(|n| trimmed.starts_with(n)) {
+        return true;
+    }
+    if trimmed.contains("LSPs will activate") {
         return true;
     }
     // File stat lines like "prompt.txt  -46" or "src/foo.rs  +150 -58"
-    if line.contains('+') && line.contains('-') && line.chars().filter(|c| *c == ' ').count() >= 2 {
-        let parts: Vec<&str> = line.split_whitespace().collect();
+    if trimmed.contains('+')
+        && trimmed.contains('-')
+        && trimmed.chars().filter(|c| *c == ' ').count() >= 2
+    {
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
         if parts.len() >= 2
             && parts
                 .last()
@@ -396,8 +403,8 @@ mod tests {
         let raw = "--- context from: demo | workdir: /tmp ---\n\nContext\n\nhello\n\n\nremaining 12\n--- end context ---\n";
         let cleaned = clean_context_output(raw);
         assert!(cleaned.contains("hello"));
-        assert!(!cleaned.contains("remaining 12"));
-        assert!(cleaned.contains("hello\n\n--- end context ---"));
+        assert!(cleaned.contains("remaining 12"));
+        assert!(cleaned.contains("hello\n\nremaining 12\n--- end context ---"));
     }
 
     #[test]

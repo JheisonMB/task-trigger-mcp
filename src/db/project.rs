@@ -2,9 +2,10 @@
 //! SQLite repositories for projects and RAG chunks (FTS5).
 
 use anyhow::Result;
+use std::path::Path;
 
 use crate::db::Database;
-use crate::domain::project::Project;
+use crate::domain::project::{extract_readme_description, Project};
 
 // ── Chunk record (stored in FTS5 + metadata table) ─────────────────────
 
@@ -19,6 +20,15 @@ pub struct Chunk {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone)]
+pub struct RagQueueItem {
+    pub project_hash: String,
+    pub project_name: Option<String>,
+    pub source_path: String,
+    pub status: String,
+    pub queued_at: i64,
+}
+
 impl Database {
     // ── projects ───────────────────────────────────────────────────────
 
@@ -31,10 +41,11 @@ impl Database {
             "INSERT INTO projects (hash, path, name, description, tags, indexed_at, created_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7)
              ON CONFLICT(hash) DO UPDATE SET
-               name=excluded.name,
-               description=COALESCE(excluded.description, description),
-               tags=COALESCE(excluded.tags, tags),
-               indexed_at=excluded.indexed_at",
+               path=excluded.path,
+                name=excluded.name,
+                description=COALESCE(description, excluded.description),
+                tags=COALESCE(tags, excluded.tags),
+                indexed_at=COALESCE(projects.indexed_at, excluded.indexed_at)",
             rusqlite::params![
                 p.hash,
                 p.path,
@@ -48,6 +59,55 @@ impl Database {
         Ok(())
     }
 
+    pub fn register_project_path(&self, path: &Path) -> Result<Project> {
+        let canonical = std::fs::canonicalize(path)?;
+        let canonical_str = canonical.to_string_lossy().to_string();
+        let mut project = Project::new(&canonical_str);
+
+        let readme_path = canonical.join("README.md");
+        if readme_path.exists() {
+            let readme = std::fs::read_to_string(&readme_path)?;
+            project.description = extract_readme_description(&readme);
+        }
+
+        self.upsert_project(&project)?;
+        self.queue_project_files(&project.hash, &canonical)?;
+        Ok(project)
+    }
+
+    /// Scan project directory and queue all discoverable files for RAG ingestion.
+    /// Max depth: 10 levels. Max file size: 5 MB.
+    fn queue_project_files(&self, project_hash: &str, root: &Path) -> Result<()> {
+        const MAX_DEPTH: usize = 10;
+        const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+
+        let mut queue = vec![(root.to_path_buf(), 0)];
+        while let Some((current_path, depth)) = queue.pop() {
+            if depth > MAX_DEPTH {
+                continue;
+            }
+
+            if let Ok(entries) = std::fs::read_dir(&current_path) {
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        if metadata.is_dir() {
+                            queue.push((entry.path(), depth + 1));
+                        } else if metadata.len() <= MAX_FILE_SIZE {
+                            let file_path = entry.path();
+                            if let Some(file_path_str) = file_path.to_str() {
+                                let _ = self.enqueue_rag_item(project_hash, file_path_str, now);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_project(&self, hash: &str) -> Result<Option<Project>> {
         let conn = self
             .conn
@@ -58,6 +118,21 @@ impl Database {
              FROM projects WHERE hash=?1",
         )?;
         let mut rows = stmt.query_map(rusqlite::params![hash], row_to_project)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn get_project_by_path(&self, path: &Path) -> Result<Option<Project>> {
+        let canonical = std::fs::canonicalize(path)?;
+        let canonical_str = canonical.to_string_lossy().to_string();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let mut stmt = conn.prepare(
+            "SELECT hash,path,name,description,tags,indexed_at,created_at
+             FROM projects WHERE path=?1",
+        )?;
+        let mut rows = stmt.query_map(rusqlite::params![canonical_str], row_to_project)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -110,6 +185,107 @@ impl Database {
             rusqlite::params![hash, description, tags_str],
         )?;
         Ok(n > 0)
+    }
+
+    pub fn mark_project_indexed(&self, hash: &str, indexed_at: i64) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let n = conn.execute(
+            "UPDATE projects SET indexed_at = ?2 WHERE hash = ?1",
+            rusqlite::params![hash, indexed_at],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn enqueue_rag_item(
+        &self,
+        project_hash: &str,
+        source_path: &str,
+        queued_at: i64,
+    ) -> Result<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        conn.execute(
+            "INSERT INTO rag_queue (project_hash, source_path, status, queued_at, updated_at)
+             VALUES (?1, ?2, 'queued', ?3, ?3)
+             ON CONFLICT(project_hash, source_path) DO UPDATE SET
+                status='queued',
+                queued_at=excluded.queued_at,
+                updated_at=excluded.updated_at",
+            rusqlite::params![project_hash, source_path, queued_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_rag_item_processing(
+        &self,
+        project_hash: &str,
+        source_path: &str,
+        updated_at: i64,
+    ) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let n = conn.execute(
+            "UPDATE rag_queue
+             SET status='processing', updated_at=?3
+             WHERE project_hash=?1 AND source_path=?2",
+            rusqlite::params![project_hash, source_path, updated_at],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn remove_rag_item(&self, project_hash: &str, source_path: &str) -> Result<bool> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let n = conn.execute(
+            "DELETE FROM rag_queue WHERE project_hash=?1 AND source_path=?2",
+            rusqlite::params![project_hash, source_path],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn list_rag_queue(
+        &self,
+        project_hash: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<RagQueueItem>> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
+        let sql = if project_hash.is_some() {
+            "SELECT q.project_hash, p.name, q.source_path, q.status, q.queued_at
+             FROM rag_queue q
+             LEFT JOIN projects p ON p.hash = q.project_hash
+             WHERE q.project_hash=?1
+             ORDER BY
+                CASE q.status WHEN 'processing' THEN 0 ELSE 1 END,
+                q.queued_at ASC
+             LIMIT ?2"
+        } else {
+            "SELECT q.project_hash, p.name, q.source_path, q.status, q.queued_at
+             FROM rag_queue q
+             LEFT JOIN projects p ON p.hash = q.project_hash
+             ORDER BY
+                CASE q.status WHEN 'processing' THEN 0 ELSE 1 END,
+                q.queued_at ASC
+             LIMIT ?1"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(hash) = project_hash {
+            stmt.query_map(rusqlite::params![hash, limit as i64], row_to_rag_queue_item)?
+        } else {
+            stmt.query_map(rusqlite::params![limit as i64], row_to_rag_queue_item)?
+        };
+        Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
     // ── RAG chunks (FTS5) ──────────────────────────────────────────────
@@ -208,5 +384,15 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
         content: row.get(4)?,
         lang: row.get(5)?,
         updated_at: row.get(6)?,
+    })
+}
+
+fn row_to_rag_queue_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RagQueueItem> {
+    Ok(RagQueueItem {
+        project_hash: row.get(0)?,
+        project_name: row.get(1)?,
+        source_path: row.get(2)?,
+        status: row.get(3)?,
+        queued_at: row.get(4)?,
     })
 }

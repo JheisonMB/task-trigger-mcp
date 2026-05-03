@@ -143,10 +143,14 @@ pub fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -
     if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
             KeyCode::Down => {
+                // When navigating agents, ensure sidebar is in Agents view
+                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
                 app.next_interactive();
                 return Ok(());
             }
             KeyCode::Up => {
+                // When navigating agents, ensure sidebar is in Agents view
+                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
                 app.prev_interactive();
                 return Ok(());
             }

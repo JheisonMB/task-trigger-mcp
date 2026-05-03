@@ -53,6 +53,16 @@ pub fn strip_shell_prompt_prefix(line: &str) -> String {
             return rest.to_string();
         }
     }
+
+    for marker in ["$ ", "# ", "% ", "❯ "] {
+        if let Some((_, rest)) = trimmed.rsplit_once(marker) {
+            let candidate = rest.trim_start();
+            if !candidate.is_empty() {
+                return candidate.to_string();
+            }
+        }
+    }
+
     trimmed.to_string()
 }
 
@@ -99,31 +109,23 @@ pub fn is_ui_line(line: &str) -> bool {
     if trimmed.starts_with('❯')
         || trimmed.starts_with('$')
         || trimmed.starts_with('#')
-        || trimmed.starts_with("...")
         || trimmed.contains("───")
     {
         return true;
     }
 
-    // Bullet/status symbols at start
-    if trimmed.starts_with('●')
-        || trimmed.starts_with('▌')
-        || trimmed.starts_with('▣')
-        || trimmed.starts_with('▹')
-        || trimmed.starts_with('ℹ')
-        || trimmed.starts_with('✓')
-    {
+    // Bare UI glyph lines with no substantive text.
+    if matches!(trimmed, "..." | "●" | "▌" | "▣" | "▹" | "ℹ" | "✓") {
         return true;
     }
 
     // Status bar / footer patterns
-    if trimmed.contains("Environment")
-        || trimmed.contains("remaining")
-        || trimmed.contains("for shortcuts")
-        || trimmed.contains("Shift+Tab")
-        || trimmed.contains("MCP issues")
-        || trimmed.contains("MCP servers")
-        || trimmed.contains("workspace (")
+    if trimmed == "Environment"
+        || trimmed == "for shortcuts"
+        || trimmed == "Shift+Tab"
+        || trimmed == "MCP issues"
+        || trimmed == "MCP servers"
+        || trimmed.starts_with("workspace (")
     {
         return true;
     }
@@ -154,7 +156,7 @@ pub fn strip_borders(line: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{line_looks_sensitive_prompt, strip_shell_prompt_prefix};
+    use super::{is_ui_line, line_looks_sensitive_prompt, strip_shell_prompt_prefix};
 
     #[test]
     fn detects_sensitive_prompts() {
@@ -172,5 +174,22 @@ mod tests {
         assert_eq!(strip_shell_prompt_prefix("$ git status"), "git status");
         assert_eq!(strip_shell_prompt_prefix("# cargo test"), "cargo test");
         assert_eq!(strip_shell_prompt_prefix("plain text"), "plain text");
+    }
+
+    #[test]
+    fn strips_prompt_suffixes_from_redrawn_shell_lines() {
+        assert_eq!(
+            strip_shell_prompt_prefix(
+                "/mnt/.../agent-canopy ❯ jheisonmblivecom@WORKSTATION:/repo$ ls src"
+            ),
+            "ls src"
+        );
+    }
+
+    #[test]
+    fn keeps_informational_lines_with_text() {
+        assert!(!is_ui_line("✓ MCP server github synced"));
+        assert!(!is_ui_line("remaining tasks: 2"));
+        assert!(!is_ui_line("... waiting for input"));
     }
 }

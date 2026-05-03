@@ -1,0 +1,69 @@
+use crate::domain::sync::summarize_sync_context;
+use crate::tui::agent::AgentStatus;
+
+use super::types::{AgentEntry, App, SyncPanelState};
+
+pub(crate) const SYNC_PANEL_WIDTH: u16 = 34;
+const MIN_PANEL_WIDTH: u16 = 90;
+const RECENT_MESSAGE_LIMIT: usize = 18;
+const CHATTER_LIMIT: usize = 8;
+
+impl App {
+    pub(crate) fn sync_panel_state(&self) -> Option<SyncPanelState> {
+        if !self.sync_panel_visible {
+            return None;
+        }
+
+        let workdir = self.selected_sync_workdir()?;
+        let participant_count = self.live_session_count_for_workdir(workdir);
+        if participant_count < 2 {
+            return None;
+        }
+
+        let recent_messages = self
+            .db
+            .list_sync_messages(workdir, RECENT_MESSAGE_LIMIT)
+            .ok()?;
+        let active_agent_ids = self
+            .interactive_agents
+            .iter()
+            .filter(|agent| agent.status == AgentStatus::Running && agent.working_dir == workdir)
+            .map(|agent| agent.name.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let summary = summarize_sync_context(&recent_messages, &active_agent_ids, CHATTER_LIMIT);
+
+        Some(SyncPanelState {
+            workdir: workdir.to_owned(),
+            participant_count,
+            vibe: summary.vibe,
+            active_intents: summary.active_intents,
+            recent_messages,
+        })
+    }
+
+    pub(crate) fn sync_panel_layout_width(&self, total_width: u16, enabled: bool) -> u16 {
+        if !enabled || total_width < MIN_PANEL_WIDTH {
+            return 0;
+        }
+
+        SYNC_PANEL_WIDTH.min(total_width.saturating_sub(48))
+    }
+
+    fn selected_sync_workdir(&self) -> Option<&str> {
+        match self.selected_agent()? {
+            AgentEntry::Interactive(idx) => self
+                .interactive_agents
+                .get(*idx)
+                .filter(|agent| agent.status == AgentStatus::Running)
+                .map(|agent| agent.working_dir.as_str()),
+            AgentEntry::Terminal(_) | AgentEntry::Agent(_) | AgentEntry::Group(_) => None,
+        }
+    }
+
+    fn live_session_count_for_workdir(&self, workdir: &str) -> usize {
+        self.interactive_agents
+            .iter()
+            .filter(|agent| agent.status == AgentStatus::Running && agent.working_dir == workdir)
+            .count()
+    }
+}

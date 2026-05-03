@@ -3,6 +3,7 @@
 //! Uses the `rmcp` SDK's `#[tool_router]` and `#[tool_handler]` macros
 //! with `Parameters<T>` for proper MCP protocol compliance.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -24,7 +25,7 @@ use crate::daemon::helpers::{
 use crate::daemon::params::*;
 use crate::db::Database;
 use crate::domain::models::{Agent, Cli, Trigger, WatchEvent};
-use crate::domain::sync::{LockType, MessageKind};
+use crate::domain::sync::{MessageKind, MissionImpact, WorkspaceStatus};
 use crate::domain::validation::{validate_id, validate_prompt, validate_watch_path};
 use crate::executor::Executor;
 use crate::rag::ingestion::IngestionManager;
@@ -40,17 +41,19 @@ pub struct TaskTriggerHandler {
     pub scheduler_notify: Arc<Notify>,
     pub notification_service: Arc<dyn NotificationService>,
     pub sync_manager: Arc<SyncManager>,
-    /// Per-agent rate limiters for rag_search (10 calls/min).
+    /// Shared ingestion manager — used by rag_index tool and startup enqueue.
+    #[allow(dead_code)]
+    pub ingestion: Arc<IngestionManager>,
+    /// Rate limiters for rag_search (10 calls/min). Keyed by agent when available.
     pub rag_limiters: Arc<tokio::sync::Mutex<std::collections::HashMap<String, RateLimiter>>>,
     pub start_time: std::time::Instant,
     pub port: u16,
-    #[allow(dead_code)]
-    ingestion_cancel: tokio_util::sync::CancellationToken,
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
 #[tool_router]
+#[allow(clippy::too_many_arguments)]
 impl TaskTriggerHandler {
     pub fn new(
         db: Arc<Database>,
@@ -59,10 +62,9 @@ impl TaskTriggerHandler {
         scheduler_notify: Arc<Notify>,
         notification_service: Arc<dyn NotificationService>,
         sync_manager: Arc<SyncManager>,
+        ingestion: Arc<IngestionManager>,
         port: u16,
     ) -> Self {
-        let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
-        let ingestion_cancel = Arc::clone(&ingestion).start();
         Self {
             db,
             executor,
@@ -70,10 +72,10 @@ impl TaskTriggerHandler {
             scheduler_notify,
             notification_service,
             sync_manager,
+            ingestion,
             rag_limiters: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             start_time: std::time::Instant::now(),
             port,
-            ingestion_cancel,
             tool_router: Self::tool_router(),
         }
     }
@@ -151,6 +153,9 @@ impl TaskTriggerHandler {
         self.db
             .upsert_agent(&agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        if let Some(workdir) = agent.working_dir.as_deref() {
+            let _ = self.db.register_project_path(Path::new(workdir));
+        }
 
         self.scheduler_notify.notify_one();
 
@@ -969,72 +974,65 @@ impl TaskTriggerHandler {
         )))
     }
 
-    /// Acquire a collaborative lock on a resource or command (BLOCKING).
     #[tool(
-        name = "sync_acquire_lock",
-        description = "Acquire a collaborative lock on a resource path or exclusive command. \
-         BLOCKING — the call returns only when the lock is granted or the timeout expires. \
-         lock_type: 'resource' (file/dir path) | 'command' (exclusive command like 'cargo test'). \
-         Returns the lock_id needed to release the lock."
+        name = "sync_declare_intent",
+        description = "Declare a high-level mission for the current workdir. Non-blocking. \
+         Use this to announce major work before you start changing things."
     )]
-    async fn sync_acquire_lock(
+    async fn sync_declare_intent(
         &self,
-        Parameters(params): Parameters<SyncAcquireLockParams>,
+        Parameters(params): Parameters<SyncDeclareIntentParams>,
     ) -> Result<CallToolResult, McpError> {
-        let Some(lock_type) = LockType::from_str(&params.lock_type) else {
+        let Some(impact) = MissionImpact::from_str(&params.impact) else {
             return Ok(error_result(
-                "Invalid lock_type. Must be 'resource' or 'command'.",
+                "Invalid impact. Must be: low, high, breaking.",
             ));
         };
 
         match self
             .sync_manager
-            .acquire_lock(
+            .declare_intent(
                 &params.workdir,
                 &params.agent_id,
                 &params.agent_name,
-                lock_type,
-                &params.resource,
-                params.timeout_secs,
+                &params.mission,
+                impact,
+                &params.description,
             )
             .await
         {
-            Ok(lock_id) => Ok(success_result(&format!(
-                "Lock acquired. lock_id={lock_id} resource='{}'",
-                params.resource
-            ))),
+            Ok(_) => Ok(success_result("Intent declared.")),
             Err(e) => Ok(error_result(&e.to_string())),
         }
     }
 
-    /// Release a previously acquired lock.
     #[tool(
-        name = "sync_release",
-        description = "Release a lock previously acquired with sync_acquire_lock."
+        name = "sync_report_status",
+        description = "Report the current workspace status for your mission. Non-blocking. \
+         status: stable | unstable | testing."
     )]
-    async fn sync_release(
+    async fn sync_report_status(
         &self,
-        Parameters(params): Parameters<SyncReleaseParams>,
+        Parameters(params): Parameters<SyncReportStatusParams>,
     ) -> Result<CallToolResult, McpError> {
+        let Some(status) = WorkspaceStatus::from_str(&params.status) else {
+            return Ok(error_result(
+                "Invalid status. Must be: stable, unstable, testing.",
+            ));
+        };
+
         match self
             .sync_manager
-            .release_lock(
+            .report_status(
                 &params.workdir,
                 &params.agent_id,
                 &params.agent_name,
-                &params.lock_id,
-                &params.resource,
+                status,
+                &params.message,
             )
             .await
         {
-            Ok(true) => Ok(success_result(&format!(
-                "Lock '{}' released.",
-                params.lock_id
-            ))),
-            Ok(false) => Ok(error_result(&format!(
-                "Lock '{}' not found or already released.",
-                params.lock_id
-            ))),
+            Ok(_) => Ok(success_result("Status reported.")),
             Err(e) => Ok(error_result(&e.to_string())),
         }
     }
@@ -1043,17 +1041,20 @@ impl TaskTriggerHandler {
     #[tool(
         name = "sync_broadcast",
         description = "Broadcast a message to the workdir sync channel. Non-blocking. \
-         kind: intent | info | query | answer | status."
+         kind: info | query | answer."
     )]
     async fn sync_broadcast(
         &self,
         Parameters(params): Parameters<SyncBroadcastParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(kind) = MessageKind::from_str(&params.kind) else {
-            return Ok(error_result(
-                "Invalid kind. Must be: intent, info, query, answer, status.",
-            ));
+            return Ok(error_result("Invalid kind. Must be: info, query, answer."));
         };
+        if !kind.is_chatter() {
+            return Ok(error_result(
+                "sync_broadcast only accepts: info, query, answer.",
+            ));
+        }
 
         let payload = params.metadata.as_ref().map(|m| m.to_string());
         match self
@@ -1073,11 +1074,9 @@ impl TaskTriggerHandler {
         }
     }
 
-    /// Get active locks and recent channel activity for a workdir.
     #[tool(
         name = "sync_get_context",
-        description = "Get active locks and recent sync channel activity for a workdir. \
-         Use before starting work to check if other agents are active."
+        description = "Get active missions, recent sync chatter, and current workspace vibe for a workdir."
     )]
     async fn sync_get_context(
         &self,
@@ -1085,53 +1084,56 @@ impl TaskTriggerHandler {
     ) -> Result<CallToolResult, McpError> {
         let limit = params.limit.unwrap_or(10);
 
-        let active_locks = self
-            .db
-            .list_active_sync_locks(&params.workdir)
+        let context = self
+            .sync_manager
+            .get_context(&params.workdir, limit)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
-        let recent = self
-            .db
-            .list_sync_messages(&params.workdir, limit)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-
-        let locks_json: Vec<serde_json::Value> = active_locks
+        let intents_json: Vec<serde_json::Value> = context
+            .active_intents
             .iter()
-            .map(|l| {
+            .map(|intent| {
                 serde_json::json!({
-                    "lock_id": l.id,
-                    "agent_id": l.agent_id,
-                    "lock_type": l.lock_type.as_str(),
-                    "resource": l.resource,
+                    "agent_id": intent.agent_id,
+                    "agent_name": intent.agent_name,
+                    "mission": intent.mission,
+                    "impact": intent.impact.as_str(),
+                    "description": intent.description,
+                    "status": intent.status.as_str(),
+                    "since": intent.since,
                 })
             })
             .collect();
 
-        let activity_json: Vec<serde_json::Value> = recent
+        let chatter_json: Vec<serde_json::Value> = context
+            .recent_chatter
             .iter()
-            .map(|m| {
+            .map(|message| {
                 serde_json::json!({
-                    "agent": m.agent_name,
-                    "kind": m.kind.as_str(),
-                    "message": m.message,
-                    "ts": m.created_at,
+                    "agent_id": message.agent_id,
+                    "agent_name": message.agent_name,
+                    "kind": message.kind.as_str(),
+                    "message": message.message,
+                    "ts": message.created_at,
                 })
             })
             .collect();
 
-        let summary = if active_locks.is_empty() {
-            "No active locks.".to_owned()
+        let summary = if context.active_intents.is_empty() {
+            "No active missions.".to_owned()
         } else {
-            let parts: Vec<String> = active_locks
+            let parts: Vec<String> = context
+                .active_intents
                 .iter()
-                .map(|l| format!("{} holds '{}'", l.agent_id, l.resource))
+                .map(|intent| format!("{}: {}", intent.agent_name, intent.mission))
                 .collect();
             parts.join("; ")
         };
 
         let out = serde_json::json!({
-            "active_locks": locks_json,
-            "recent_activity": activity_json,
+            "active_intents": intents_json,
+            "recent_chatter": chatter_json,
+            "vibe": context.vibe.as_str(),
             "summary": summary,
         });
 
@@ -1162,7 +1164,7 @@ impl TaskTriggerHandler {
             .iter()
             .map(|p| {
                 serde_json::json!({
-                    "hash": p.hash,
+                    "workdir_hash": p.hash,
                     "name": p.name,
                     "path": p.path,
                     "description": p.description,
@@ -1217,10 +1219,11 @@ impl TaskTriggerHandler {
         &self,
         Parameters(params): Parameters<RagSearchParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Rate limiting — keyed by project_hash or "global"
+        // Rate limiting — keyed by agent when available, otherwise by scope.
         let limiter_key = params
-            .project_hash
+            .agent_id
             .clone()
+            .or_else(|| params.project_hash.clone())
             .unwrap_or_else(|| "global".to_owned());
         {
             let mut limiters = self.rag_limiters.lock().await;
@@ -1236,8 +1239,18 @@ impl TaskTriggerHandler {
 
         let limit = params.limit.unwrap_or(5).min(20);
         let scope = params.scope.as_deref().unwrap_or("global");
+        if scope != "global" && scope != "project" {
+            return Ok(error_result("Invalid scope. Must be: global or project."));
+        }
         let project_hash = if scope == "project" {
-            params.project_hash.as_deref()
+            match params.project_hash.as_deref() {
+                Some(project_hash) => Some(project_hash),
+                None => {
+                    return Ok(error_result(
+                        "project_hash is required when scope is 'project'.",
+                    ));
+                }
+            }
         } else {
             None
         };
@@ -1255,6 +1268,7 @@ impl TaskTriggerHandler {
             .iter()
             .map(|c| {
                 serde_json::json!({
+                    "project_hash": c.project_hash,
                     "source": c.source_path,
                     "lang": c.lang,
                     "chunk_index": c.chunk_index,

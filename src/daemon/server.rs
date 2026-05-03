@@ -9,6 +9,7 @@ use crate::daemon::process::{kill_port_occupant, remove_pid_file, write_pid_file
 use crate::daemon::TaskTriggerHandler;
 use crate::db::Database;
 use crate::executor::Executor;
+use crate::rag::ingestion::IngestionManager;
 use crate::scheduler::cron_scheduler::CronScheduler;
 use crate::sync_manager::SyncManager;
 use crate::watchers::WatcherEngine;
@@ -29,6 +30,9 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
     let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
+    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
+    let _ingestion_cancel = Arc::clone(&ingestion).start();
+
     tracing::info!(
         "canopy v{} starting on port {}",
         env!("CARGO_PKG_VERSION"),
@@ -45,6 +49,8 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
         tracing::error!("Failed to reload watchers: {}", e);
     }
 
+    startup_enqueue_unindexed(Arc::clone(&ingestion), Arc::clone(&db)).await;
+
     let cron_scheduler = Arc::new(CronScheduler::new(Arc::clone(&db), Arc::clone(&executor)));
     let scheduler_notify = cron_scheduler.notifier();
     let scheduler_cancel = Arc::clone(&cron_scheduler).start();
@@ -54,6 +60,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
     let handler_watcher_engine = Arc::clone(&watcher_engine);
     let handler_scheduler_notify = Arc::clone(&scheduler_notify);
     let handler_sync_manager = Arc::clone(&sync_manager);
+    let handler_ingestion = Arc::clone(&ingestion);
 
     let ct = tokio_util::sync::CancellationToken::new();
 
@@ -66,6 +73,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
                 Arc::clone(&handler_scheduler_notify),
                 Arc::clone(&notification_service),
                 Arc::clone(&handler_sync_manager),
+                Arc::clone(&handler_ingestion),
                 port,
             ))
         },
@@ -129,6 +137,11 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
     let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
+    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
+    let _ingestion_cancel = Arc::clone(&ingestion).start();
+
+    startup_enqueue_unindexed(Arc::clone(&ingestion), Arc::clone(&db)).await;
+
     if let Err(e) = watcher_engine.reload_from_db().await {
         tracing::error!("Failed to reload watchers: {}", e);
     }
@@ -144,6 +157,7 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
         scheduler_notify,
         Arc::clone(&notification_service),
         sync_manager,
+        ingestion,
         0,
     );
 
@@ -159,6 +173,29 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
     tracing::info!("Stdio server stopped");
 
     Ok(())
+}
+
+/// Enqueue all registered projects that have never been indexed.
+async fn startup_enqueue_unindexed(ingestion: Arc<IngestionManager>, db: Arc<Database>) {
+    let projects = match db.list_projects() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("startup_enqueue: failed to list projects: {}", e);
+            return;
+        }
+    };
+    for project in projects.into_iter().filter(|p| p.indexed_at.is_none()) {
+        if std::path::Path::new(&project.path).exists() {
+            let name = project.name.clone();
+            let hash = project.hash.clone();
+            ingestion.enqueue_project(&project).await;
+            tracing::info!(
+                "startup_enqueue: queued unindexed project '{}' ({})",
+                name,
+                hash,
+            );
+        }
+    }
 }
 
 async fn shutdown_signal() {

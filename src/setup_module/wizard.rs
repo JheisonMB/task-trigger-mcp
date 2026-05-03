@@ -1,18 +1,20 @@
 use crate::setup_module::daemon_service::{
     install_service_if_needed, start_daemon_if_needed, stop_daemon,
 };
-use crate::setup_module::models::{ensure_mcp_dependencies, is_platform_available, Platform};
-use crate::setup_module::platform_adapter::clear_wizard_screen;
+use crate::setup_module::models::{is_platform_available, Platform};
+use crate::setup_module::platform_adapter::{browse_directory, clear_wizard_screen};
 use crate::setup_module::registry_fetch::{fetch_registry, print_banner};
 use crate::setup_module::sync_and_skills::{run_essential_skills_step, run_sync_step};
 use crate::setup_module::PlatformWithCli;
 use anyhow::{Context, Result};
-use inquire::{MultiSelect, Select};
+use inquire::{Confirm, MultiSelect, Select, Text};
 use std::io::{self, Write};
 
 pub fn run_setup() -> Result<()> {
     let mut wiz = WizardState::new();
     let home = dirs::home_dir().context("No home directory")?;
+    let canopy_dir = home.join(".canopy");
+    let existing_config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
 
     // ── Step 1: Fetch registry ──────────────────────────────────
     clear_wizard_screen()?;
@@ -79,10 +81,50 @@ pub fn run_setup() -> Result<()> {
         }
     ));
 
-    // ── Step 2.5: Verify MCP runtime dependencies ─────────────
+    // ── Step 2.3: Knowledge layer preferences ───────────────────
     wiz.render()?;
-    let dep_msg = ensure_mcp_dependencies();
-    wiz.add(dep_msg);
+    let embeddings_model = select_embeddings_model(&existing_config.embeddings_model)?;
+
+    // Warn if model changed — re-indexing all documents will be required.
+    if !existing_config.embeddings_model.is_empty()
+        && embeddings_model != existing_config.embeddings_model
+    {
+        println!();
+        println!("  \x1b[33m⚠  Embeddings model changed.\x1b[0m");
+        println!("  \x1b[90mAll previously indexed documents will need to be re-indexed.\x1b[0m");
+        println!("  \x1b[90mThis is a heavy operation and may take a while.\x1b[0m");
+        println!();
+        let confirmed = Confirm::new("Continue with the new model?")
+            .with_default(false)
+            .with_help_message("enter: confirm")
+            .prompt()
+            .unwrap_or(false);
+        if !confirmed {
+            anyhow::bail!("Embeddings model change cancelled by user");
+        }
+    }
+
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m Embeddings model: {}",
+        embeddings_model
+    ));
+
+    wiz.render()?;
+    let rag_personal_root = pick_directory(
+        "Personal RAG root (your own notes/docs for global retrieval across sessions):",
+        &existing_config.rag_personal_root,
+    )?;
+    wiz.add(format!(
+        "\x1b[32m✓\x1b[0m Personal RAG root: {}",
+        rag_personal_root
+    ));
+
+    wiz.render()?;
+    let projects_root = pick_directory(
+        "Projects root (the parent folder that contains the repositories Canopy should discover/index):",
+        &existing_config.projects_root,
+    )?;
+    wiz.add(format!("\x1b[32m✓\x1b[0m Projects root: {}", projects_root));
 
     // ── Step 3: Install MCP servers + show matrix ───────────────
     if !selected.is_empty() {
@@ -101,18 +143,11 @@ pub fn run_setup() -> Result<()> {
 
     let cli_registry =
         crate::domain::cli_config::CliRegistry::detect_available(&platforms_with_cli);
-    let canopy_dir = home.join(".canopy");
     std::fs::create_dir_all(&canopy_dir)?;
+    std::fs::create_dir_all(&rag_personal_root)?;
+    std::fs::create_dir_all(&projects_root)?;
 
-    // ── Step 5: MCP Manager (sync/add/remove) ───────────────────
-    if !selected.is_empty() {
-        let sync_summary = run_sync_step(&mut wiz, &home, &selected, &registry.canonical_servers)?;
-        if let Some(s) = sync_summary {
-            wiz.add(s);
-        }
-    }
-
-    // ── Step 5.5: Essential Skills ───────────────────────────────
+    // ── Step 5: Essential Skills ─────────────────────────────────
     wiz.render()?;
     let skills_step = run_essential_skills_step(&home, &selected);
     wiz.add(skills_step);
@@ -141,6 +176,9 @@ pub fn run_setup() -> Result<()> {
     config.mark_configured();
     config.clis = cli_registry.available_clis;
     config.temperature_unit = temperature_unit;
+    config.embeddings_model = embeddings_model;
+    config.rag_personal_root = rag_personal_root;
+    config.projects_root = projects_root;
     let config_step = match config.save(&canopy_dir) {
         Ok(_) => format!(
             "\x1b[32m✓\x1b[0m Config: {} CLI(s) saved to config.toml",
@@ -222,4 +260,121 @@ fn select_temperature_unit() -> Result<crate::domain::canopy_config::Temperature
         "Fahrenheit (°F)" => crate::domain::canopy_config::TemperatureUnit::Fahrenheit,
         _ => crate::domain::canopy_config::TemperatureUnit::Celsius,
     })
+}
+
+fn select_embeddings_model(current: &str) -> Result<String> {
+    let mut models = crate::domain::models_db::load_catalog()
+        .map(|catalog| {
+            catalog
+                .models
+                .into_iter()
+                .filter(|model| {
+                    let id = model.id.to_lowercase();
+                    let name = model.name.to_lowercase();
+                    id.contains("embed") || name.contains("embed")
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        models = vec![
+            crate::domain::models_db::ModelEntry {
+                id: "text-embedding-3-small".to_string(),
+                name: "text-embedding-3-small".to_string(),
+                provider: "openai".to_string(),
+                release_date: Some("2024-01-25".to_string()),
+                size_hint: Some("small".to_string()),
+            },
+            crate::domain::models_db::ModelEntry {
+                id: "text-embedding-3-large".to_string(),
+                name: "text-embedding-3-large".to_string(),
+                provider: "openai".to_string(),
+                release_date: Some("2024-01-25".to_string()),
+                size_hint: Some("large".to_string()),
+            },
+            crate::domain::models_db::ModelEntry {
+                id: "gemini-embedding-001".to_string(),
+                name: "Gemini Embedding 001".to_string(),
+                provider: "google".to_string(),
+                release_date: Some("2025-05-20".to_string()),
+                size_hint: None,
+            },
+        ];
+    }
+
+    if !current.is_empty() && !models.iter().any(|model| model.id == current) {
+        models.insert(
+            0,
+            crate::domain::models_db::ModelEntry {
+                id: current.to_string(),
+                name: current.to_string(),
+                provider: "custom".to_string(),
+                release_date: None,
+                size_hint: None,
+            },
+        );
+    }
+
+    models.dedup_by(|a, b| a.id == b.id);
+    // Sort newest-first (lexicographic descending on date, None last).
+    models.sort_by(|a, b| {
+        let da = a.release_date.as_deref().unwrap_or("");
+        let db = b.release_date.as_deref().unwrap_or("");
+        db.cmp(da)
+    });
+
+    let mut options = models
+        .iter()
+        .map(format_embeddings_option)
+        .collect::<Vec<_>>();
+    options.push("Custom…".to_string());
+
+    let start = models
+        .iter()
+        .position(|model| model.id == current)
+        .unwrap_or(0);
+    let selected = Select::new(
+        "Embeddings model for the knowledge layer (date and size help you choose):",
+        options,
+    )
+    .with_starting_cursor(start)
+    .with_help_message("enter: confirm | ↑↓: navigate")
+    .prompt()
+    .map_err(|e| anyhow::anyhow!("Embeddings model selection cancelled: {}", e))?;
+
+    if selected == "Custom…" {
+        Text::new("Custom embeddings model:")
+            .with_initial_value(current)
+            .with_help_message("enter: confirm")
+            .prompt()
+            .map_err(|e| anyhow::anyhow!("Custom embeddings model cancelled: {}", e))
+    } else {
+        models
+            .into_iter()
+            .find(|model| format_embeddings_option(model) == selected)
+            .map(|model| model.id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown embeddings model selection"))
+    }
+}
+
+fn pick_directory(message: &str, current: &str) -> Result<String> {
+    println!("  {message}");
+    println!("  \x1b[90mUse the directory picker and press Enter to confirm the folder.\x1b[0m");
+    let selected = browse_directory(current);
+    let trimmed = selected.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("{message} cannot be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn format_embeddings_option(model: &crate::domain::models_db::ModelEntry) -> String {
+    let release_date = model.release_date.as_deref().unwrap_or("unknown date");
+    let size_hint = model.size_hint.as_deref().unwrap_or("unknown size");
+    // Gray ANSI for metadata so the model id stands out
+    format!(
+        "{}  \x1b[90m[{} | {}]\x1b[0m",
+        model.id, release_date, size_hint
+    )
 }

@@ -1,6 +1,7 @@
 mod agents;
 mod data;
 pub mod dialog;
+mod sync;
 
 use anyhow::Result;
 use chrono::Utc;
@@ -33,7 +34,7 @@ pub mod utils;
 pub(crate) use session_resume::build_resumed_session_args;
 pub use terminal_search::TerminalSearch;
 pub(crate) use types::ContextTransferSource;
-pub use types::{AgentEntry, App, Focus};
+pub use types::{AgentEntry, App, Focus, SidebarMode};
 
 impl App {
     pub fn new(db: Arc<Database>, data_dir: &Path) -> Result<Self> {
@@ -73,6 +74,7 @@ impl App {
             daemon_version: String::new(),
             selected: 0,
             focus: Focus::Home,
+            sidebar_mode: SidebarMode::Agents,
             log_content: String::new(),
             log_scroll: 0,
             running: true,
@@ -81,7 +83,10 @@ impl App {
             sidebar_brain: None,
             home_brain: None,
             sidebar_click_map: Vec::new(),
+            projects: Vec::new(),
+            selected_project: 0,
             sidebar_visible: true,
+            sync_panel_visible: true,
             term_width: 0,
             show_legend: false,
             show_copied: false,
@@ -118,6 +123,10 @@ impl App {
                 }
                 usage
             },
+            playground_active: false,
+            playground_query: String::new(),
+            playground_results: Vec::new(),
+            playground_last_search: std::time::Instant::now(),
         };
         app.refresh()?;
         Ok(app)
@@ -128,6 +137,7 @@ impl App {
         self.animation_tick = self.animation_tick.wrapping_add(1);
         self.refresh_daemon_status();
         self.refresh_agents()?;
+        self.refresh_projects()?;
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
         self.poll_terminal_agents();
@@ -138,6 +148,7 @@ impl App {
         self.dismiss_copied();
         self.update_whimsg_context();
         self.resize_interactive_agents();
+        self.refresh_playground_search()?;
 
         // Non-blocking check for updated system info from background thread
         while let Ok(info) = self.system_info_rx.try_recv() {
@@ -148,17 +159,61 @@ impl App {
         Ok(())
     }
 
+    /// Perform debounced RAG search in playground mode
+    fn refresh_playground_search(&mut self) -> Result<()> {
+        if !self.playground_active {
+            return Ok(());
+        }
+        
+        // Only search if query changed and debounce time has passed (300ms)
+        let since_last = self.playground_last_search.elapsed().as_millis();
+        if since_last < 300 {
+            return Ok(());
+        }
+        
+        if self.playground_query.is_empty() {
+            self.playground_results.clear();
+            return Ok(());
+        }
+        
+        // Search in the default RAG index (global FTS)
+        let query = &self.playground_query;
+        
+        // Use the FTS5 search to find chunks
+        if let Ok(results) = self.db.search_chunks(query, None, 50) {
+            self.playground_results = results;
+        }
+        
+        self.playground_last_search = std::time::Instant::now();
+        Ok(())
+    }
+
     // ── Navigation ──────────────────────────────────────────────
 
     pub fn select_next(&mut self) {
-        if !self.agents.is_empty() {
+        if self.sidebar_mode == SidebarMode::Projects {
+            if !self.projects.is_empty() {
+                let total_items = self.projects.len() + 1; // projects + playground
+                self.selected_project = (self.selected_project + 1) % total_items;
+                self.log_scroll = 0;
+            }
+        } else if !self.agents.is_empty() {
             self.selected = (self.selected + 1) % self.agents.len();
             self.log_scroll = 0;
         }
     }
 
     pub fn select_prev(&mut self) {
-        if !self.agents.is_empty() {
+        if self.sidebar_mode == SidebarMode::Projects {
+            if !self.projects.is_empty() {
+                let total_items = self.projects.len() + 1; // projects + playground
+                self.selected_project = self
+                    .selected_project
+                    .checked_sub(1)
+                    .unwrap_or(total_items - 1);
+                self.log_scroll = 0;
+            }
+        } else if !self.agents.is_empty() {
             self.selected = self
                 .selected
                 .checked_sub(1)
@@ -175,8 +230,48 @@ impl App {
         self.log_scroll = self.log_scroll.saturating_sub(3);
     }
 
+    fn refresh_projects(&mut self) -> Result<()> {
+        self.projects = self.db.list_projects()?;
+        if self.projects.is_empty() {
+            self.selected_project = 0;
+        } else {
+            self.selected_project = self.selected_project.min(self.projects.len() - 1);
+        }
+        Ok(())
+    }
+
     pub fn selected_agent(&self) -> Option<&AgentEntry> {
         self.agents.get(self.selected)
+    }
+
+    pub fn selected_project(&self) -> Option<&crate::domain::project::Project> {
+        self.projects.get(self.selected_project)
+    }
+
+    pub fn is_playground_selected(&self) -> bool {
+        self.sidebar_mode == SidebarMode::Projects && self.selected_project == self.projects.len()
+    }
+
+    pub fn activate_playground(&mut self) {
+        self.playground_active = true;
+        self.playground_query.clear();
+        self.playground_results.clear();
+    }
+
+    pub fn deactivate_playground(&mut self) {
+        self.playground_active = false;
+    }
+
+    pub fn toggle_sidebar_mode(&mut self) {
+        self.sidebar_mode = match self.sidebar_mode {
+            SidebarMode::Agents => SidebarMode::Projects,
+            SidebarMode::Projects => SidebarMode::Agents,
+        };
+        self.log_scroll = 0;
+    }
+
+    pub fn toggle_sync_panel(&mut self) {
+        self.sync_panel_visible = !self.sync_panel_visible;
     }
 
     /// Return the working directory of the currently selected agent,

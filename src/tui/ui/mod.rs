@@ -37,15 +37,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .areas(frame.area());
 
-    let panel_area = if app.sidebar_visible {
-        let [sidebar, panel] =
+    let body_area = if app.sidebar_visible {
+        let [sidebar, content] =
             Layout::horizontal([Constraint::Length(30), Constraint::Min(0)]).areas(body);
         header::draw_header(frame, header_area, app);
         sidebar::draw_sidebar(frame, sidebar, app);
-        panel
+        content
     } else {
         header::draw_header(frame, header_area, app);
         body
+    };
+
+    let sync_state = app.sync_panel_state();
+    let sync_width = app.sync_panel_layout_width(body_area.width, sync_state.is_some());
+    let (panel_area, sync_area) = if let Some(sync_state) = sync_state.as_ref() {
+        if sync_width > 0 {
+            let [panel, sync] = Layout::horizontal([
+                Constraint::Min(body_area.width.saturating_sub(sync_width)),
+                Constraint::Length(sync_width),
+            ])
+            .areas(body_area);
+            panel::draw_sync_panel(frame, sync, sync_state);
+            (panel, Some(sync))
+        } else {
+            (body_area, None)
+        }
+    } else {
+        (body_area, None)
     };
 
     // Split view: render two panels side-by-side (or stacked) when a split is active
@@ -142,6 +160,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame.render_widget(widget, area);
         }
     }
+
+    let _ = sync_area;
 }
 
 // ── Shared helpers ──────────────────────────────────────────────
