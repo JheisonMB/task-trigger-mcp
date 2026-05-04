@@ -4,7 +4,24 @@ use crate::setup_module::models::{
 use crate::setup_module::PlatformWithCli;
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Global override for local registry development mode.
+/// When set, canopy reads registry files from this local directory
+/// instead of fetching from the remote GitHub repository.
+static LOCAL_REGISTRY_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Set the local registry path for development mode.
+/// This should be called early (e.g. in main.rs CLI parsing) before any registry fetch.
+pub fn set_local_registry(path: PathBuf) {
+    let _ = LOCAL_REGISTRY_PATH.set(path);
+}
+
+/// Get the currently configured local registry path, if any.
+fn get_local_registry() -> Option<&'static PathBuf> {
+    LOCAL_REGISTRY_PATH.get()
+}
 
 /// Lightweight index for the per-platform registry (v6).
 #[derive(Deserialize)]
@@ -43,6 +60,17 @@ pub fn fetch_registry_raw() -> Result<RegistryRaw> {
 }
 
 pub(crate) fn fetch_registry() -> Result<RegistryRaw> {
+    // Development mode: read from local filesystem if configured
+    if let Some(local_path) = get_local_registry() {
+        if let Some(reg) = try_fetch_local(local_path) {
+            return Ok(reg);
+        }
+        anyhow::bail!(
+            "Local registry not found or invalid at: {}",
+            local_path.display()
+        );
+    }
+
     let client = reqwest::blocking::Client::new();
 
     // Try v6 (TOML) first
@@ -75,6 +103,59 @@ pub(crate) fn fetch_registry() -> Result<RegistryRaw> {
     Ok(RegistryRaw {
         platforms: legacy.platforms,
         canonical_servers: CanonicalServers::default(),
+    })
+}
+
+/// Try reading registry v6 from a local directory (development mode).
+/// Expects the directory to contain: index.toml, servers.toml, platforms/*.toml
+fn try_fetch_local(base: &Path) -> Option<RegistryRaw> {
+    let index_path = base.join("index.toml");
+    let index_text = std::fs::read_to_string(&index_path).ok()?;
+    let index: RegistryIndex = toml::from_str(&index_text).ok()?;
+
+    // Read canonical servers
+    let servers_path = base.join("servers.toml");
+    let canonical_servers: CanonicalServers = if servers_path.exists() {
+        let text = std::fs::read_to_string(&servers_path).ok()?;
+        toml::from_str(&text).unwrap_or_default()
+    } else {
+        CanonicalServers::default()
+    };
+
+    // Read platform files (only for installed binaries)
+    let needed: Vec<&IndexEntry> = index
+        .platforms
+        .iter()
+        .filter(|e| is_binary_available(&e.binary))
+        .collect();
+
+    let platforms_dir = base.join("platforms");
+    let mut platforms = Vec::new();
+    for entry in &needed {
+        let file_path = platforms_dir.join(format!("{}.toml", entry.name));
+        match std::fs::read_to_string(&file_path) {
+            Ok(text) => match toml::from_str::<Platform>(&text) {
+                Ok(p) => platforms.push(p),
+                Err(e) => {
+                    tracing::warn!("Failed to parse local platform '{}': {e}", entry.name);
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read local platform file '{}': {e}",
+                    file_path.display()
+                );
+            }
+        }
+    }
+
+    if platforms.is_empty() {
+        return None;
+    }
+
+    Some(RegistryRaw {
+        platforms,
+        canonical_servers,
     })
 }
 

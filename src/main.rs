@@ -31,6 +31,7 @@ use clap::{Parser, Subcommand};
 use daemon::cli::{handle_daemon_action, DaemonAction};
 use daemon::doctor::run_doctor;
 use daemon::server::{run_http_server, run_stdio_server};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "canopy", version, about)]
@@ -50,7 +51,12 @@ enum Commands {
     },
     Doctor,
     Stdio,
-    Setup,
+    Setup {
+        /// Use a local registry directory instead of fetching from GitHub.
+        /// Useful for development and testing registry changes before publishing.
+        #[arg(long = "local-registry", value_name = "PATH")]
+        local_registry: Option<PathBuf>,
+    },
     Mcp,
     #[command(hide = true)]
     Serve,
@@ -65,7 +71,10 @@ async fn main() -> Result<()> {
         Some(Commands::Doctor) => run_doctor().await,
         Some(Commands::Stdio) => run_stdio_server().await,
         Some(Commands::Serve) => run_http_server(cli.port).await,
-        Some(Commands::Setup) => {
+        Some(Commands::Setup { local_registry }) => {
+            if let Some(path) = local_registry {
+                setup_module::registry_fetch::set_local_registry(path);
+            }
             tokio::task::block_in_place(setup_module::run_setup)?;
             Ok(())
         }
