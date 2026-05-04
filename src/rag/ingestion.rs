@@ -96,11 +96,14 @@ impl IngestionManager {
     /// Enqueue all supported files under `root` for a project.
     pub async fn enqueue_project(&self, project: &Project) {
         let root = std::path::Path::new(&project.path);
+        let patterns = crate::rag::ragignore::load_patterns(root);
+
         let walker = walkdir::WalkDir::new(root)
             .max_depth(10)
             .into_iter()
             .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file());
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| !crate::rag::ragignore::is_ignored(e.path(), root, &patterns));
 
         for entry in walker {
             let path = entry.path().to_string_lossy().to_string();
@@ -139,6 +142,8 @@ impl IngestionManager {
 
     async fn drain_queue(&self, ct: &tokio_util::sync::CancellationToken) {
         let mut processed = 0usize;
+        let mut modified_projects = std::collections::HashSet::new();
+
         loop {
             // Honour pause: spin-wait until unpaused or cancelled.
             while self.is_paused() {
@@ -161,13 +166,23 @@ impl IngestionManager {
             let _ = self
                 .db
                 .mark_rag_item_processing(&project_hash, &source_path, now);
+
             if let Err(e) = self.index_file(&project_hash, &source_path).await {
                 tracing::warn!("RAG index error {source_path}: {e}");
             } else {
                 processed += 1;
+                modified_projects.insert(project_hash.clone());
             }
             let _ = self.db.remove_rag_item(&project_hash, &source_path);
         }
+
+        if !modified_projects.is_empty() {
+            let now = chrono::Utc::now().timestamp();
+            for hash in modified_projects {
+                let _ = self.db.mark_project_indexed(&hash, now);
+            }
+        }
+
         if processed > 0 {
             tracing::info!("RAG: indexed {processed} file(s)");
         }
@@ -210,7 +225,6 @@ impl IngestionManager {
             .collect();
 
         self.db.replace_chunks(project_hash, source_path, &chunks)?;
-        self.db.mark_project_indexed(project_hash, now)?;
         Ok(())
     }
 }

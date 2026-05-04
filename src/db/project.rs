@@ -78,6 +78,9 @@ impl Database {
             project.description = extract_readme_description(&readme);
         }
 
+        // Create .canopy/ragignore seeded from .gitignore if not present.
+        crate::rag::ragignore::ensure_ragignore(&canonical);
+
         self.upsert_project(&project)?;
         self.queue_project_files(&project.hash, &canonical)?;
         Ok(project)
@@ -92,6 +95,8 @@ impl Database {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
+        let patterns = crate::rag::ragignore::load_patterns(root);
+
         let mut queue = vec![(root.to_path_buf(), 0)];
         while let Some((current_path, depth)) = queue.pop() {
             if depth > MAX_DEPTH {
@@ -100,30 +105,15 @@ impl Database {
 
             if let Ok(entries) = std::fs::read_dir(&current_path) {
                 for entry in entries.flatten() {
+                    let entry_path = entry.path();
+                    if crate::rag::ragignore::is_ignored(&entry_path, root, &patterns) {
+                        continue;
+                    }
                     if let Ok(metadata) = entry.metadata() {
                         if metadata.is_dir() {
-                            // Skip common non-source directories to avoid queue bloat.
-                            let name = entry.file_name();
-                            let name_str = name.to_string_lossy();
-                            if matches!(
-                                name_str.as_ref(),
-                                "node_modules"
-                                    | ".git"
-                                    | "target"
-                                    | "dist"
-                                    | "build"
-                                    | ".cache"
-                                    | "__pycache__"
-                                    | ".venv"
-                                    | "vendor"
-                            ) {
-                                continue;
-                            }
-                            queue.push((entry.path(), depth + 1));
+                            queue.push((entry_path, depth + 1));
                         } else if metadata.len() <= MAX_FILE_SIZE {
-                            let file_path = entry.path();
-                            if let Some(file_path_str) = file_path.to_str() {
-                                // Only queue files that the indexer can actually process.
+                            if let Some(file_path_str) = entry_path.to_str() {
                                 if is_indexable_path(file_path_str) {
                                     let _ = self.enqueue_rag_item(project_hash, file_path_str, now);
                                 }
@@ -388,24 +378,38 @@ impl Database {
         source_path: &str,
         chunks: &[Chunk],
     ) -> Result<()> {
-        let conn = self
+        let mut conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
+
+        let tx = conn.transaction()?;
+
+        tx.execute(
             "DELETE FROM rag_chunks WHERE project_hash=?1 AND source_path=?2",
             rusqlite::params![project_hash, source_path],
         )?;
-        for c in chunks {
-            conn.execute(
+
+        {
+            let mut stmt = tx.prepare(
                 "INSERT INTO rag_chunks(id,project_hash,source_path,chunk_index,content,lang,updated_at)
                  VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                rusqlite::params![
-                    c.id, c.project_hash, c.source_path, c.chunk_index,
-                    c.content, c.lang, c.updated_at
-                ],
             )?;
+
+            for c in chunks {
+                stmt.execute(rusqlite::params![
+                    c.id,
+                    c.project_hash,
+                    c.source_path,
+                    c.chunk_index,
+                    c.content,
+                    c.lang,
+                    c.updated_at
+                ])?;
+            }
         }
+
+        tx.commit()?;
         Ok(())
     }
 

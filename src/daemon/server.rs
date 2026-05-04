@@ -175,12 +175,25 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
     Ok(())
 }
 
-/// Enqueue all registered projects that have never been indexed.
-/// Also clears any stale queue entries left from a previous (unfiltered) run.
+/// Enqueue all registered projects that have never been indexed,
+/// and reload any pending queue items left in the DB from a previous session.
 async fn startup_enqueue_unindexed(ingestion: Arc<IngestionManager>, db: Arc<Database>) {
-    // Purge stale queue entries so non-code files don't clog the view.
-    if let Err(e) = db.clear_rag_queue() {
-        tracing::warn!("startup_enqueue: failed to clear stale queue: {}", e);
+    // Reload any items already in the DB queue (e.g. queued via register_project_path
+    // in a previous session or via the sync path that writes directly to the DB).
+    // This is the primary fix for "indexed stays at 1" — items written to rag_queue
+    // by queue_project_files never reached the in-memory worker queue.
+    if let Ok(pending) = db.list_rag_queue(None, 10_000) {
+        for item in &pending {
+            ingestion
+                .enqueue(&item.project_hash, &item.source_path)
+                .await;
+        }
+        if !pending.is_empty() {
+            tracing::info!(
+                "startup_enqueue: reloaded {} pending queue items",
+                pending.len()
+            );
+        }
     }
 
     let projects = match db.list_projects() {
