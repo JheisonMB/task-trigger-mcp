@@ -5,7 +5,7 @@ use crate::tui::app::types::{AgentEntry, App, Focus, ProjectsPanelFocus, Sidebar
 
 // ── Home: screensaver — arrows enter Preview ────────────────────────
 
-pub fn handle_home_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+pub fn handle_home_key(app: &mut App, code: KeyCode, _modifiers: KeyModifiers) -> Result<()> {
     // Quit-confirmation overlay intercepts all keys
     if app.quit_confirm {
         match code {
@@ -13,38 +13,6 @@ pub fn handle_home_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) ->
             _ => app.quit_confirm = false,
         }
         return Ok(());
-    }
-
-    // Shift+arrows cycle panel focus in Projects mode.
-    if app.sidebar_mode == SidebarMode::Projects && modifiers.contains(KeyModifiers::SHIFT) {
-        match code {
-            KeyCode::Up | KeyCode::Left => {
-                app.cycle_projects_panel_focus(false);
-                app.focus = Focus::Preview;
-                return Ok(());
-            }
-            KeyCode::Down | KeyCode::Right => {
-                app.cycle_projects_panel_focus(true);
-                app.focus = Focus::Preview;
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
-    // Shift+arrows toggle RagInfo focus in Agents mode (only when chunks exist).
-    if app.sidebar_mode == SidebarMode::Agents
-        && modifiers.contains(KeyModifiers::SHIFT)
-        && app.rag_info.total_chunks > 0
-    {
-        match code {
-            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-                app.agents_rag_focused = !app.agents_rag_focused;
-                app.focus = Focus::Preview;
-                return Ok(());
-            }
-            _ => {}
-        }
     }
 
     let has_project_preview = app.sidebar_mode == SidebarMode::Projects
@@ -67,10 +35,21 @@ pub fn handle_home_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) ->
         KeyCode::Down | KeyCode::Char('j') if !app.agents.is_empty() || has_project_preview => {
             app.dismiss_brain();
             if app.sidebar_mode == SidebarMode::Agents {
-                app.selected = 0;
+                // Arrow-down from Home in Agents mode: show RAG info if chunks exist,
+                // otherwise go to first agent.
+                if app.rag_info.total_chunks > 0 {
+                    app.agents_rag_focused = true;
+                } else {
+                    app.selected = 0;
+                    app.agents_rag_focused = false;
+                }
             } else {
-                // Advance selection immediately so first keypress feels responsive.
-                app.select_next();
+                // Projects mode: arrow-down goes to RagInfo if chunks exist, else first project.
+                if app.rag_info.total_chunks > 0 {
+                    app.projects_panel_focus = ProjectsPanelFocus::RagInfo;
+                } else {
+                    app.select_next();
+                }
             }
             app.log_scroll = 0;
             app.focus = Focus::Preview;
@@ -79,6 +58,7 @@ pub fn handle_home_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) ->
             app.dismiss_brain();
             if app.sidebar_mode == SidebarMode::Agents {
                 app.selected = app.agents.len().saturating_sub(1);
+                app.agents_rag_focused = false;
             } else {
                 app.select_prev();
             }
@@ -101,62 +81,77 @@ pub fn handle_home_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) ->
 pub fn handle_preview_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     // If playground is active, handle playground-specific inputs
     if app.playground_active {
-        match code {
-            KeyCode::Esc => {
-                app.deactivate_playground();
+        if app.playground_detail_mode {
+            match code {
+                KeyCode::Esc => {
+                    app.playground_detail_mode = false;
+                    app.playground_scroll = 0;
+                }
+                KeyCode::F(10) => {
+                    app.playground_detail_mode = false;
+                    app.playground_scroll = 0;
+                }
+                KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.deactivate_playground();
+                    app.select_prev();
+                }
+                KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
+                    app.deactivate_playground();
+                    app.select_next();
+                }
+                KeyCode::Up => {
+                    app.playground_scroll = app.playground_scroll.saturating_sub(3);
+                }
+                KeyCode::Down => {
+                    app.playground_scroll = app.playground_scroll.saturating_add(3);
+                }
+                KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.open_rag_transfer_modal();
+                }
+                _ => {}
             }
-            KeyCode::Up => {
-                if app.playground_selected > 0 {
+        } else {
+            match code {
+                KeyCode::Esc => {
+                    app.deactivate_playground();
+                }
+                KeyCode::Up if app.playground_selected > 0 => {
                     app.playground_selected -= 1;
                 }
-            }
-            KeyCode::Down => {
-                if app.playground_selected + 1 < app.playground_results.len() {
+                KeyCode::Down if app.playground_selected + 1 < app.playground_results.len() => {
                     app.playground_selected += 1;
                 }
+                KeyCode::Enter | KeyCode::Char('l') if !app.playground_results.is_empty() => {
+                    app.playground_detail_mode = true;
+                    app.playground_scroll = 0;
+                }
+                KeyCode::Tab => {
+                    if app.playground_project_hash.is_some() {
+                        app.playground_project_hash = None;
+                    } else {
+                        app.playground_project_hash = app
+                            .projects
+                            .get(app.selected_project)
+                            .map(|p| p.hash.clone());
+                    }
+                    // Trigger immediate refresh
+                    app.playground_last_executed_query.clear();
+                }
+                KeyCode::Backspace => {
+                    app.playground_query.pop();
+                    app.playground_last_search = std::time::Instant::now();
+                }
+                KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.open_rag_transfer_modal();
+                }
+                KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                    app.playground_query.push(c);
+                    app.playground_last_search = std::time::Instant::now();
+                }
+                _ => {}
             }
-            KeyCode::Backspace => {
-                app.playground_query.pop();
-                app.playground_last_search = std::time::Instant::now();
-            }
-            KeyCode::Char('t') if modifiers.contains(KeyModifiers::CONTROL) => {
-                app.open_rag_transfer_modal();
-            }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                app.playground_query.push(c);
-                app.playground_last_search = std::time::Instant::now();
-            }
-            _ => {}
         }
         return Ok(());
-    }
-
-    if app.sidebar_mode == SidebarMode::Projects && modifiers.contains(KeyModifiers::SHIFT) {
-        match code {
-            KeyCode::Up | KeyCode::Left => {
-                app.cycle_projects_panel_focus(false);
-                return Ok(());
-            }
-            KeyCode::Down | KeyCode::Right => {
-                app.cycle_projects_panel_focus(true);
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
-    // Shift+arrows toggle RagInfo focus in Agents mode (only when chunks exist).
-    if app.sidebar_mode == SidebarMode::Agents
-        && modifiers.contains(KeyModifiers::SHIFT)
-        && app.rag_info.total_chunks > 0
-    {
-        match code {
-            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
-                app.agents_rag_focused = !app.agents_rag_focused;
-                return Ok(());
-            }
-            _ => {}
-        }
     }
 
     match code {
@@ -167,7 +162,6 @@ pub fn handle_preview_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers)
             if app.sidebar_mode == SidebarMode::Projects {
                 match app.projects_panel_focus {
                     ProjectsPanelFocus::RagInfo => app.activate_playground(),
-                    ProjectsPanelFocus::RagQueue => app.toggle_rag_pause(),
                     ProjectsPanelFocus::Projects => {}
                 }
                 return Ok(());
@@ -192,19 +186,60 @@ pub fn handle_preview_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers)
             app.focus = Focus::Agent;
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.select_next();
+            if app.sidebar_mode == SidebarMode::Projects {
+                // In Projects mode: Down cycles Projects → RagInfo
+                if app.projects_panel_focus == ProjectsPanelFocus::Projects
+                    && app.rag_info.total_chunks > 0
+                {
+                    app.projects_panel_focus = ProjectsPanelFocus::RagInfo;
+                } else {
+                    app.projects_panel_focus = ProjectsPanelFocus::Projects;
+                    app.select_next();
+                }
+            } else {
+                // Agents mode: Down navigates agents; if at end and RAG exists, go to RagInfo
+                if !app.agents_rag_focused {
+                    let at_last = app.selected + 1 >= app.agents.len();
+                    if at_last && app.rag_info.total_chunks > 0 {
+                        app.agents_rag_focused = true;
+                    } else {
+                        app.select_next();
+                    }
+                }
+                // If already on RagInfo, do nothing (can't go further down)
+            }
         }
         KeyCode::Up | KeyCode::Char('k') => {
-            app.select_prev();
+            if app.sidebar_mode == SidebarMode::Projects {
+                // In Projects mode: Up cycles RagInfo → Projects
+                if app.projects_panel_focus == ProjectsPanelFocus::RagInfo {
+                    app.projects_panel_focus = ProjectsPanelFocus::Projects;
+                } else {
+                    app.select_prev();
+                }
+            } else {
+                // Agents mode: Up from RagInfo goes back to last agent
+                if app.agents_rag_focused {
+                    app.agents_rag_focused = false;
+                } else {
+                    app.select_prev();
+                }
+            }
         }
-        KeyCode::Char('e') => {
+        KeyCode::Char('e') if !app.agents_rag_focused => {
             app.open_edit_dialog();
         }
-        KeyCode::Char('d') => {
+        KeyCode::Char('d') if !app.agents_rag_focused => {
             let _ = app.toggle_enable();
         }
-        KeyCode::Char('r') => {
+        KeyCode::Char('r') if !app.agents_rag_focused => {
             let _ = app.rerun_selected();
+        }
+        KeyCode::Char('p')
+            if app.sidebar_mode == SidebarMode::Projects
+                && app.projects_panel_focus == ProjectsPanelFocus::RagInfo =>
+        {
+            app.toggle_rag_pause();
         }
         KeyCode::Char('n') => app.open_new_agent_dialog(),
         KeyCode::F(4) => {
@@ -212,7 +247,7 @@ pub fn handle_preview_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers)
                 && app.projects_panel_focus == ProjectsPanelFocus::Projects
             {
                 let _ = app.delete_selected_project();
-            } else {
+            } else if !app.agents_rag_focused {
                 let _ = app.delete_selected();
             }
         }

@@ -9,17 +9,24 @@ const RECENT_MESSAGE_LIMIT: usize = 18;
 const CHATTER_LIMIT: usize = 8;
 
 impl App {
+    /// Whether sync is available for the currently selected session,
+    /// regardless of whether the panel is currently visible.
+    pub(crate) fn sync_available(&self) -> bool {
+        let Some(workdir) = self.selected_sync_workdir() else {
+            return false;
+        };
+        self.live_session_count_for_workdir(workdir) >= 2
+    }
+
     pub(crate) fn sync_panel_state(&self) -> Option<SyncPanelState> {
         if !self.sync_panel_visible {
             return None;
         }
-
-        let workdir = self.selected_sync_workdir()?;
-        let participant_count = self.live_session_count_for_workdir(workdir);
-        if participant_count < 2 {
+        if !self.sync_available() {
             return None;
         }
 
+        let workdir = self.selected_sync_workdir()?;
         let recent_messages = self
             .db
             .list_sync_messages(workdir, RECENT_MESSAGE_LIMIT)
@@ -34,7 +41,7 @@ impl App {
 
         Some(SyncPanelState {
             workdir: workdir.to_owned(),
-            participant_count,
+            participant_count: self.live_session_count_for_workdir(workdir),
             vibe: summary.vibe,
             active_intents: summary.active_intents,
             recent_messages,

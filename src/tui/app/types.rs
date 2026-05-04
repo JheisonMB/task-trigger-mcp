@@ -47,7 +47,6 @@ pub enum Focus {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ProjectsPanelFocus {
     Projects,
-    RagQueue,
     RagInfo,
 }
 
@@ -195,4 +194,10 @@ pub struct App {
     pub(crate) playground_selected: usize,
     pub(crate) playground_last_search: std::time::Instant,
     pub(crate) playground_last_executed_query: String,
+    /// Whether the playground is showing a single chunk in detail mode.
+    pub(crate) playground_detail_mode: bool,
+    /// Scroll offset for the detail view content.
+    pub(crate) playground_scroll: u16,
+    /// Optional project hash to filter search results. None = Global.
+    pub(crate) playground_project_hash: Option<String>,
 }

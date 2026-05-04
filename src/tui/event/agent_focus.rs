@@ -139,19 +139,29 @@ pub fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -
         return Ok(());
     }
 
-    // Shift+Down = next interactive agent, Shift+Up = prev (focus mode)
+    // Shift+Down/Up = navigate to RagInfo panel (if chunks exist), otherwise cycle interactive agents
     if modifiers.contains(KeyModifiers::SHIFT) {
         match code {
             KeyCode::Down => {
-                // When navigating agents, ensure sidebar is in Agents view
-                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
-                app.next_interactive();
+                if app.rag_info.total_chunks > 0 {
+                    app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+                    app.agents_rag_focused = true;
+                    app.focus = Focus::Preview;
+                } else {
+                    app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+                    app.next_interactive();
+                }
                 return Ok(());
             }
             KeyCode::Up => {
-                // When navigating agents, ensure sidebar is in Agents view
-                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
-                app.prev_interactive();
+                if app.rag_info.total_chunks > 0 {
+                    app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+                    app.agents_rag_focused = true;
+                    app.focus = Focus::Preview;
+                } else {
+                    app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+                    app.prev_interactive();
+                }
                 return Ok(());
             }
             _ => {}
