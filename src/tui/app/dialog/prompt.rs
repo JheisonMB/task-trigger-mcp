@@ -78,14 +78,20 @@ pub struct SimplePromptDialog {
 impl SimplePromptDialog {
     pub fn new() -> Self {
         let mut counters = HashMap::new();
-        counters.insert("instruction".to_string(), 1usize);
+        counters.insert("instruction".to_string(), 2usize);
+        counters.insert("context".to_string(), 2usize);
         let mut cursors = HashMap::new();
-        cursors.insert("instruction".to_string(), 0usize);
+        cursors.insert("context_1".to_string(), 0usize);
+        cursors.insert("instruction_1".to_string(), 0usize);
         let mut scrolls = HashMap::new();
-        scrolls.insert("instruction".to_string(), 0usize);
-        let mut dialog = Self {
-            sections: HashMap::new(),
-            enabled_sections: vec!["instruction".to_string()],
+        scrolls.insert("context_1".to_string(), 0usize);
+        scrolls.insert("instruction_1".to_string(), 0usize);
+        let mut sections = HashMap::new();
+        sections.insert("context_1".to_string(), String::new());
+        sections.insert("instruction_1".to_string(), String::new());
+        Self {
+            sections,
+            enabled_sections: vec!["context_1".to_string(), "instruction_1".to_string()],
             focused_section: 0,
             prev_focus: None,
             picker_mode: SectionPickerMode::None,
@@ -94,11 +100,7 @@ impl SimplePromptDialog {
             section_scrolls: scrolls,
             at_picker: None,
             collapsed_pastes: HashMap::new(),
-        };
-        dialog
-            .sections
-            .insert("instruction".to_string(), String::new());
-        dialog
+        }
     }
 
     /// Get cursor position for a section
@@ -111,17 +113,13 @@ impl SimplePromptDialog {
         self.section_scrolls.get(section).copied().unwrap_or(0)
     }
 
-    /// Generate unique ID for a section instance
+    /// Generate unique ID for a section instance (always uses `name_N` format, N starting at 1).
     fn generate_section_id(&mut self, section_name: &str) -> String {
         let counter = self
             .section_counters
             .entry(section_name.to_string())
-            .or_insert(0);
-        let id = if *counter == 0 {
-            section_name.to_string()
-        } else {
-            format!("{}_{}", section_name, counter)
-        };
+            .or_insert(1);
+        let id = format!("{}_{}", section_name, counter);
         *counter += 1;
         id
     }
@@ -157,17 +155,27 @@ impl SimplePromptDialog {
         self.focused_section = self.enabled_sections.len() - 1;
     }
 
-    /// Remove a specific section instance
+    /// Remove a specific section instance.
+    /// The last remaining instruction section cannot be removed.
     pub fn remove_section(&mut self, section_id: &str) {
-        if section_id != "instruction" {
-            self.enabled_sections.retain(|s| s != section_id);
-            self.sections.remove(section_id);
-            self.section_cursors.remove(section_id);
-            self.section_scrolls.remove(section_id);
-            self.collapsed_pastes.remove(section_id);
-            if self.focused_section > 0 {
-                self.focused_section = self.focused_section.saturating_sub(1);
+        let is_instruction = section_id == "instruction" || section_id.starts_with("instruction_");
+        if is_instruction {
+            let instruction_count = self
+                .enabled_sections
+                .iter()
+                .filter(|s| *s == "instruction" || s.starts_with("instruction_"))
+                .count();
+            if instruction_count <= 1 {
+                return;
             }
+        }
+        self.enabled_sections.retain(|s| s != section_id);
+        self.sections.remove(section_id);
+        self.section_cursors.remove(section_id);
+        self.section_scrolls.remove(section_id);
+        self.collapsed_pastes.remove(section_id);
+        if self.focused_section > 0 {
+            self.focused_section = self.focused_section.saturating_sub(1);
         }
     }
 
@@ -255,11 +263,23 @@ impl SimplePromptDialog {
         Self::get_available_sections()
     }
 
-    /// Get section instances available to remove (not instruction)
+    /// Get section instances available to remove (last instruction is protected)
     pub fn get_removable_sections(&self) -> Vec<(String, String)> {
+        let instruction_count = self
+            .enabled_sections
+            .iter()
+            .filter(|s| *s == "instruction" || s.starts_with("instruction_"))
+            .count();
         self.enabled_sections
             .iter()
-            .filter(|s| *s != "instruction")
+            .filter(|s| {
+                let is_instruction = *s == "instruction" || s.starts_with("instruction_");
+                if is_instruction {
+                    instruction_count > 1
+                } else {
+                    true
+                }
+            })
             .map(|section_id| {
                 let section_name = Self::section_type(section_id);
                 let label = Self::get_available_sections()

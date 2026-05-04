@@ -123,6 +123,7 @@ impl App {
 
     /// Open prompt template dialog with the specified template and optional initial content.
     /// Restores any persisted session for the current workdir.
+    /// When multiple agents share the workdir, auto-populates context_1 with sync state.
     pub fn open_simple_prompt_dialog(
         &mut self,
         initial_content: Option<std::collections::HashMap<String, String>>,
@@ -132,20 +133,37 @@ impl App {
         let mut dialog = SimplePromptDialog::new();
 
         // Restore persisted session for this workdir if available
-        if let Some(session) = self.prompt_builder_sessions.get(&workdir) {
-            session.restore_into(&mut dialog);
+        let has_persisted = self.prompt_builder_sessions.contains_key(&workdir);
+        if has_persisted {
+            if let Some(session) = self.prompt_builder_sessions.get(&workdir) {
+                session.restore_into(&mut dialog);
+            }
+        }
+
+        // Auto-populate context_1 with sync state when multiple agents are active
+        // and there is no persisted session (fresh open only).
+        if !has_persisted && self.sync_available() {
+            if let Some(sync_ctx) = self.build_sync_context_text() {
+                dialog.set_section_content("context_1", sync_ctx.clone());
+                let char_len = sync_ctx.chars().count();
+                dialog
+                    .section_cursors
+                    .insert("context_1".to_string(), char_len);
+            }
         }
 
         if let Some(content) = initial_content {
             for (section_name, section_content) in content {
-                if section_name == "instruction" {
+                if section_name == "instruction" || section_name.starts_with("instruction_") {
+                    let instr_id = dialog
+                        .enabled_sections
+                        .iter()
+                        .find(|s| *s == "instruction" || s.starts_with("instruction_"))
+                        .cloned()
+                        .unwrap_or_else(|| "instruction_1".to_string());
                     let char_len = section_content.chars().count();
-                    dialog
-                        .sections
-                        .insert("instruction".to_string(), section_content);
-                    dialog
-                        .section_cursors
-                        .insert("instruction".to_string(), char_len);
+                    dialog.sections.insert(instr_id.clone(), section_content);
+                    dialog.section_cursors.insert(instr_id, char_len);
                 } else {
                     dialog.add_section_with_content(&section_name.clone(), section_content);
                 }
@@ -155,6 +173,47 @@ impl App {
         dialog.prev_focus = Some(prev_focus);
         self.simple_prompt_dialog = Some(dialog);
         self.focus = super::super::types::Focus::PromptTemplateDialog;
+    }
+
+    /// Build a compact sync context string from active intents and recent chatter.
+    fn build_sync_context_text(&self) -> Option<String> {
+        let state = self.sync_panel_state()?;
+        let mut lines = Vec::new();
+
+        lines.push(format!(
+            "workspace: {} | agents: {} | vibe: {}",
+            state.workdir,
+            state.participant_count,
+            state.vibe.as_str()
+        ));
+
+        if !state.active_intents.is_empty() {
+            lines.push("active missions:".to_string());
+            for intent in &state.active_intents {
+                lines.push(format!(
+                    "  - {} [{}] {}: {}",
+                    intent.agent_name,
+                    intent.impact.as_str(),
+                    intent.mission,
+                    intent.description
+                ));
+            }
+        }
+
+        let chatter: Vec<_> = state
+            .recent_messages
+            .iter()
+            .filter(|m| m.kind.is_chatter())
+            .take(5)
+            .collect();
+        if !chatter.is_empty() {
+            lines.push("recent messages:".to_string());
+            for msg in chatter {
+                lines.push(format!("  - {}: {}", msg.agent_name, msg.message));
+            }
+        }
+
+        Some(lines.join("\n"))
     }
 
     /// Close simple prompt dialog and persist its state for the current workdir.
