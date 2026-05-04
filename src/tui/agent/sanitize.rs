@@ -180,7 +180,7 @@ mod tests {
     fn strips_prompt_suffixes_from_redrawn_shell_lines() {
         assert_eq!(
             strip_shell_prompt_prefix(
-                "/mnt/.../agent-canopy ❯ jheisonmblivecom@WORKSTATION:/repo$ ls src"
+                "/mnt/.../harness-canopy ❯ jheisonmblivecom@WORKSTATION:/repo$ ls src"
             ),
             "ls src"
         );
