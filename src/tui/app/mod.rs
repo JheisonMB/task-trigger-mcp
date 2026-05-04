@@ -135,6 +135,9 @@ impl App {
             playground_selected: 0,
             playground_last_search: std::time::Instant::now(),
             playground_last_executed_query: String::new(),
+            playground_detail_mode: false,
+            playground_scroll: 0,
+            playground_project_hash: None,
             rag_paused: false,
             agents_rag_focused: false,
         };
@@ -194,7 +197,10 @@ impl App {
             return Ok(());
         }
 
-        if let Ok(results) = self.db.search_chunks(&query, None, 50) {
+        if let Ok(results) =
+            self.db
+                .search_chunks(&query, self.playground_project_hash.as_deref(), 50)
+        {
             self.playground_results = results;
             self.playground_selected = 0;
         }
@@ -213,18 +219,29 @@ impl App {
                         self.log_scroll = 0;
                     }
                 }
-                ProjectsPanelFocus::RagQueue => {
-                    if !self.global_rag_queue.is_empty() {
-                        self.selected_rag_queue =
-                            (self.selected_rag_queue + 1) % self.global_rag_queue.len();
-                        self.log_scroll = 0;
-                    }
-                }
                 ProjectsPanelFocus::RagInfo => {}
             }
-        } else if !self.agents.is_empty() {
-            self.selected = (self.selected + 1) % self.agents.len();
-            self.log_scroll = 0;
+        } else {
+            let has_rag = self.rag_info.total_chunks > 0;
+            if has_rag {
+                if self.agents_rag_focused {
+                    self.agents_rag_focused = false;
+                    if !self.agents.is_empty() {
+                        self.selected = 0;
+                    }
+                    self.log_scroll = 0;
+                    return;
+                }
+                if self.agents.is_empty() || self.selected + 1 >= self.agents.len() {
+                    self.agents_rag_focused = true;
+                    self.log_scroll = 0;
+                    return;
+                }
+            }
+            if !self.agents.is_empty() {
+                self.selected = (self.selected + 1) % self.agents.len();
+                self.log_scroll = 0;
+            }
         }
     }
 
@@ -240,23 +257,32 @@ impl App {
                         self.log_scroll = 0;
                     }
                 }
-                ProjectsPanelFocus::RagQueue => {
-                    if !self.global_rag_queue.is_empty() {
-                        self.selected_rag_queue = self
-                            .selected_rag_queue
-                            .checked_sub(1)
-                            .unwrap_or(self.global_rag_queue.len() - 1);
-                        self.log_scroll = 0;
-                    }
-                }
                 ProjectsPanelFocus::RagInfo => {}
             }
-        } else if !self.agents.is_empty() {
-            self.selected = self
-                .selected
-                .checked_sub(1)
-                .unwrap_or(self.agents.len() - 1);
-            self.log_scroll = 0;
+        } else {
+            let has_rag = self.rag_info.total_chunks > 0;
+            if has_rag {
+                if self.agents_rag_focused {
+                    self.agents_rag_focused = false;
+                    if !self.agents.is_empty() {
+                        self.selected = self.agents.len() - 1;
+                    }
+                    self.log_scroll = 0;
+                    return;
+                }
+                if self.agents.is_empty() || self.selected == 0 {
+                    self.agents_rag_focused = true;
+                    self.log_scroll = 0;
+                    return;
+                }
+            }
+            if !self.agents.is_empty() {
+                self.selected = self
+                    .selected
+                    .checked_sub(1)
+                    .unwrap_or(self.agents.len() - 1);
+                self.log_scroll = 0;
+            }
         }
     }
 
@@ -289,9 +315,6 @@ impl App {
 
         if self.global_rag_queue.is_empty() {
             self.selected_rag_queue = 0;
-            if self.projects_panel_focus == ProjectsPanelFocus::RagQueue {
-                self.projects_panel_focus = ProjectsPanelFocus::Projects;
-            }
         } else {
             self.selected_rag_queue = self
                 .selected_rag_queue
@@ -327,17 +350,16 @@ impl App {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn visible_projects_panels(&self) -> Vec<ProjectsPanelFocus> {
         let mut panels = vec![ProjectsPanelFocus::Projects];
-        if !self.global_rag_queue.is_empty() {
-            panels.push(ProjectsPanelFocus::RagQueue);
-        }
         if self.rag_info.total_chunks > 0 {
             panels.push(ProjectsPanelFocus::RagInfo);
         }
         panels
     }
 
+    #[allow(dead_code)]
     pub fn cycle_projects_panel_focus(&mut self, forward: bool) {
         let panels = self.visible_projects_panels();
         let current = panels
@@ -359,6 +381,14 @@ impl App {
         self.playground_results.clear();
         self.playground_selected = 0;
         self.playground_last_executed_query.clear();
+        self.playground_detail_mode = false;
+        self.playground_scroll = 0;
+
+        // If a project is selected in the projects sidebar, default to searching that project
+        self.playground_project_hash = self
+            .projects
+            .get(self.selected_project)
+            .map(|p| p.hash.clone());
     }
 
     pub fn deactivate_playground(&mut self) {
@@ -367,6 +397,8 @@ impl App {
         self.playground_results.clear();
         self.playground_selected = 0;
         self.playground_last_executed_query.clear();
+        self.playground_detail_mode = false;
+        self.playground_scroll = 0;
     }
 
     pub fn toggle_rag_pause(&mut self) {

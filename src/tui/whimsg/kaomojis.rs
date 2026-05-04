@@ -1,13 +1,13 @@
 //! Whimsical personality — animated kaomoji + contextual messages.
 //!
 //! Animation cycle:
-//!   "agent-canopy" erases right-to-left → kaomoji flashes →
+//!   "harness-canopy" erases right-to-left → kaomoji flashes →
 //!   message types left-to-right → holds 5-9s → erases right-to-left →
-//!   brief blank → "agent-canopy" returns.
+//!   brief blank → "harness-canopy" returns.
 
 // ── Timing ────────────────────────────────────────────────────────
 
-pub const TITLE: &str = "agent-canopy";
+pub const TITLE: &str = "harness-canopy";
 pub(crate) const ERASE_MS: u64 = 35;
 pub(crate) const TYPE_MS: u64 = 45;
 pub(crate) const KAOMOJI_MS: u64 = 400;

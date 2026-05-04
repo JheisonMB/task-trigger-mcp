@@ -79,6 +79,35 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
         KeyCode::Enter => {
+            // If focused on the dir field, Enter selects the highlighted folder.
+            let on_dir_field = app.new_agent_dialog.as_ref().is_some_and(|d| {
+                let is_interactive =
+                    matches!(d.task_type, crate::tui::app::NewTaskType::Interactive);
+                let is_terminal = matches!(d.task_type, crate::tui::app::NewTaskType::Terminal);
+                let is_background = matches!(d.task_type, crate::tui::app::NewTaskType::Background);
+                let dir_field = if is_interactive {
+                    3
+                } else if is_terminal {
+                    1
+                } else {
+                    6
+                };
+                let watch_dir_field = 5;
+                d.field == dir_field
+                    || (is_background
+                        && d.field == watch_dir_field
+                        && matches!(
+                            d.background_trigger,
+                            crate::tui::app::BackgroundTrigger::Watch
+                        ))
+            });
+            if on_dir_field {
+                if let Some(dialog) = &mut app.new_agent_dialog {
+                    dialog.select_current();
+                }
+                return Ok(());
+            }
+
             // If in Resume mode with session picker and no session selected yet,
             // open the picker regardless of which field is focused.
             let should_pick = app.new_agent_dialog.as_ref().is_some_and(|d| {
@@ -334,7 +363,7 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                         _ => {}
                     }
                 }
-                // Directory browser — ↑↓ navigate  → enter dir  ← go up  Space alias for →
+                // Directory browser — ↑↓ navigate  Enter select dir  → enter dir  ← go up
                 // For Background+Watch, dir_field == 6 but extra_field == 5 handles the path browser
                 n if n == dir_field
                     || (n == extra_field
@@ -399,6 +428,9 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                                 dialog.field
                             };
                         }
+                        KeyCode::Enter => {
+                            dialog.select_current();
+                        }
                         KeyCode::Right => {
                             dialog.navigate_to_selected();
                         }
@@ -409,12 +441,9 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
                             dialog.dir_filter.pop();
                             dialog.dir_selected = 0;
                         }
-                        KeyCode::Char(c) if c != ' ' => {
+                        KeyCode::Char(c) => {
                             dialog.dir_filter.push(c);
                             dialog.dir_selected = 0;
-                        }
-                        KeyCode::Char(' ') => {
-                            dialog.navigate_to_selected();
                         }
                         _ => {}
                     }

@@ -418,21 +418,11 @@ pub fn handle_prompt_template_key(
         KeyCode::Down if dialog.focused_section + 1 < dialog.enabled_sections.len() => {
             dialog.focused_section += 1;
         }
-        // Ctrl+A → if on tools section: open SkillsPicker to replace; else: open add-section picker
+        // Ctrl+A → open add-section picker (same behavior for all sections including tools)
         KeyCode::Char('a') if modifiers.contains(KeyModifiers::CONTROL) => {
-            use crate::tui::app::dialog::SimplePromptDialog;
-            if SimplePromptDialog::is_tools_section(&section_name) {
-                let entries = SimplePromptDialog::collect_skills_for_picker(&workdir);
-                dialog.picker_mode = SectionPickerMode::SkillsPicker {
-                    selected: 0,
-                    entries,
-                    replace_id: Some(section_name.clone()),
-                };
-            } else {
-                let addable = dialog.get_addable_sections();
-                if !addable.is_empty() {
-                    dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
-                }
+            let addable = dialog.get_addable_sections();
+            if !addable.is_empty() {
+                dialog.picker_mode = SectionPickerMode::AddSection { selected: 0 };
             }
         }
         // Ctrl+X → open remove-section picker
