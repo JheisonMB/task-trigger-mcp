@@ -1,12 +1,12 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
 use crate::domain::sync::{MessageKind, MissionImpact, WorkspaceStatus};
 use crate::tui::app::types::SyncPanelState;
-use crate::tui::ui::{last_two_segments, truncate_str, ACCENT, DIM, ERROR_COLOR, STATUS_OK};
+use crate::tui::ui::{last_two_segments, ACCENT, DIM, ERROR_COLOR, STATUS_OK};
 
 pub(crate) fn draw_sync_panel(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
     let block = Block::default()
@@ -22,8 +22,9 @@ pub(crate) fn draw_sync_panel(frame: &mut Frame, area: Rect, state: &SyncPanelSt
 }
 
 fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
+    let w = area.width as usize;
     let vibe_fg = vibe_color(state.vibe);
-    let mut lines = vec![
+    let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("vibe ", Style::default().fg(DIM)),
             Span::styled(
@@ -40,73 +41,65 @@ fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
         Line::from(vec![
             Span::styled("workdir ", Style::default().fg(DIM)),
             Span::styled(
-                truncate_str(
-                    &last_two_segments(&state.workdir),
-                    area.width.saturating_sub(9) as usize,
-                ),
+                last_two_segments(&state.workdir),
                 Style::default().fg(Color::White),
             ),
         ]),
         Line::raw(""),
         Line::from(Span::styled(
-            "active missions",
+            "missions",
             Style::default().fg(DIM).add_modifier(Modifier::BOLD),
         )),
     ];
 
     if state.active_intents.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No active missions",
-            Style::default().fg(DIM),
-        )));
+        lines.push(Line::from(Span::styled("  none", Style::default().fg(DIM))));
     } else {
         for intent in &state.active_intents {
+            // Card header: agent · impact · status
             lines.push(Line::from(vec![
-                Span::styled("• ", Style::default().fg(intent_color(intent.impact))),
+                Span::styled("┌ ", Style::default().fg(intent_color(intent.impact))),
                 Span::styled(
-                    truncate_str(
-                        &format!("{} · {}", intent.agent_name, intent.mission),
-                        area.width.saturating_sub(2) as usize,
-                    ),
-                    Style::default().fg(Color::White),
+                    &intent.agent_name,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
                 Span::styled(
-                    intent.impact.as_str(),
+                    format!(" [{}]", intent.impact.as_str()),
                     Style::default().fg(intent_color(intent.impact)),
                 ),
-                Span::raw(" · "),
-                Span::styled(
-                    intent.status.as_str(),
-                    Style::default().fg(vibe_color(intent.status)),
-                ),
             ]));
-            if !intent.description.is_empty() {
+            // Mission text — wrap manually
+            for chunk in wrap_text(&intent.mission, w.saturating_sub(2)) {
                 lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(
-                        truncate_str(&intent.description, area.width.saturating_sub(2) as usize),
-                        Style::default().fg(DIM),
-                    ),
+                    Span::styled("│ ", Style::default().fg(intent_color(intent.impact))),
+                    Span::styled(chunk, Style::default().fg(Color::White)),
                 ]));
             }
+            // Description — wrap
+            if !intent.description.is_empty() {
+                for chunk in wrap_text(&intent.description, w.saturating_sub(2)) {
+                    lines.push(Line::from(vec![
+                        Span::styled("│ ", Style::default().fg(intent_color(intent.impact))),
+                        Span::styled(chunk, Style::default().fg(DIM)),
+                    ]));
+                }
+            }
+            lines.push(Line::from(Span::styled(
+                "└─",
+                Style::default().fg(intent_color(intent.impact)),
+            )));
         }
     }
 
     lines.push(Line::raw(""));
     lines.push(Line::from(Span::styled(
-        "recent sync",
+        "messages",
         Style::default().fg(DIM).add_modifier(Modifier::BOLD),
     )));
 
-    let visible_messages = area.height.saturating_sub(lines.len() as u16) as usize;
-    let start = state
-        .recent_messages
-        .len()
-        .saturating_sub(visible_messages.max(1));
-    for message in &state.recent_messages[start..] {
+    for message in &state.recent_messages {
         let icon = match message.kind {
             MessageKind::Intent => "◉",
             MessageKind::Status => "≈",
@@ -114,25 +107,53 @@ fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
             MessageKind::Answer => "↳",
             MessageKind::Info => "·",
         };
+        let color = kind_color(message.kind);
+        // Card header: icon agent_name
         lines.push(Line::from(vec![
-            Span::styled(icon, Style::default().fg(kind_color(message.kind))),
-            Span::raw(" "),
+            Span::styled(format!("┌{icon} "), Style::default().fg(color)),
             Span::styled(
-                truncate_str(
-                    &format!("{} {}", message.agent_name, message.message),
-                    area.width.saturating_sub(2) as usize,
-                ),
-                Style::default().fg(Color::White),
+                &message.agent_name,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
         ]));
+        // Message body — wrap
+        for chunk in wrap_text(&message.message, w.saturating_sub(2)) {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(color)),
+                Span::styled(chunk, Style::default().fg(Color::White)),
+            ]));
+        }
+        lines.push(Line::from(Span::styled("└─", Style::default().fg(color))));
     }
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: true })
-            .style(Style::default()),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).style(Style::default()), area);
+}
+
+/// Split `text` into chunks of at most `max_width` chars, breaking on whitespace.
+fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut result = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current.chars().count() + 1 + word.chars().count() <= max_width {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            result.push(current.clone());
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
 }
 
 fn vibe_color(status: WorkspaceStatus) -> Color {

@@ -89,7 +89,7 @@ pub fn render_system_dashboard(
             .block(
                 Block::default()
                     .title(
-                        Line::from(Span::styled(" sysinfo ", Style::default().fg(DIM)))
+                        Line::from(Span::styled(" sysInfo ", Style::default().fg(DIM)))
                             .alignment(ratatui::layout::Alignment::Right),
                     )
                     .borders(Borders::ALL)

@@ -10,16 +10,18 @@ use super::DIM;
 use crate::tui::app::types::{AgentEntry, App, Focus};
 
 pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let sync_available = app.sync_available();
     let hints = match app.focus {
-        Focus::Home => vec![
-            ("↑↓", "select"),
-            ("n", "new"),
-            ("F2", "projects"),
-            ("F3", "sync"),
-            ("Shift+←→", "panels"),
-            ("F10", "preview"),
-            ("F1", "stats"),
-        ],
+        Focus::Home => {
+            let mut h = vec![("↑↓", "select"), ("n", "new"), ("F2", "projects")];
+            if sync_available {
+                h.push(("F3", "sync"));
+            }
+            h.push(("Shift+←→", "panels"));
+            h.push(("F10", "preview"));
+            h.push(("F1", "stats"));
+            h
+        }
         Focus::Preview => {
             if app.sidebar_mode == crate::tui::app::SidebarMode::Projects {
                 if app.playground_active {
@@ -31,14 +33,17 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                         ("F2", "agents"),
                     ]
                 } else {
-                    vec![
+                    let mut h = vec![
                         ("↑↓", "nav"),
                         ("Shift+←→", "panels"),
                         ("Enter", "open"),
                         ("F2", "agents"),
-                        ("F3", "sync"),
-                        ("Esc", "home"),
-                    ]
+                    ];
+                    if sync_available {
+                        h.push(("F3", "sync"));
+                    }
+                    h.push(("Esc", "home"));
+                    h
                 }
             } else {
                 let is_bg = matches!(app.selected_agent(), Some(AgentEntry::Agent(_)));
@@ -51,7 +56,9 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 h.push(("n", "new"));
                 h.push(("F2", "projects"));
-                h.push(("F3", "sync"));
+                if sync_available {
+                    h.push(("F3", "sync"));
+                }
                 h.push(("Esc", "home"));
                 h
             }
@@ -93,20 +100,20 @@ pub(super) fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
                     h.push(("Ctrl+B", "prompt"));
                 }
                 h.push(("F2", "projects"));
-                h.push(("F3", "sync"));
+                if sync_available {
+                    h.push(("F3", "sync"));
+                }
                 h.push(("Ctrl+N", "new"));
                 h.push(("F1", "legend"));
                 h
             } else {
-                vec![
-                    ("↑↓/jk", "scroll"),
-                    ("F10", "preview"),
-                    ("Esc", "home"),
-                    ("F2", "projects"),
-                    ("F3", "sync"),
-                    ("Ctrl+N", "new"),
-                    ("F1", "legend"),
-                ]
+                let mut h = vec![("F10", "preview"), ("Esc", "home"), ("F2", "projects")];
+                if sync_available {
+                    h.push(("F3", "sync"));
+                }
+                h.push(("Ctrl+N", "new"));
+                h.push(("F1", "legend"));
+                h
             }
         }
         Focus::ContextTransfer => vec![

@@ -102,9 +102,9 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     let cli_name = cli_binding.as_str();
 
     // Field layout:
-    //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
+    //   Interactive: 0=type 1=mode 2=Harness 3=dir 4=yolo
     //   Terminal:    0=type 1=dir 2=shell
-    //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
+    //   Background:  0=type 1=trigger 2=Harness 3=model 4=prompt 5=cron/watch 6=dir
     let cli_field: usize = if is_interactive || is_background {
         2
     } else {
@@ -320,14 +320,14 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         lines.push(Line::from(""));
     }
 
-    // ── CLI row (not for terminal) ──
+    // ── Harness row (not for terminal) ──
     lines.push(Line::from(vec![
-        Span::styled("  CLI:   ", Style::default().fg(DIM)),
+        Span::styled("  Harness: ", Style::default().fg(DIM)),
         Span::styled(format!(" {} ", cli_name), focus_style(cli_field)),
         Span::styled("  (◂▸ cycle · type/Space pick)", Style::default().fg(DIM)),
     ]));
 
-    // CLI picker dropdown
+    // Harness picker dropdown
     if dialog.cli_picker_open {
         let max_visible = 6;
         let total = dialog.available_clis.len();
@@ -393,9 +393,9 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         let footer = if filtered_clis.is_empty() {
             "    Backspace clear  Esc close".to_string()
         } else if total_matches > max_visible {
-            format!("    … {total_matches}/{total} CLIs  ↑↓ scroll  Enter/Esc close")
+            format!("    … {total_matches}/{total} harnesses  ↑↓ scroll  Enter/Esc close")
         } else {
-            format!("    {total_matches}/{total} CLIs  type to filter  Enter/Esc close")
+            format!("    {total_matches}/{total} harnesses  type to filter  Enter/Esc close")
         };
         lines.push(Line::from(Span::styled(footer, Style::default().fg(DIM))));
     }
@@ -587,7 +587,7 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
         ];
         if !has_yolo {
             yolo_spans.push(Span::styled(
-                "  (not supported by this CLI)",
+                "  (not supported by this harness)",
                 Style::default().fg(DIM),
             ));
         } else if dialog.yolo_mode {

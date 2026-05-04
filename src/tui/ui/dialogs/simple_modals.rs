@@ -91,7 +91,7 @@ pub fn draw_legend(frame: &mut Frame, app: &App) {
     let top_clis = app.cli_usage.ranked();
     if !top_clis.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Most used CLIs",
+            "Most used harnesses",
             Style::default()
                 .fg(Color::White)
                 .add_modifier(Modifier::BOLD),

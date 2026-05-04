@@ -107,10 +107,11 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         } else {
             0
         };
-        let rag_needed = if rag_items.is_empty() {
-            0
-        } else {
+        let show_queue_box = app.playground_active && !rag_items.is_empty();
+        let rag_needed = if show_queue_box {
             (rag_items.len() as u16 * 2 + 3).min(14)
+        } else {
+            0
         };
 
         let (projects_area, rag_area, brain_area) = match (has_projects, rag_needed > 0) {
@@ -157,9 +158,9 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
         if let Some(rag_area) = rag_area.filter(|a| a.height >= 3) {
             let queue_title = if app.rag_paused {
-                " rag queue ⏸ "
+                " ragQueue ⏸ "
             } else {
-                " rag queue "
+                " ragQueue "
             };
             let block = Block::default()
                 .title_bottom(
@@ -167,10 +168,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
                         .alignment(ratatui::layout::Alignment::Right),
                 )
                 .borders(Borders::ALL)
-                .border_style(projects_panel_border_style(
-                    app,
-                    ProjectsPanelFocus::RagQueue,
-                ));
+                .border_style(Style::default().fg(DIM));
             let inner = block.inner(rag_area);
             frame.render_widget(block, rag_area);
             draw_rag_queue(frame, inner, rag_items, app.selected_rag_queue);
@@ -185,7 +183,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(rag_info_area) = rag_info_area.filter(|area| area.height >= 3) {
             let block = Block::default()
                 .title_bottom(
-                    Line::from(Span::styled(" rag info ", Style::default().fg(DIM)))
+                    Line::from(Span::styled(" ragInfo ", Style::default().fg(DIM)))
                         .alignment(ratatui::layout::Alignment::Right),
                 )
                 .borders(Borders::ALL)
@@ -639,14 +637,19 @@ fn agents_rag_info_border_style(app: &App) -> Style {
 }
 
 fn draw_agents_rag_info_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let is_focused = app.sidebar_mode == SidebarMode::Agents
+        && matches!(app.focus, Focus::Home | Focus::Preview)
+        && app.agents_rag_focused
+        && !app.playground_active;
     let queue_title = if app.rag_paused {
-        " rag info ⏸ "
+        " ragInfo ⏸ "
     } else {
-        " rag info "
+        " ragInfo "
     };
+    let title_fg = if is_focused { ACCENT } else { DIM };
     let block = Block::default()
         .title_bottom(
-            Line::from(Span::styled(queue_title, Style::default().fg(DIM)))
+            Line::from(Span::styled(queue_title, Style::default().fg(title_fg)))
                 .alignment(ratatui::layout::Alignment::Right),
         )
         .borders(Borders::ALL)
@@ -700,7 +703,7 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut A
         }
         let card_area = Rect::new(area.x, y, area.width, card_h);
         let agent = &app.agents[idx];
-        let selected = idx == app.selected;
+        let selected = idx == app.selected && !app.agents_rag_focused;
         draw_sidebar_card(frame, card_area, agent, app, selected, accent);
         app.sidebar_click_map.push((idx, y, y + card_h));
         let global_i = scroll_start + rel_i;
@@ -894,7 +897,7 @@ fn draw_groups_list(frame: &mut Frame, area: Rect, app: &mut App) {
         if y >= area.y + area.height {
             break;
         }
-        let is_selected = agent_idx == app.selected;
+        let is_selected = agent_idx == app.selected && !app.agents_rag_focused;
         let is_active = app
             .active_split_id
             .as_deref()

@@ -54,67 +54,14 @@ pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let inner_width = dialog_width.saturating_sub(2);
     let field_width = inner_width.saturating_sub(2).max(10) as usize;
 
-    let is_instruction_focused = dialog.focused_section == 0;
-
-    // Instruction height: expanded (1-5) when focused, collapsed (1) otherwise
-    let instruction_content = dialog
-        .sections
-        .get("instruction")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    let instruction_display_height = if is_instruction_focused {
-        let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
-            instruction_content,
-            field_width,
-        );
-        (vis as u16).clamp(1, 5)
-    } else {
-        1u16
-    };
-
-    // Optional sections: expanded when focused, collapsed (1) otherwise
-    let mut optional_section_height: u16 = 0;
-    for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
-        if section_name == "instruction" {
-            continue;
-        }
-        let h = if dialog.focused_section == i {
-            let content = dialog
-                .sections
-                .get(section_name)
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            let vis = crate::tui::app::dialog::SimplePromptDialog::visual_line_count(
-                content,
-                field_width,
-            );
-            let max_h =
-                crate::tui::app::dialog::SimplePromptDialog::max_visible_lines(section_name);
-            (vis as u16).clamp(1, max_h as u16)
-        } else {
-            1u16
-        };
-        optional_section_height += 1 + h + 1 + 1;
-    }
-
-    let total_height =
-        2 + 1 + 1 + 1 + instruction_display_height + 1 + 1 + optional_section_height + 1;
-
-    // Cap dialog height — leave at least 4 rows margin, minimum 10 rows.
-    let max_dialog_h = frame.area().height.saturating_sub(4).max(10);
-    let height = total_height.min(max_dialog_h);
-
-    // Pre-compute render height for each section (label + content + border + gap = h + 3).
+    // Pre-compute render height for each section (label + content + border + gap = content_h + 3).
     let section_heights: Vec<u16> = dialog
         .enabled_sections
         .iter()
         .enumerate()
         .map(|(i, section_name)| {
             let is_focused = dialog.focused_section == i;
-            let content_h = if i == 0 {
-                // instruction
-                instruction_display_height
-            } else if is_focused {
+            let content_h = if is_focused {
                 let content = dialog
                     .sections
                     .get(section_name)
@@ -133,6 +80,13 @@ pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
             content_h + 3 // label(1) + content + bottom_border(1) + gap(1)
         })
         .collect();
+
+    let total_sections_height: u16 = section_heights.iter().sum();
+    let total_height = 2 + 1 + 1 + total_sections_height + 1;
+
+    // Cap dialog height — leave at least 4 rows margin, minimum 10 rows.
+    let max_dialog_h = frame.area().height.saturating_sub(4).max(10);
+    let height = total_height.min(max_dialog_h);
 
     let area = centered_rect(percent_x, height, frame.area());
     frame.render_widget(Clear, area);
@@ -214,104 +168,8 @@ pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
 
     let mut y_pos = sections_top;
 
-    // ── Draw Instruction field ──────────────────────────────────────────────
-    if start_idx == 0 {
-        let label_style = if is_instruction_focused {
-            Style::default().fg(accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(accent)
-        };
-
-        let label_line = generate_top_border("Instruction", inner.width, label_style);
-        let label_area = ratatui::layout::Rect {
-            x: inner.x,
-            y: y_pos,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(label_line), label_area);
-        y_pos += 1;
-
-        let instruction_bg = if is_instruction_focused {
-            Color::Rgb(40, 40, 40)
-        } else {
-            Color::Rgb(30, 30, 30)
-        };
-
-        let instruction_content = dialog
-            .sections
-            .get("instruction")
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        let instruction_real = dialog
-            .collapsed_pastes
-            .get("instruction")
-            .map(|s| s.as_str())
-            .unwrap_or(instruction_content);
-
-        let (instruction_render_text, instr_scroll) = if is_instruction_focused {
-            let cursor_idx = dialog
-                .cursor("instruction")
-                .min(instruction_real.chars().count());
-            let before: String = instruction_real.chars().take(cursor_idx).collect();
-            let after: String = instruction_real.chars().skip(cursor_idx).collect();
-            (
-                format!("{}│{}", before, after),
-                dialog.scroll("instruction") as u16,
-            )
-        } else {
-            let first_line = instruction_content
-                .lines()
-                .next()
-                .unwrap_or(instruction_content);
-            let text = if first_line.chars().count() > field_width {
-                format!(
-                    "{}…",
-                    first_line
-                        .chars()
-                        .take(field_width.saturating_sub(1))
-                        .collect::<String>()
-                )
-            } else {
-                first_line.to_string()
-            };
-            (text, 0u16)
-        };
-
-        let content_style = Style::default().fg(Color::White).bg(instruction_bg);
-        let instruction_paragraph = Paragraph::new(instruction_render_text)
-            .style(content_style)
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .scroll((instr_scroll, 0));
-
-        let content_area = ratatui::layout::Rect {
-            x: inner.x + 1,
-            y: y_pos,
-            width: inner.width.saturating_sub(2),
-            height: instruction_display_height,
-        };
-        if is_instruction_focused {
-            picker_anchor_area = Some(content_area);
-        }
-        frame.render_widget(instruction_paragraph, content_area);
-        y_pos += instruction_display_height;
-
-        let bottom_border = generate_bottom_border(inner.width, label_style);
-        let border_area = ratatui::layout::Rect {
-            x: inner.x,
-            y: y_pos,
-            width: inner.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(bottom_border), border_area);
-        y_pos += 2;
-    }
-
-    // ── Draw optional sections (starting from start_idx, skipping instruction) ──
+    // ── Draw all sections uniformly ─────────────────────────────────────────
     for (i, section_name) in dialog.enabled_sections.iter().enumerate() {
-        if section_name == "instruction" {
-            continue;
-        }
         // Skip sections before start_idx
         if i < start_idx {
             continue;
@@ -478,15 +336,12 @@ pub fn draw_simple_prompt_dialog(frame: &mut Frame, app: &App) {
     let last_visible_section = {
         let mut last = start_idx;
         let mut yy = sections_top;
-        if start_idx == 0 {
-            yy += section_heights.first().copied().unwrap_or(0);
-        }
         for (i, _) in dialog.enabled_sections.iter().enumerate() {
-            if i == 0 || i < start_idx {
+            if i < start_idx {
                 continue;
             }
             let sh = section_heights.get(i).copied().unwrap_or(4);
-            if yy + sh + 3 >= inner_bottom {
+            if yy + sh >= inner_bottom {
                 break;
             }
             yy += sh;
