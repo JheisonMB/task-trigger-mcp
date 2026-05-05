@@ -132,19 +132,18 @@ impl SimplePromptDialog {
             .unwrap_or(section_id)
     }
 
-    /// Add a section instance (can be same type multiple times)
-    pub fn add_section(&mut self, section_name: &str) {
-        let unique_id = self.generate_section_id(section_name);
-        self.enabled_sections.push(unique_id.clone());
-        self.sections.insert(unique_id.clone(), String::new());
-        self.section_cursors.insert(unique_id.clone(), 0);
-        self.section_scrolls.insert(unique_id.clone(), 0);
-        self.collapsed_pastes.remove(&unique_id);
-        self.focused_section = self.enabled_sections.len() - 1;
+    fn section_matches_prefix(section_id: &str, prefix: &str) -> bool {
+        section_id == prefix || section_id.starts_with(&format!("{prefix}_"))
     }
 
-    /// Add a section with pre-existing content (used for context transfer and initial content)
-    pub fn add_section_with_content(&mut self, section_name: &str, content: String) {
+    fn instruction_count(&self) -> usize {
+        self.enabled_sections
+            .iter()
+            .filter(|section_id| Self::section_matches_prefix(section_id, "instruction"))
+            .count()
+    }
+
+    fn insert_section(&mut self, section_name: &str, content: String) {
         let unique_id = self.generate_section_id(section_name);
         let cursor_pos = content.chars().count();
         self.enabled_sections.push(unique_id.clone());
@@ -155,20 +154,24 @@ impl SimplePromptDialog {
         self.focused_section = self.enabled_sections.len() - 1;
     }
 
+    /// Add a section instance (can be same type multiple times)
+    pub fn add_section(&mut self, section_name: &str) {
+        self.insert_section(section_name, String::new());
+    }
+
+    /// Add a section with pre-existing content (used for context transfer and initial content)
+    pub fn add_section_with_content(&mut self, section_name: &str, content: String) {
+        self.insert_section(section_name, content);
+    }
+
     /// Remove a specific section instance.
     /// The last remaining instruction section cannot be removed.
     pub fn remove_section(&mut self, section_id: &str) {
-        let is_instruction = section_id == "instruction" || section_id.starts_with("instruction_");
-        if is_instruction {
-            let instruction_count = self
-                .enabled_sections
-                .iter()
-                .filter(|s| *s == "instruction" || s.starts_with("instruction_"))
-                .count();
-            if instruction_count <= 1 {
-                return;
-            }
+        if Self::section_matches_prefix(section_id, "instruction") && self.instruction_count() <= 1
+        {
+            return;
         }
+
         self.enabled_sections.retain(|s| s != section_id);
         self.sections.remove(section_id);
         self.section_cursors.remove(section_id);
@@ -238,39 +241,30 @@ impl SimplePromptDialog {
         Self::get_available_sections()
     }
 
+    fn section_display_name(section_id: &str) -> String {
+        let section_name = Self::section_type(section_id);
+        let label = Self::get_available_sections()
+            .into_iter()
+            .find(|(name, _)| *name == section_name)
+            .map(|(_, label)| label)
+            .unwrap_or(section_name);
+
+        if section_id.contains('_') {
+            return format!("{} {}", label, section_id.rsplit('_').next().unwrap_or(""));
+        }
+
+        label.to_string()
+    }
+
     /// Get section instances available to remove (last instruction is protected)
     pub fn get_removable_sections(&self) -> Vec<(String, String)> {
-        let instruction_count = self
-            .enabled_sections
-            .iter()
-            .filter(|s| *s == "instruction" || s.starts_with("instruction_"))
-            .count();
+        let instruction_count = self.instruction_count();
         self.enabled_sections
             .iter()
-            .filter(|s| {
-                let is_instruction = *s == "instruction" || s.starts_with("instruction_");
-                if is_instruction {
-                    instruction_count > 1
-                } else {
-                    true
-                }
+            .filter(|section_id| {
+                !Self::section_matches_prefix(section_id, "instruction") || instruction_count > 1
             })
-            .map(|section_id| {
-                let section_name = Self::section_type(section_id);
-                let label = Self::get_available_sections()
-                    .into_iter()
-                    .find(|(name, _)| *name == section_name)
-                    .map(|(_, label)| label)
-                    .unwrap_or(section_name);
-
-                // Build display label with instance number
-                let display = if section_id.contains('_') {
-                    format!("{} {}", label, section_id.rsplit('_').next().unwrap_or(""))
-                } else {
-                    label.to_string()
-                };
-                (section_id.clone(), display)
-            })
+            .map(|section_id| (section_id.clone(), Self::section_display_name(section_id)))
             .collect()
     }
 
@@ -292,14 +286,20 @@ impl SimplePromptDialog {
             .or_else(|| self.sections.get(section_id).map(|s| s.as_str()))
     }
 
-    fn section_lines(&self, prefix: &str) -> Vec<String> {
+    fn section_entries<'a>(&'a self, prefix: &str) -> Vec<&'a str> {
         self.enabled_sections
             .iter()
-            .filter(|section_id| {
-                *section_id == prefix || section_id.starts_with(&format!("{prefix}_"))
-            })
+            .filter(|section_id| Self::section_matches_prefix(section_id, prefix))
             .filter_map(|section_id| self.section_content_for_build(section_id))
-            .flat_map(|content| content.lines())
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .collect()
+    }
+
+    fn section_lines(&self, prefix: &str) -> Vec<String> {
+        self.section_entries(prefix)
+            .into_iter()
+            .flat_map(str::lines)
             .map(str::trim)
             .filter(|line| !line.is_empty())
             .map(ToOwned::to_owned)
@@ -343,10 +343,12 @@ impl SimplePromptDialog {
         if let Some(project) = db.get_project(entry)? {
             return Ok(Some(project));
         }
+
         let path = Path::new(entry);
         if path.exists() {
             return db.get_project_by_path(path);
         }
+
         Ok(None)
     }
 
@@ -355,12 +357,14 @@ impl SimplePromptDialog {
         if !path.exists() {
             return Ok(None);
         }
+
         if path.is_dir() {
             if let Some(project) = db.get_project_by_path(path)? {
                 return Ok(Some(Self::format_project_block(&project)));
             }
             return Ok(Some(format!("path: {}\nkind: directory", path.display())));
         }
+
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read resource file {}", path.display()))?;
         Ok(Some(Self::format_file_resource(path, &content)))
@@ -378,9 +382,121 @@ impl SimplePromptDialog {
                 return (RagScope::Project(project_hash.trim()), query.trim());
             }
         }
-        match default_project_hash {
-            Some(project_hash) => (RagScope::Project(project_hash), query.trim()),
-            None => (RagScope::Global, query.trim()),
+
+        default_project_hash.map_or((RagScope::Global, query.trim()), |project_hash| {
+            (RagScope::Project(project_hash), query.trim())
+        })
+    }
+
+    fn default_project_hash(&self, db: &Database, current_workdir: &Path) -> Option<String> {
+        db.get_project_by_path(current_workdir)
+            .ok()
+            .flatten()
+            .map(|project| project.hash)
+    }
+
+    fn resolve_project_contexts(&self, db: &Database) -> Vec<String> {
+        self.section_lines("project_context")
+            .into_iter()
+            .filter_map(|entry| Self::lookup_project_reference(db, &entry).ok().flatten())
+            .map(|project| Self::format_project_block(&project))
+            .collect()
+    }
+
+    fn resolve_resource_entries(&self, db: &Database) -> Vec<String> {
+        self.section_lines("resources")
+            .into_iter()
+            .map(|entry| {
+                Self::resolve_path_resource(db, &entry)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(entry)
+            })
+            .collect()
+    }
+
+    fn search_rag_resources<'a>(
+        db: &Database,
+        query: &'a str,
+        default_project_hash: Option<&'a str>,
+    ) -> Vec<String> {
+        let (scope, resolved_query) = Self::resolve_rag_scope(query, default_project_hash);
+        if resolved_query.is_empty() {
+            return Vec::new();
+        }
+
+        let project_hash = if let RagScope::Project(hash) = scope {
+            Some(hash)
+        } else {
+            None
+        };
+
+        db.search_chunks(resolved_query, project_hash, 5)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|chunk| Self::format_rag_chunk(resolved_query, &chunk))
+            .collect()
+    }
+
+    fn resolve_rag_resources(
+        &self,
+        db: &Database,
+        default_project_hash: Option<&str>,
+    ) -> Vec<String> {
+        self.section_lines("rag_search")
+            .into_iter()
+            .flat_map(|query| Self::search_rag_resources(db, &query, default_project_hash))
+            .collect()
+    }
+
+    fn append_prompt_section(
+        &self,
+        result: &mut String,
+        prefix: &str,
+        header: &str,
+        outer_tag: &str,
+        item_tag: &str,
+    ) {
+        build_xml_block(
+            result,
+            &self.enabled_sections,
+            |section_id| Self::section_matches_prefix(section_id, prefix),
+            |section_id| self.section_content_for_build(section_id),
+            header,
+            outer_tag,
+            item_tag,
+        );
+    }
+
+    fn append_instruction_section(&self, result: &mut String) {
+        result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
+        result.push_str("<instruction_set>\n");
+        for (idx, content) in self.section_entries("instruction").into_iter().enumerate() {
+            push_xml_item(result, "instruction", idx + 1, content);
+        }
+        result.push_str("</instruction_set>\n\n");
+    }
+
+    fn append_tools_section(&self, result: &mut String) {
+        let mut tools_count = 0;
+        for content in self.section_entries("tools") {
+            for trimmed in content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                if tools_count == 0 {
+                    result.push_str("# [TOOLS]: Skills & Capabilities\n");
+                    result.push_str("<tools>\n");
+                }
+                tools_count += 1;
+                result.push_str(&format!(
+                    "  <skill_{tools_count}>\n    {trimmed}\n  </skill_{tools_count}>\n\n"
+                ));
+            }
+        }
+        if tools_count > 0 {
+            result.push_str("</tools>\n\n");
         }
     }
 
@@ -390,72 +506,26 @@ impl SimplePromptDialog {
         current_workdir: &Path,
     ) -> Result<String> {
         let mut result = self.build_prompt()?;
-        let mut project_contexts = Vec::new();
-        let mut resources = Vec::new();
-        // Resource resolution failures are non-fatal: an unreachable path or missing DB
-        // entry should never block the user from sending their prompt.
-        let default_project_hash = db
-            .get_project_by_path(current_workdir)
-            .ok()
-            .flatten()
-            .map(|project| project.hash);
+        let project_contexts = self.resolve_project_contexts(db);
+        let default_project_hash = self.default_project_hash(db, current_workdir);
+        let mut resources = self.resolve_resource_entries(db);
+        resources.extend(self.resolve_rag_resources(db, default_project_hash.as_deref()));
 
-        for entry in self.section_lines("project_context") {
-            if let Some(project) = Self::lookup_project_reference(db, &entry).ok().flatten() {
-                project_contexts.push(Self::format_project_block(&project));
-            }
-        }
-
-        for entry in self.section_lines("resources") {
-            if let Some(resource) = Self::resolve_path_resource(db, &entry).ok().flatten() {
-                resources.push(resource);
-            } else {
-                resources.push(entry);
-            }
-        }
-
-        for query in self.section_lines("rag_search") {
-            let (scope, resolved_query) =
-                Self::resolve_rag_scope(&query, default_project_hash.as_deref());
-            if resolved_query.is_empty() {
-                continue;
-            }
-            let project_hash = match scope {
-                RagScope::Global => None,
-                RagScope::Project(hash) => Some(hash),
-            };
-            for chunk in db
-                .search_chunks(resolved_query, project_hash, 5)
-                .unwrap_or_default()
-            {
-                resources.push(Self::format_rag_chunk(resolved_query, &chunk));
-            }
-        }
-
-        if !project_contexts.is_empty() {
-            let mut section = String::from("# [PROJECT CONTEXT]: Registered Project Metadata\n");
-            section.push_str("<project_context>\n");
-            for (idx, project) in project_contexts.iter().enumerate() {
-                section.push_str(&format!("  <project_{}>\n", idx + 1));
-                for line in project.lines() {
-                    section.push_str(&format!("    {}\n", line));
-                }
-                section.push_str(&format!("  </project_{}>\n\n", idx + 1));
-            }
-            section.push_str("</project_context>\n\n");
+        if let Some(section) = format_indexed_xml_section(
+            "# [PROJECT CONTEXT]: Registered Project Metadata\n",
+            "project_context",
+            "project",
+            &project_contexts,
+        ) {
             result = format!("{section}{result}");
         }
 
-        if !resources.is_empty() {
-            let mut section = String::from("# [RESOURCES]: Knowledge Base & Data\n<resources>\n");
-            for (idx, resource) in resources.iter().enumerate() {
-                section.push_str(&format!("  <resource_{}>\n", idx + 1));
-                for line in resource.lines() {
-                    section.push_str(&format!("    {}\n", line));
-                }
-                section.push_str(&format!("  </resource_{}>\n\n", idx + 1));
-            }
-            section.push_str("</resources>\n\n");
+        if let Some(section) = format_indexed_xml_section(
+            "# [RESOURCES]: Knowledge Base & Data\n",
+            "resources",
+            "resource",
+            &resources,
+        ) {
             result = strip_resources_section(&result);
             result.push_str(&section);
         }
@@ -467,92 +537,105 @@ impl SimplePromptDialog {
     /// Supports multiple instances of each section type
     pub fn build_prompt(&self) -> Result<String> {
         let mut result = String::new();
-
-        // Context
-        build_xml_block(
+        self.append_prompt_section(
             &mut result,
-            &self.enabled_sections,
-            |id| id.starts_with("context"),
-            |id| self.section_content_for_build(id),
+            "context",
             "# [CONTEXT]: Project Background\n",
             "context",
             "context",
         );
-
-        // Instructions (always present, no outer guard)
-        result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
-        result.push_str("<instruction_set>\n");
-        let mut count = 0;
-        for id in &self.enabled_sections {
-            if id == "instruction" || id.starts_with("instruction_") {
-                if let Some(content) = self.section_content_for_build(id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        count += 1;
-                        push_xml_item(&mut result, "instruction", count, trimmed);
-                    }
-                }
-            }
-        }
-        result.push_str("</instruction_set>\n\n");
-
-        // Resources
-        build_xml_block(
+        self.append_instruction_section(&mut result);
+        self.append_prompt_section(
             &mut result,
-            &self.enabled_sections,
-            |id| id.starts_with("resources"),
-            |id| self.section_content_for_build(id),
+            "resources",
             "# [RESOURCES]: Knowledge Base & Data\n",
             "resources",
             "resource",
         );
-
-        // Examples
-        build_xml_block(
+        self.append_prompt_section(
             &mut result,
-            &self.enabled_sections,
-            |id| id.starts_with("examples"),
-            |id| self.section_content_for_build(id),
+            "examples",
             "# [EXAMPLES]: Multi-Shot Learning\n",
             "examples",
             "example",
         );
-
-        // Constraints
-        build_xml_block(
+        self.append_prompt_section(
             &mut result,
-            &self.enabled_sections,
-            |id| id == "constraints" || id.starts_with("constraints_"),
-            |id| self.section_content_for_build(id),
+            "constraints",
             "# [CONSTRAINTS]: Behavioral Boundaries\n",
             "constraints",
             "constraint",
         );
-
-        // Tools (each line is a separate skill entry)
-        let mut tools_count = 0;
-        for id in &self.enabled_sections {
-            if id == "tools" || id.starts_with("tools_") {
-                if let Some(content) = self.section_content_for_build(id) {
-                    for line in content.lines() {
-                        let trimmed = line.trim();
-                        if !trimmed.is_empty() {
-                            if tools_count == 0 {
-                                result.push_str("# [TOOLS]: Skills & Capabilities\n");
-                                result.push_str("<tools>\n");
-                            }
-                            tools_count += 1;
-                            result.push_str(&format!("  <skill_{tools_count}>\n    {trimmed}\n  </skill_{tools_count}>\n\n"));
-                        }
-                    }
-                }
-            }
-        }
-        if tools_count > 0 {
-            result.push_str("</tools>\n\n");
-        }
-
+        self.append_tools_section(&mut result);
         Ok(result)
+    }
+
+    fn set_content_and_cursor(
+        &mut self,
+        section_id: &str,
+        content: String,
+        cursor: usize,
+        field_width: usize,
+    ) {
+        self.set_section_content(section_id, content);
+        self.section_cursors.insert(section_id.to_string(), cursor);
+        self.update_section_scroll(section_id, field_width);
+    }
+
+    fn split_content_at_cursor(&self, section_id: &str) -> (String, String, usize) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let cursor = self.cursor(section_id).min(chars.len());
+        let before = chars[..cursor].iter().collect();
+        let after = chars[cursor..].iter().collect();
+        (before, after, cursor)
+    }
+
+    fn replace_char_range(
+        &mut self,
+        section_id: &str,
+        start: usize,
+        end: usize,
+        replacement: &str,
+        field_width: usize,
+    ) {
+        let content = self.get_section_content(section_id);
+        let chars: Vec<char> = content.chars().collect();
+        let start = start.min(chars.len());
+        let end = end.min(chars.len());
+
+        let mut new_content = String::new();
+        new_content.extend(chars[..start].iter().copied());
+        new_content.push_str(replacement);
+        new_content.extend(chars[end..].iter().copied());
+        self.set_content_and_cursor(
+            section_id,
+            new_content,
+            start + replacement.chars().count(),
+            field_width,
+        );
+    }
+
+    fn resources_section_id(&self) -> Option<String> {
+        self.enabled_sections
+            .iter()
+            .find(|section_id| Self::section_matches_prefix(section_id, "resources"))
+            .cloned()
+    }
+
+    fn add_resource_reference(&mut self, full_path: &str) {
+        let Some(section_id) = self.resources_section_id() else {
+            self.add_section_with_content("resources", full_path.to_string());
+            return;
+        };
+
+        let content = self.get_section_content(&section_id);
+        let updated = if content.is_empty() {
+            full_path.to_string()
+        } else {
+            format!("{content}\n{full_path}")
+        };
+        self.set_section_content(&section_id, updated);
     }
 
     /// Replace the `@`-trigger with `@rel_path` in the section text and add the full path
@@ -565,46 +648,40 @@ impl SimplePromptDialog {
         full_path: &str,
         field_width: usize,
     ) {
-        let Some(trigger_pos) = self.at_picker.as_ref().map(|p| p.trigger_pos) else {
+        let Some(trigger_pos) = self.at_picker.as_ref().map(|picker| picker.trigger_pos) else {
             return;
         };
-        let content = self.get_section_content(section_id);
-        let chars: Vec<char> = content.chars().collect();
+
         // The `@` is at trigger_pos; cursor is currently at trigger_pos + 1
         // (we never insert query chars into the text, only into picker.query).
-        let replacement: String = format!("@{}", rel_path);
-        let new_chars: Vec<char> = chars[..trigger_pos]
-            .iter()
-            .chain(replacement.chars().collect::<Vec<_>>().iter())
-            .chain(chars[(trigger_pos + 1)..].iter())
-            .cloned()
-            .collect();
-        let new_cursor = trigger_pos + replacement.chars().count();
-        self.set_section_content(section_id, new_chars.into_iter().collect());
-        self.section_cursors
-            .insert(section_id.to_string(), new_cursor);
-        self.update_section_scroll(section_id, field_width);
-
-        // Add as a resource (skills and files treated uniformly)
-        let existing_resources = self
-            .enabled_sections
-            .iter()
-            .find(|id| id.starts_with("resources"))
-            .cloned();
-        if let Some(res_id) = existing_resources {
-            let res_content = self.get_section_content(&res_id);
-            let new_res_content = if res_content.is_empty() {
-                full_path.to_string()
-            } else {
-                format!("{}\n{}", res_content, full_path)
-            };
-            self.set_section_content(&res_id, new_res_content);
-        } else {
-            self.add_section_with_content("resources", full_path.to_string());
-        }
+        self.replace_char_range(
+            section_id,
+            trigger_pos,
+            trigger_pos + 1,
+            &format!("@{rel_path}"),
+            field_width,
+        );
+        self.add_resource_reference(full_path);
         // NOTE: focused_section is intentionally NOT restored here.
         // The caller (event handler) owns that responsibility and restores it
         // explicitly after this function returns.
+    }
+
+    fn next_file_reference(text: &str, current_pos: usize) -> Option<(usize, &str, usize)> {
+        let at_pos = text[current_pos..].find('@')?;
+        let absolute_pos = current_pos + at_pos;
+        let remaining = &text[absolute_pos..];
+        let ref_end = remaining
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '!' || c == '?' || c == '│')
+            .unwrap_or(remaining.len());
+        Some((absolute_pos, &remaining[..ref_end], absolute_pos + ref_end))
+    }
+
+    fn is_file_reference(file_ref: &str) -> bool {
+        file_ref.len() > 1
+            && file_ref[1..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/')
     }
 
     /// Colorize `@word` tokens in rendered section text with a custom accent color.
@@ -616,27 +693,18 @@ impl SimplePromptDialog {
         let mut result = Vec::new();
         let mut current_pos = 0;
 
-        while let Some(at_pos) = text[current_pos..].find('@') {
-            let absolute_pos = current_pos + at_pos;
+        while let Some((absolute_pos, file_ref, next_pos)) =
+            Self::next_file_reference(text, current_pos)
+        {
             if absolute_pos > current_pos {
                 result.push((text[current_pos..absolute_pos].to_string(), None));
             }
-            let remaining = &text[absolute_pos..];
-            let ref_end = remaining
-                .find(|c: char| c.is_whitespace() || c == ',' || c == '!' || c == '?' || c == '│')
-                .unwrap_or(remaining.len());
-            let file_ref = &remaining[..ref_end];
-            if file_ref.len() > 1
-                && file_ref[1..].chars().all(|c| {
-                    c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/'
-                })
-            {
-                result.push((file_ref.to_string(), Some(accent)));
-            } else {
-                result.push((file_ref.to_string(), None));
-            }
-            current_pos = absolute_pos + ref_end;
+
+            let color = Self::is_file_reference(file_ref).then_some(accent);
+            result.push((file_ref.to_string(), color));
+            current_pos = next_pos;
         }
+
         if current_pos < text.len() {
             result.push((text[current_pos..].to_string(), None));
         }
@@ -667,7 +735,7 @@ impl SimplePromptDialog {
 
     /// Max visible lines for a section type (instruction=5, others=3)
     pub fn max_visible_lines(section_id: &str) -> usize {
-        if section_id == "instruction" || section_id.starts_with("instruction_") {
+        if Self::section_matches_prefix(section_id, "instruction") {
             5
         } else {
             3
@@ -749,9 +817,7 @@ impl SimplePromptDialog {
         let mut new_chars = chars;
         new_chars.insert(cur, ch);
         let new_content: String = new_chars.into_iter().collect();
-        self.set_section_content(section_id, new_content);
-        self.section_cursors.insert(section_id.to_string(), cur + 1);
-        self.update_section_scroll(section_id, field_width);
+        self.set_content_and_cursor(section_id, new_content, cur + 1, field_width);
     }
 
     /// Delete the character before cursor in any section.
@@ -763,37 +829,34 @@ impl SimplePromptDialog {
             let mut new_chars = chars;
             new_chars.remove(cur - 1);
             let new_content: String = new_chars.into_iter().collect();
-            self.set_section_content(section_id, new_content);
-            self.section_cursors.insert(section_id.to_string(), cur - 1);
-            self.update_section_scroll(section_id, field_width);
+            self.set_content_and_cursor(section_id, new_content, cur - 1, field_width);
         }
     }
 
     /// Insert a newline at cursor position in any section.
     pub fn insert_newline_at_cursor(&mut self, section_id: &str, field_width: usize) {
-        let content = self.get_section_content(section_id);
-        let chars: Vec<char> = content.chars().collect();
-        let cur = self.cursor(section_id).min(chars.len());
-        let before: String = chars[..cur].iter().collect();
-        let after: String = chars[cur..].iter().collect();
-        let new_content = format!("{}\n{}", before, after);
-        self.set_section_content(section_id, new_content);
-        self.section_cursors.insert(section_id.to_string(), cur + 1);
-        self.update_section_scroll(section_id, field_width);
+        let (before, after, cursor) = self.split_content_at_cursor(section_id);
+        self.set_content_and_cursor(
+            section_id,
+            format!("{before}\n{after}"),
+            cursor + 1,
+            field_width,
+        );
     }
 
     /// Insert text at cursor position in any section.
     pub fn insert_text_at_cursor(&mut self, section_id: &str, text: &str, field_width: usize) {
-        let content = self.get_section_content(section_id);
-        let chars: Vec<char> = content.chars().collect();
-        let cur = self.cursor(section_id).min(chars.len());
-        let before: String = chars[..cur].iter().collect();
-        let after: String = chars[cur..].iter().collect();
-        let new_content = format!("{}{}{}", before, text, after);
-        self.set_section_content(section_id, new_content);
-        self.section_cursors
-            .insert(section_id.to_string(), cur + text.chars().count());
-        self.update_section_scroll(section_id, field_width);
+        let (before, after, cursor) = self.split_content_at_cursor(section_id);
+        self.set_content_and_cursor(
+            section_id,
+            format!("{before}{text}{after}"),
+            cursor + text.chars().count(),
+            field_width,
+        );
+    }
+
+    fn should_collapse_paste(text: &str) -> bool {
+        text.lines().count() > 1 || text.chars().count() > 200
     }
 
     /// Insert pasted text. If it spans multiple lines, collapse it to a
@@ -804,31 +867,22 @@ impl SimplePromptDialog {
         text: &str,
         field_width: usize,
     ) {
-        let line_count = text.lines().count();
-        // Collapse if more than one line or very long single line (>200 chars)
-        if line_count > 1 || text.chars().count() > 200 {
-            // Expand any existing collapsed paste first so we don't lose data
-            self.expand_collapsed_paste(section_id);
-            let content = self.get_section_content(section_id);
-            let chars: Vec<char> = content.chars().collect();
-            let cur = self.cursor(section_id).min(chars.len());
-            let before: String = chars[..cur].iter().collect();
-            let after: String = chars[cur..].iter().collect();
-
-            let real_content = format!("{}{}{}", before, text, after);
-            let placeholder = format!("[Pasted ~{} lines]", line_count.max(1));
-            let display_content = format!("{}{}{}", before, placeholder, after);
-
-            self.collapsed_pastes
-                .insert(section_id.to_string(), real_content);
-            self.set_section_content(section_id, display_content);
-            self.section_cursors
-                .insert(section_id.to_string(), cur + placeholder.chars().count());
-            self.update_section_scroll(section_id, field_width);
-        } else {
-            // Short paste: insert normally
+        if !Self::should_collapse_paste(text) {
             self.insert_text_at_cursor(section_id, text, field_width);
+            return;
         }
+
+        self.expand_collapsed_paste(section_id);
+        let (before, after, cursor) = self.split_content_at_cursor(section_id);
+        let placeholder = format!("[Pasted ~{} lines]", text.lines().count().max(1));
+        self.collapsed_pastes
+            .insert(section_id.to_string(), format!("{before}{text}{after}"));
+        self.set_content_and_cursor(
+            section_id,
+            format!("{before}{placeholder}{after}"),
+            cursor + placeholder.chars().count(),
+            field_width,
+        );
     }
 
     /// Expand a collapsed paste for the given section, restoring real content.
@@ -841,16 +895,18 @@ impl SimplePromptDialog {
 
 fn strip_resources_section(prompt: &str) -> String {
     let header = "# [RESOURCES]: Knowledge Base & Data\n<resources>\n";
-    if let Some(start) = prompt.find(header) {
-        if let Some(end_rel) = prompt[start..].find("</resources>\n\n") {
-            let end = start + end_rel + "</resources>\n\n".len();
-            let mut stripped = String::with_capacity(prompt.len().saturating_sub(end - start));
-            stripped.push_str(&prompt[..start]);
-            stripped.push_str(&prompt[end..]);
-            return stripped;
-        }
-    }
-    prompt.to_string()
+    let Some(start) = prompt.find(header) else {
+        return prompt.to_string();
+    };
+    let Some(end_rel) = prompt[start..].find("</resources>\n\n") else {
+        return prompt.to_string();
+    };
+
+    let end = start + end_rel + "</resources>\n\n".len();
+    let mut stripped = String::with_capacity(prompt.len().saturating_sub(end - start));
+    stripped.push_str(&prompt[..start]);
+    stripped.push_str(&prompt[end..]);
+    stripped
 }
 
 #[cfg(test)]
@@ -966,6 +1022,7 @@ impl PromptBuilderSession {
 }
 
 // ── Prompt builder helpers ────────────────────────────────────────
+// Skill discovery helpers
 
 fn add_skills_from_dir(
     dir: &std::path::Path,
@@ -994,12 +1051,34 @@ fn add_skills_from_dir(
     }
 }
 
+// XML formatting helpers
+
 fn push_xml_item(result: &mut String, tag: &str, count: usize, content: &str) {
     result.push_str(&format!("  <{tag}_{count}>\n"));
     for line in content.lines() {
         result.push_str(&format!("    {line}\n"));
     }
     result.push_str(&format!("  </{tag}_{count}>\n\n"));
+}
+
+fn format_indexed_xml_section(
+    header: &str,
+    outer_tag: &str,
+    item_tag: &str,
+    items: &[String],
+) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+
+    let mut result = String::new();
+    result.push_str(header);
+    result.push_str(&format!("<{outer_tag}>\n"));
+    for (idx, item) in items.iter().enumerate() {
+        push_xml_item(&mut result, item_tag, idx + 1, item);
+    }
+    result.push_str(&format!("</{outer_tag}>\n\n"));
+    Some(result)
 }
 
 /// Build a wrapped XML section (header + outer tag + items) from matching section IDs.
