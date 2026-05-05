@@ -1,14 +1,16 @@
 use anyhow::Result;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Thread-safe `SQLite` database wrapper.
 ///
-/// Uses a `Mutex<Connection>` instead of opening a new connection per operation,
-/// which is more efficient for `SQLite`'s single-writer model.
+/// Uses an `Arc<Mutex<Connection>>` so the handle can be cheaply cloned and
+/// shared across threads (e.g. for background file-scanning tasks) while still
+/// serialising all SQLite writes through a single connection.
+#[derive(Clone)]
 pub struct Database {
-    conn: Mutex<Connection>,
+    conn: Arc<Mutex<Connection>>,
 }
 
 impl Database {
@@ -19,7 +21,7 @@ impl Database {
         let conn = Connection::open(db_path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         let db = Database {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
         };
         db.init()?;
         Ok(db)
@@ -184,7 +186,6 @@ impl Database {
     ///
     /// Takes the already-locked connection to avoid a deadlock with `init`.
     fn migrate_rag_tables(conn: &Connection) -> Result<()> {
-
         // Check if rag_queue still has project_hash column
         let old_queue: bool = conn
             .query_row(

@@ -35,6 +35,14 @@ pub struct RagInfoSummary {
     pub processing_items: i64,
 }
 
+impl RagInfoSummary {
+    /// True when there is any RAG activity — indexed chunks, pending queue, or
+    /// active processing. Used to decide whether to show RAG UI panels.
+    pub fn has_rag_activity(&self) -> bool {
+        self.total_chunks > 0 || self.queued_items > 0 || self.processing_items > 0
+    }
+}
+
 impl Database {
     // ── projects ───────────────────────────────────────────────────────
 
@@ -80,17 +88,26 @@ impl Database {
         crate::rag::ragignore::ensure_ragignore(&canonical);
 
         self.upsert_project(&project)?;
-        self.queue_project_files(&canonical)?;
+
+        // File scanning can be slow on large repos — run it off the calling thread
+        // so TUI / CLI callers are not blocked.
+        let db_clone = self.clone();
+        std::thread::spawn(move || {
+            let _ = db_clone.queue_project_files(&canonical);
+        });
+
         Ok(project)
     }
 
     /// Scan project directory and write all files to rag_queue.
-    /// Filtering by ragignore is done by IngestionManager, not here.
+    /// Applies ragignore patterns, MAX_DEPTH, MAX_FILE_SIZE, and indexable-extension
+    /// filtering via `process_dir_entry` so the traversal is bounded.
     fn queue_project_files(&self, root: &Path) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
+        let patterns = crate::rag::ragignore::load_patterns(root);
         let mut queue = vec![(root.to_path_buf(), 0usize)];
 
         while let Some((current_path, depth)) = queue.pop() {
@@ -98,7 +115,7 @@ impl Database {
                 continue;
             };
             for entry in entries.flatten() {
-                process_dir_entry(&entry, root, &[], depth, &mut queue, |path| {
+                process_dir_entry(&entry, root, &patterns, depth, &mut queue, |path| {
                     let _ = self.enqueue_rag_item(path, now);
                 });
             }
