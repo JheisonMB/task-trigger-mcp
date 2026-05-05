@@ -120,9 +120,10 @@ pub fn run_setup() -> Result<()> {
     ));
 
     wiz.render()?;
+    // Always start from the previously picked path so navigation is incremental.
     let projects_root = pick_directory(
         "Projects root (the parent folder that contains the repositories Canopy should discover/index):",
-        &existing_config.projects_root,
+        &rag_personal_root,
     )?;
     wiz.add(format!("\x1b[32m✓\x1b[0m Projects root: {}", projects_root));
 
@@ -369,12 +370,38 @@ fn pick_directory(message: &str, current: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
+/// Convert a parameter-count hint ("7B", "768M") to approximate file weight in MB
+/// assuming float16 quantization (2 bytes / param).  Qualitative labels are kept as-is.
+fn params_to_size_label(size_hint: &str) -> String {
+    let lower = size_hint.to_lowercase();
+    if let Some(rest) = lower.strip_suffix('b') {
+        if let Ok(n) = rest.parse::<f64>() {
+            // n billion params × 2 bytes × 10^9 / 10^6 = n × 2000 MB
+            let mb = n * 2_000.0;
+            return if mb >= 1_024.0 {
+                format!("~{:.1} GB", mb / 1_024.0)
+            } else {
+                format!("~{:.0} MB", mb)
+            };
+        }
+    }
+    if let Some(rest) = lower.strip_suffix('m') {
+        if let Ok(n) = rest.parse::<f64>() {
+            // n million params × 2 bytes / 10^6 = n × 2 MB
+            let mb = n * 2.0;
+            return format!("~{:.0} MB", mb);
+        }
+    }
+    size_hint.to_string()
+}
+
 fn format_embeddings_option(model: &crate::domain::models_db::ModelEntry) -> String {
     let release_date = model.release_date.as_deref().unwrap_or("unknown date");
-    let size_hint = model.size_hint.as_deref().unwrap_or("unknown size");
+    let size = model
+        .size_hint
+        .as_deref()
+        .map(params_to_size_label)
+        .unwrap_or_else(|| "unknown size".to_string());
     // Gray ANSI for metadata so the model id stands out
-    format!(
-        "{}  \x1b[90m[{} | {}]\x1b[0m",
-        model.id, release_date, size_hint
-    )
+    format!("{}  \x1b[90m[{} | {}]\x1b[0m", model.id, release_date, size)
 }

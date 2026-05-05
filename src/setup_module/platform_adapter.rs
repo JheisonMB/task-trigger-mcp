@@ -154,8 +154,9 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
     }
 
     let mut cursor: usize = 0;
+    let mut filter = String::new();
     let visible: usize = 10;
-    let total_rows = 2 + visible + 1;
+    let total_rows = 3 + visible + 1; // +1 for filter line
 
     let _ = enable_raw_mode();
     for _ in 0..total_rows {
@@ -163,7 +164,17 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
     }
 
     loop {
-        let subdirs = browse_list_subdirs(&current);
+        let all_subdirs = browse_list_subdirs(&current);
+        let subdirs: Vec<String> = if filter.is_empty() {
+            all_subdirs
+        } else {
+            let f = filter.to_lowercase();
+            all_subdirs
+                .into_iter()
+                .filter(|name| name.to_lowercase().contains(&f))
+                .collect()
+        };
+
         if !subdirs.is_empty() && cursor >= subdirs.len() {
             cursor = subdirs.len().saturating_sub(1);
         }
@@ -179,11 +190,21 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
         print!("\x1b[{total_rows}A");
         print!("\r\x1b[2K  \x1b[36m»\x1b[0m  {}\r\n", current.display());
         print!(
-            "\r\x1b[2K  \x1b[90m↑↓ navigate  → enter  ← back  Enter confirm  Esc cancel\x1b[0m\r\n"
+            "\r\x1b[2K  \x1b[90m↑↓ navigate  → enter  ← back  Enter confirm  Esc cancel  type to filter\x1b[0m\r\n"
         );
+        // Filter line
+        if filter.is_empty() {
+            print!("\r\x1b[2K  \x1b[90mfilter: _\x1b[0m\r\n");
+        } else {
+            print!("\r\x1b[2K  filter: \x1b[33m{filter}\x1b[0m \x1b[90m(Backspace to clear)\x1b[0m\r\n");
+        }
 
         if subdirs.is_empty() {
-            print!("\r\x1b[2K  \x1b[90m(empty — Enter to confirm, ← to go up)\x1b[0m\r\n");
+            if filter.is_empty() {
+                print!("\r\x1b[2K  \x1b[90m(empty — Enter to confirm, ← to go up)\x1b[0m\r\n");
+            } else {
+                print!("\r\x1b[2K  \x1b[90m(no matches for \"{filter}\")\x1b[0m\r\n");
+            }
             for _ in 1..visible {
                 print!("\r\x1b[2K\r\n");
             }
@@ -217,7 +238,7 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
 
         match read() {
             Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                match handle_browse_key(k.code, &subdirs, &mut cursor, &mut current) {
+                match handle_browse_key(k.code, &subdirs, &mut cursor, &mut current, &mut filter) {
                     BrowseAction::Confirm => {
                         let _ = disable_raw_mode();
                         print!("\r\n");
@@ -249,6 +270,7 @@ fn handle_browse_key(
     subdirs: &[String],
     cursor: &mut usize,
     current: &mut std::path::PathBuf,
+    filter: &mut String,
 ) -> BrowseAction {
     use ratatui::crossterm::event::KeyCode;
     match code {
@@ -262,18 +284,37 @@ fn handle_browse_key(
             *cursor += 1;
             BrowseAction::Continue
         }
-        KeyCode::Right | KeyCode::Char('l') => {
+        KeyCode::Right | KeyCode::Char('l') if filter.is_empty() => {
             if let Some(name) = subdirs.get(*cursor) {
                 *current = current.join(name);
                 *cursor = 0;
             }
             BrowseAction::Continue
         }
-        KeyCode::Left | KeyCode::Char('h') => {
+        KeyCode::Left | KeyCode::Char('h') if filter.is_empty() => {
             if let Some(parent) = current.parent() {
                 *current = parent.to_path_buf();
                 *cursor = 0;
             }
+            BrowseAction::Continue
+        }
+        // → with filter: enter the highlighted match then clear filter
+        KeyCode::Right if !filter.is_empty() => {
+            if let Some(name) = subdirs.get(*cursor) {
+                *current = current.join(name);
+                *cursor = 0;
+                filter.clear();
+            }
+            BrowseAction::Continue
+        }
+        KeyCode::Backspace => {
+            filter.pop();
+            *cursor = 0;
+            BrowseAction::Continue
+        }
+        KeyCode::Char(c) => {
+            filter.push(c);
+            *cursor = 0;
             BrowseAction::Continue
         }
         _ => BrowseAction::Continue,
