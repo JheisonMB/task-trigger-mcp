@@ -87,7 +87,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if app.sidebar_mode == SidebarMode::Projects {
         let rag_items = &app.global_rag_queue;
-        let show_rag_info = app.rag_info.total_chunks > 0;
+        let show_rag_info = app.rag_info.has_rag_activity();
         let rag_info_height = if show_rag_info && content_area.height >= 6 {
             6
         } else {
@@ -209,7 +209,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
 
     if !has_bg && !has_ix && !has_term && !has_groups {
         // In agents mode with no agents, still show RagInfo if chunks exist.
-        let show_rag = app.rag_info.total_chunks > 0;
+        let show_rag = app.rag_info.has_rag_activity();
         let rag_h = 6u16;
         let remaining = area
             .height
@@ -246,7 +246,7 @@ pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     // there are indexed chunks — before computing section sizes.
     let rag_info_h_agents = 6u16;
     let show_agents_rag_info =
-        app.rag_info.total_chunks > 0 && content_area.height >= rag_info_h_agents + 4;
+        app.rag_info.has_rag_activity() && content_area.height >= rag_info_h_agents + 4;
     let (agents_content, agents_rag_info_area) = if show_agents_rag_info {
         let [top, bottom] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(rag_info_h_agents)])

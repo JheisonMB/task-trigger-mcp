@@ -224,7 +224,7 @@ impl App {
                 ProjectsPanelFocus::RagInfo => {}
             }
         } else {
-            let has_rag = self.rag_info.total_chunks > 0;
+            let has_rag = self.rag_info.has_rag_activity();
             if has_rag {
                 if self.agents_rag_focused {
                     self.agents_rag_focused = false;
@@ -262,7 +262,7 @@ impl App {
                 ProjectsPanelFocus::RagInfo => {}
             }
         } else {
-            let has_rag = self.rag_info.total_chunks > 0;
+            let has_rag = self.rag_info.has_rag_activity();
             if has_rag {
                 if self.agents_rag_focused {
                     self.agents_rag_focused = false;
@@ -324,7 +324,7 @@ impl App {
         }
 
         // If RagInfo becomes unavailable (no chunks), reset focus away from it.
-        if self.rag_info.total_chunks == 0 {
+        if !self.rag_info.has_rag_activity() {
             if self.projects_panel_focus == ProjectsPanelFocus::RagInfo {
                 self.projects_panel_focus = ProjectsPanelFocus::Projects;
             }
@@ -355,7 +355,7 @@ impl App {
     #[allow(dead_code)]
     pub fn visible_projects_panels(&self) -> Vec<ProjectsPanelFocus> {
         let mut panels = vec![ProjectsPanelFocus::Projects];
-        if self.rag_info.total_chunks > 0 {
+        if self.rag_info.has_rag_activity() {
             panels.push(ProjectsPanelFocus::RagInfo);
         }
         panels

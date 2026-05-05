@@ -116,7 +116,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
                 draw_projects_mode_panel(frame, inner, app);
                 return;
             }
-            if app.agents_rag_focused && app.rag_info.total_chunks > 0 {
+            if app.agents_rag_focused && app.rag_info.has_rag_activity() {
                 draw_rag_info_overview(frame, inner, app);
                 return;
             }
