@@ -14,7 +14,9 @@ use ratatui::crossterm::event::{
 };
 use std::time::Duration;
 
+use crate::tui::agent::InteractiveAgent;
 use crate::tui::app::types::{AgentEntry, App, Focus};
+use crate::tui::app::TerminalSearch;
 use crate::tui::ui;
 
 use agent_focus::handle_agent_key;
@@ -32,42 +34,8 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
     while app.running {
         terminal.draw(|frame| ui::draw(frame, app))?;
 
-        // Tick speed adapts to what needs frequent repaints.
-        // All interactive states use 50ms for responsive PTY rendering.
-        // Home without brain uses 200ms (nothing animating).
-        let tick = match app.focus {
-            Focus::Agent
-            | Focus::NewAgentDialog
-            | Focus::ContextTransfer
-            | Focus::RagTransfer
-            | Focus::PromptTemplateDialog => Duration::from_millis(50),
-            Focus::Preview => Duration::from_millis(100),
-            Focus::Home if app.home_brain.is_some() => Duration::from_millis(50),
-            Focus::Home => Duration::from_millis(200),
-        };
-
-        if event::poll(tick)? {
-            loop {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        handle_key(app, key.code, key.modifiers)?;
-                    }
-                    Event::Mouse(mouse) => {
-                        app.notify_mouse_move();
-                        handle_mouse(app, mouse)?;
-                    }
-                    Event::Resize(_, _) => {
-                        // Resize is handled by refresh() on next tick
-                    }
-                    Event::Paste(text) => {
-                        handle_paste(app, &text);
-                    }
-                    _ => {}
-                }
-                if !event::poll(Duration::from_millis(0))? {
-                    break;
-                }
-            }
+        if event::poll(tick_duration(app))? {
+            drain_pending_events(app)?;
         }
 
         app.refresh()?;
@@ -75,6 +43,45 @@ pub fn run_event_loop(terminal: &mut Terminal, app: &mut App) -> Result<()> {
 
     app.cleanup();
     Ok(())
+}
+
+fn tick_duration(app: &App) -> Duration {
+    match app.focus {
+        Focus::Agent
+        | Focus::NewAgentDialog
+        | Focus::ContextTransfer
+        | Focus::RagTransfer
+        | Focus::PromptTemplateDialog => Duration::from_millis(50),
+        Focus::Preview => Duration::from_millis(100),
+        Focus::Home if app.home_brain.is_some() => Duration::from_millis(50),
+        Focus::Home => Duration::from_millis(200),
+    }
+}
+
+fn drain_pending_events(app: &mut App) -> Result<()> {
+    loop {
+        dispatch_event(app, event::read()?)?;
+        if !event::poll(Duration::from_millis(0))? {
+            return Ok(());
+        }
+    }
+}
+
+fn dispatch_event(app: &mut App, event: Event) -> Result<()> {
+    match event {
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            handle_key(app, key.code, key.modifiers)
+        }
+        Event::Mouse(mouse) => {
+            app.notify_mouse_move();
+            handle_mouse(app, mouse)
+        }
+        Event::Paste(text) => {
+            handle_paste(app, &text);
+            Ok(())
+        }
+        Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Key(_) => Ok(()),
+    }
 }
 
 // ── Prompt Template Dialog ──────────────────────────────────────
@@ -90,56 +97,65 @@ mod search_picker;
 mod terminal_warp;
 
 pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-    // Legend overlay intercepts ALL keys — closes on any key
-    if app.show_legend {
-        app.show_legend = false;
+    if dismiss_legend(app) || handle_global_key(app, code, modifiers) {
         return Ok(());
     }
 
-    // Ctrl+N: new agent from any mode (works in Focus too)
+    if app.terminal_search.is_some() {
+        return handle_terminal_search_key(app, code);
+    }
+
+    dispatch_focus_key(app, code, modifiers)
+}
+
+fn dismiss_legend(app: &mut App) -> bool {
+    if !app.show_legend {
+        return false;
+    }
+
+    app.show_legend = false;
+    true
+}
+
+fn handle_global_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
     if code == KeyCode::Char('n') && modifiers.contains(KeyModifiers::CONTROL) {
         app.open_new_agent_dialog();
-        return Ok(());
+        return true;
     }
 
-    // Ctrl+B: open prompt builder dialog from focus mode
     if code == KeyCode::Char('b')
         && modifiers.contains(KeyModifiers::CONTROL)
         && matches!(app.focus, Focus::Agent)
     {
         app.open_simple_prompt_dialog(None);
-        return Ok(());
+        return true;
     }
 
     if code == KeyCode::F(2) {
         app.toggle_sidebar_mode();
-        // When in agent focus, step back to Preview so sidebar navigation
-        // keys (Shift+arrows, Up/Down) go to the correct handler.
         if matches!(app.focus, Focus::Agent) {
             app.focus = Focus::Preview;
         }
-        return Ok(());
+        return true;
     }
 
     if code == KeyCode::F(3) {
         app.toggle_sync_panel();
-        return Ok(());
+        return true;
     }
 
-    // Ctrl+F: search in scrollback
     if code == KeyCode::Char('f')
         && modifiers.contains(KeyModifiers::CONTROL)
         && matches!(app.focus, Focus::Agent)
     {
         open_terminal_search(app);
-        return Ok(());
+        return true;
     }
 
-    // Handle active terminal search overlay
-    if app.terminal_search.is_some() {
-        return handle_terminal_search_key(app, code);
-    }
+    false
+}
 
+fn dispatch_focus_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
     match app.focus {
         Focus::Home => handle_home_key(app, code, modifiers),
         Focus::Preview => handle_preview_key(app, code, modifiers),
@@ -154,148 +170,153 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
 // ── Mouse: scroll wheel + Shift+Click to copy selection ─────────────
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
-    let kind = mouse.kind;
-    let modifiers = mouse.modifiers;
-
-    if try_forward_mouse_to_pty(app, &mouse) {
+    if try_forward_mouse_to_pty(app, &mouse) || handle_copy_click(app, &mouse) {
         return Ok(());
     }
 
-    if matches!(kind, MouseEventKind::Up(MouseButton::Left)) {
-        if modifiers.contains(KeyModifiers::SHIFT) {
-            handle_shift_click_copy(app);
-        } else {
-            handle_left_click_copy(app, &mouse);
-        }
-        return Ok(());
+    handle_mouse_scroll(app, &mouse);
+    Ok(())
+}
+
+fn handle_copy_click(app: &mut App, mouse: &MouseEvent) -> bool {
+    if !matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+        return false;
     }
 
-    let dir = match kind {
-        MouseEventKind::ScrollUp => 1i32,
-        MouseEventKind::ScrollDown => -1i32,
-        _ => return Ok(()),
+    if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+        handle_shift_click_copy(app);
+    } else {
+        handle_left_click_copy(app, mouse);
+    }
+
+    true
+}
+
+fn handle_mouse_scroll(app: &mut App, mouse: &MouseEvent) {
+    let Some(dir) = scroll_direction(mouse.kind) else {
+        return;
     };
 
-    // If the cursor is over the sync panel, scroll it independently
-    if let Some(sync_area) = app.last_sync_area {
-        if mouse.column >= sync_area.x
-            && mouse.column < sync_area.x + sync_area.width
-            && mouse.row >= sync_area.y
-            && mouse.row < sync_area.y + sync_area.height
-        {
-            if dir > 0 {
-                app.sync_scroll_offset = app.sync_scroll_offset.saturating_sub(3);
-            } else {
-                app.sync_scroll_offset = app.sync_scroll_offset.saturating_add(3);
-            }
-            return Ok(());
-        }
+    if handle_sync_panel_scroll(app, mouse, dir) {
+        return;
     }
 
     handle_scroll(app, dir);
-    Ok(())
+}
+
+fn scroll_direction(kind: MouseEventKind) -> Option<i32> {
+    match kind {
+        MouseEventKind::ScrollUp => Some(1),
+        MouseEventKind::ScrollDown => Some(-1),
+        _ => None,
+    }
+}
+
+fn handle_sync_panel_scroll(app: &mut App, mouse: &MouseEvent, dir: i32) -> bool {
+    let Some(sync_area) = app.last_sync_area else {
+        return false;
+    };
+
+    if !rect_contains_point(sync_area, mouse.column, mouse.row) {
+        return false;
+    }
+
+    if dir > 0 {
+        app.sync_scroll_offset = app.sync_scroll_offset.saturating_sub(3);
+    } else {
+        app.sync_scroll_offset = app.sync_scroll_offset.saturating_add(3);
+    }
+
+    true
+}
+
+fn rect_contains_point(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
 }
 
 /// Try to forward the mouse event to the focused PTY agent.
 /// Returns `true` if the event was consumed.
 fn try_forward_mouse_to_pty(app: &mut App, mouse: &MouseEvent) -> bool {
-    let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-    let header_height = 1u16;
-    let col = mouse.column;
-    let row = mouse.row;
-
-    let clicked_in_pty = col >= sidebar_width
-        && col < sidebar_width + app.last_panel_inner.0
-        && row >= header_height
-        && row < header_height + app.last_panel_inner.1;
-
-    if !clicked_in_pty {
+    let Some((pty_col, pty_row)) = mouse_pty_position(app, mouse) else {
         return false;
+    };
+
+    with_selected_terminal_like_mut(app, |agent| {
+        agent
+            .forward_mouse(mouse.kind, MouseButton::Left, pty_col, pty_row)
+            .unwrap_or(false)
+    })
+    .unwrap_or(false)
+}
+
+fn mouse_pty_position(app: &App, mouse: &MouseEvent) -> Option<(u16, u16)> {
+    let sidebar_width = sidebar_width(app);
+    let header_height = 1u16;
+    let panel_width = app.last_panel_inner.0;
+    let panel_height = app.last_panel_inner.1;
+
+    if mouse.column < sidebar_width
+        || mouse.row < header_height
+        || mouse.column >= sidebar_width.saturating_add(panel_width)
+        || mouse.row >= header_height.saturating_add(panel_height)
+    {
+        return None;
     }
 
-    let pty_col = col.saturating_sub(sidebar_width);
-    let pty_row = row.saturating_sub(header_height);
+    Some((
+        mouse.column.saturating_sub(sidebar_width),
+        mouse.row.saturating_sub(header_height),
+    ))
+}
 
-    match app.selected_agent() {
-        Some(AgentEntry::Interactive(idx)) => {
-            let idx = *idx;
-            app.interactive_agents
-                .get(idx)
-                .and_then(|a| {
-                    a.forward_mouse(mouse.kind, MouseButton::Left, pty_col, pty_row)
-                        .ok()
-                })
-                .unwrap_or(false)
-        }
-        Some(AgentEntry::Terminal(idx)) => {
-            let idx = *idx;
-            app.terminal_agents
-                .get(idx)
-                .and_then(|a| {
-                    a.forward_mouse(mouse.kind, MouseButton::Left, pty_col, pty_row)
-                        .ok()
-                })
-                .unwrap_or(false)
-        }
-        _ => false,
+fn sidebar_width(app: &App) -> u16 {
+    if app.sidebar_visible {
+        30
+    } else {
+        0
     }
 }
 
 fn handle_left_click_copy(app: &mut App, mouse: &MouseEvent) {
-    let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-    let header_height = 1u16;
-
-    if mouse.column < sidebar_width
-        || mouse.row < header_height
-        || mouse.column >= sidebar_width + app.last_panel_inner.0
-        || mouse.row >= header_height + app.last_panel_inner.1
-    {
+    let Some((pty_col, pty_row)) = mouse_pty_position(app, mouse) else {
         return;
-    }
-
-    let pty_col = mouse.column.saturating_sub(sidebar_width);
-    let pty_row = mouse.row.saturating_sub(header_height);
-
-    let line_text = match app.selected_agent() {
-        Some(AgentEntry::Interactive(idx)) => app
-            .interactive_agents
-            .get(*idx)
-            .and_then(|a| a.get_clean_pty_line_at_position(pty_col, pty_row)),
-        Some(AgentEntry::Terminal(idx)) => app
-            .terminal_agents
-            .get(*idx)
-            .and_then(|a| a.get_clean_pty_line_at_position(pty_col, pty_row)),
-        _ => None,
     };
 
-    if let Some(text) = line_text {
-        std::thread::spawn(move || {
-            let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(&text));
-        });
-        app.show_copied = true;
-        app.copied_at = std::time::Instant::now();
-    }
+    let Some(text) = with_selected_terminal_like(app, |agent| {
+        agent.get_clean_pty_line_at_position(pty_col, pty_row)
+    })
+    .flatten() else {
+        return;
+    };
+
+    copy_to_clipboard_async(text);
+    mark_copied(app);
 }
 
 fn handle_shift_click_copy(app: &mut App) {
-    app.show_copied = true;
-    app.copied_at = std::time::Instant::now();
+    mark_copied(app);
 
-    let plain_text = match app.selected_agent() {
-        Some(AgentEntry::Interactive(idx)) => app
-            .interactive_agents
-            .get(*idx)
-            .and_then(|a| a.get_plain_text_from_screen()),
-        Some(AgentEntry::Terminal(idx)) => app
-            .terminal_agents
-            .get(*idx)
-            .and_then(|a| a.get_plain_text_from_screen()),
-        _ => None,
+    let Some(text) =
+        with_selected_terminal_like(app, InteractiveAgent::get_plain_text_from_screen).flatten()
+    else {
+        return;
     };
 
-    if let Some(text) = plain_text {
-        let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(&text));
-    }
+    let _ = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(&text));
+}
+
+fn copy_to_clipboard_async(text: String) {
+    std::thread::spawn(move || {
+        let _ = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(&text));
+    });
+}
+
+fn mark_copied(app: &mut App) {
+    app.show_copied = true;
+    app.copied_at = std::time::Instant::now();
 }
 
 fn scroll_speed(app: &App) -> usize {
@@ -309,15 +330,15 @@ fn scroll_speed(app: &App) -> usize {
 }
 
 fn open_terminal_search(app: &mut App) {
-    match app.selected_agent() {
-        Some(AgentEntry::Interactive(idx)) => {
-            app.terminal_search = Some(crate::tui::app::TerminalSearch::new_interactive(*idx));
-        }
-        Some(AgentEntry::Terminal(idx)) => {
-            app.terminal_search = Some(crate::tui::app::TerminalSearch::new(*idx));
-        }
-        _ => {}
-    }
+    let Some((is_terminal, idx)) = selected_terminal_like(app) else {
+        return;
+    };
+
+    app.terminal_search = Some(if is_terminal {
+        TerminalSearch::new(idx)
+    } else {
+        TerminalSearch::new_interactive(idx)
+    });
 }
 
 fn handle_scroll(app: &mut App, dir: i32) {
@@ -350,125 +371,142 @@ fn handle_scroll(app: &mut App, dir: i32) {
 
 fn scroll_focused_agent(app: &mut App, dir: i32) {
     let step = dir.unsigned_abs() as usize;
-    match app.selected_agent() {
-        Some(AgentEntry::Interactive(idx)) => {
-            let idx = *idx;
-            if idx < app.interactive_agents.len() {
-                let agent = &mut app.interactive_agents[idx];
-                if agent.in_alternate_screen() {
-                    let _ = agent.forward_scroll(dir > 0);
-                } else if dir > 0 {
-                    let max = agent.max_scroll();
-                    agent.scroll_offset = (agent.scroll_offset + step).min(max);
-                } else {
-                    agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
-                }
-            }
-        }
-        Some(AgentEntry::Terminal(idx)) => {
-            let idx = *idx;
-            if idx < app.terminal_agents.len() {
-                let agent = &mut app.terminal_agents[idx];
-                if agent.in_alternate_screen() {
-                    let _ = agent.forward_scroll(dir > 0);
-                } else if dir > 0 {
-                    let max = agent.max_scroll();
-                    agent.scroll_offset = (agent.scroll_offset + step).min(max);
-                } else {
-                    agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
-                }
-            }
-        }
-        _ => {
-            for _ in 0..step {
-                if dir > 0 {
-                    app.scroll_log_up();
-                } else {
-                    app.scroll_log_down();
-                }
-            }
+
+    if let Some((is_terminal, idx)) = selected_terminal_like(app) {
+        let _ = with_terminal_like_agent_mut(app, is_terminal, idx, |agent| {
+            scroll_terminal_like_agent(agent, dir, step);
+        });
+        return;
+    }
+
+    scroll_log(app, dir, step);
+}
+
+fn scroll_terminal_like_agent(agent: &mut InteractiveAgent, dir: i32, step: usize) {
+    if agent.in_alternate_screen() {
+        let _ = agent.forward_scroll(dir > 0);
+        return;
+    }
+
+    if dir > 0 {
+        let max = agent.max_scroll();
+        agent.scroll_offset = (agent.scroll_offset + step).min(max);
+        return;
+    }
+
+    agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
+}
+
+fn scroll_log(app: &mut App, dir: i32, step: usize) {
+    for _ in 0..step {
+        if dir > 0 {
+            app.scroll_log_up();
+        } else {
+            app.scroll_log_down();
         }
     }
+}
+
+fn selected_terminal_like(app: &App) -> Option<(bool, usize)> {
+    match app.selected_agent()? {
+        AgentEntry::Interactive(idx) => Some((false, *idx)),
+        AgentEntry::Terminal(idx) => Some((true, *idx)),
+        _ => None,
+    }
+}
+
+fn with_selected_terminal_like<R>(app: &App, f: impl FnOnce(&InteractiveAgent) -> R) -> Option<R> {
+    let (is_terminal, idx) = selected_terminal_like(app)?;
+    with_terminal_like_agent(app, is_terminal, idx, f)
+}
+
+fn with_selected_terminal_like_mut<R>(
+    app: &mut App,
+    f: impl FnOnce(&mut InteractiveAgent) -> R,
+) -> Option<R> {
+    let (is_terminal, idx) = selected_terminal_like(app)?;
+    with_terminal_like_agent_mut(app, is_terminal, idx, f)
+}
+
+fn with_terminal_like_agent<R>(
+    app: &App,
+    is_terminal: bool,
+    idx: usize,
+    f: impl FnOnce(&InteractiveAgent) -> R,
+) -> Option<R> {
+    if is_terminal {
+        return app.terminal_agents.get(idx).map(f);
+    }
+
+    app.interactive_agents.get(idx).map(f)
+}
+
+fn with_terminal_like_agent_mut<R>(
+    app: &mut App,
+    is_terminal: bool,
+    idx: usize,
+    f: impl FnOnce(&mut InteractiveAgent) -> R,
+) -> Option<R> {
+    if is_terminal {
+        return app.terminal_agents.get_mut(idx).map(f);
+    }
+
+    app.interactive_agents.get_mut(idx).map(f)
 }
 
 // ── Terminal scrollback search (Ctrl+F) ─────────────────────────────
 
 fn handle_terminal_search_key(app: &mut App, code: KeyCode) -> Result<()> {
-    let Some(search) = &mut app.terminal_search else {
+    let Some(mut search) = app.terminal_search.take() else {
         return Ok(());
     };
 
+    if code == KeyCode::Esc {
+        return Ok(());
+    }
+
     match code {
-        KeyCode::Esc => {
-            app.terminal_search = None;
-        }
         KeyCode::Enter => {
-            let (is_terminal, idx) = (search.is_terminal, search.agent_idx);
-            let agent = if is_terminal {
-                &mut app.terminal_agents[idx]
-            } else {
-                &mut app.interactive_agents[idx]
-            };
-            let s = app.terminal_search.as_mut().unwrap();
-            s.jump_to_match(agent);
-            s.next_match();
+            jump_terminal_search_match(&search, app);
+            search.next_match();
         }
         KeyCode::Up => {
-            let s = app.terminal_search.as_mut().unwrap();
-            s.prev_match();
-            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
-            let agent = if is_terminal {
-                &mut app.terminal_agents[idx]
-            } else {
-                &mut app.interactive_agents[idx]
-            };
-            app.terminal_search.as_mut().unwrap().jump_to_match(agent);
+            search.prev_match();
+            jump_terminal_search_match(&search, app);
         }
         KeyCode::Down => {
-            let s = app.terminal_search.as_mut().unwrap();
-            s.next_match();
-            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
-            let agent = if is_terminal {
-                &mut app.terminal_agents[idx]
-            } else {
-                &mut app.interactive_agents[idx]
-            };
-            app.terminal_search.as_mut().unwrap().jump_to_match(agent);
+            search.next_match();
+            jump_terminal_search_match(&search, app);
         }
         KeyCode::Char(c) => {
-            let s = app.terminal_search.as_mut().unwrap();
-            s.query.push(c);
-            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
-            let agent = if is_terminal {
-                &app.terminal_agents[idx]
-            } else {
-                &app.interactive_agents[idx]
-            };
-            app.terminal_search.as_mut().unwrap().search(agent);
-            if !app.terminal_search.as_ref().unwrap().match_rows.is_empty() {
-                app.terminal_search.as_mut().unwrap().current_match = 0;
-                let agent = if is_terminal {
-                    &mut app.terminal_agents[idx]
-                } else {
-                    &mut app.interactive_agents[idx]
-                };
-                app.terminal_search.as_mut().unwrap().jump_to_match(agent);
+            search.query.push(c);
+            refresh_terminal_search(&mut search, app);
+            if !search.match_rows.is_empty() {
+                search.current_match = 0;
+                jump_terminal_search_match(&search, app);
             }
         }
         KeyCode::Backspace => {
-            let s = app.terminal_search.as_mut().unwrap();
-            s.query.pop();
-            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
-            let agent = if is_terminal {
-                &app.terminal_agents[idx]
-            } else {
-                &app.interactive_agents[idx]
-            };
-            app.terminal_search.as_mut().unwrap().search(agent);
+            search.query.pop();
+            refresh_terminal_search(&mut search, app);
         }
         _ => {}
     }
+
+    app.terminal_search = Some(search);
     Ok(())
+}
+
+fn refresh_terminal_search(search: &mut TerminalSearch, app: &App) {
+    let _ = with_terminal_like_agent(app, search.is_terminal, search.agent_idx, |agent| {
+        search.search(agent);
+    });
+}
+
+fn jump_terminal_search_match(search: &TerminalSearch, app: &mut App) {
+    let _ = with_terminal_like_agent_mut(app, search.is_terminal, search.agent_idx, |agent| {
+        search.jump_to_match(agent);
+    });
 }
 
 #[cfg(test)]
