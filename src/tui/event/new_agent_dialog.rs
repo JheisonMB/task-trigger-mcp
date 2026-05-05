@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ratatui::crossterm::event::KeyCode;
 
+use crate::tui::app::dialog::{BackgroundTrigger, NewAgentDialog, NewTaskMode, NewTaskType};
 use crate::tui::app::types::App;
 
 // ── Dialog: new agent creation ──────────────────────────────────────
@@ -9,477 +10,476 @@ use crate::tui::app::types::App;
 //       Space enter directory, Enter launch, Esc cancel.
 
 pub fn handle_dialog_key(app: &mut App, code: KeyCode) -> Result<()> {
-    if app.new_agent_dialog.is_none() {
-        return Ok(());
-    }
-
     {
-        let Some(dialog) = &mut app.new_agent_dialog else {
+        let Some(dialog) = app.new_agent_dialog.as_mut() else {
             return Ok(());
         };
 
-        // Session picker intercepts ALL keys when open
-        if dialog.session_picker_open {
-            match code {
-                KeyCode::Down => {
-                    let len = dialog.session_entries.len();
-                    if len > 0 {
-                        dialog.session_picker_idx = (dialog.session_picker_idx + 1) % len;
-                    }
-                }
-                KeyCode::Up => {
-                    let len = dialog.session_entries.len();
-                    if len > 0 {
-                        dialog.session_picker_idx =
-                            dialog.session_picker_idx.checked_sub(1).unwrap_or(len - 1);
-                    }
-                }
-                KeyCode::Enter => {
-                    dialog.confirm_session_pick();
-                }
-                KeyCode::Esc | KeyCode::Backspace => {
-                    dialog.session_picker_open = false;
-                }
-                _ => {}
-            }
-            return Ok(());
-        }
-
-        // CLI picker intercepts ALL keys when open
-        if dialog.cli_picker_open {
-            match code {
-                KeyCode::Down => {
-                    dialog.move_cli_picker_next();
-                }
-                KeyCode::Up => {
-                    dialog.move_cli_picker_prev();
-                }
-                KeyCode::Enter => {
-                    let filtered = dialog.filtered_cli_indices();
-                    if let Some(&idx) = filtered.get(dialog.cli_picker_idx) {
-                        dialog.set_cli_index(idx);
-                    }
-                    dialog.close_cli_picker();
-                }
-                KeyCode::Esc => {
-                    dialog.close_cli_picker();
-                }
-                KeyCode::Backspace => {
-                    dialog.pop_cli_picker_filter();
-                }
-                KeyCode::Char(c) => {
-                    dialog.push_cli_picker_filter(c);
-                }
-                _ => {}
-            }
+        if handle_picker_key(dialog, code) {
             return Ok(());
         }
     }
 
     match code {
         KeyCode::Esc => app.close_new_agent_dialog(),
-        KeyCode::Enter => {
-            // If focused on the dir field, Enter selects the highlighted folder.
-            let on_dir_field = app.new_agent_dialog.as_ref().is_some_and(|d| {
-                let is_interactive =
-                    matches!(d.task_type, crate::tui::app::NewTaskType::Interactive);
-                let is_terminal = matches!(d.task_type, crate::tui::app::NewTaskType::Terminal);
-                let is_background = matches!(d.task_type, crate::tui::app::NewTaskType::Background);
-                let dir_field = if is_interactive {
-                    3
-                } else if is_terminal {
-                    1
-                } else {
-                    6
-                };
-                let watch_dir_field = 5;
-                d.field == dir_field
-                    || (is_background
-                        && d.field == watch_dir_field
-                        && matches!(
-                            d.background_trigger,
-                            crate::tui::app::BackgroundTrigger::Watch
-                        ))
-            });
-            if on_dir_field {
-                if let Some(dialog) = &mut app.new_agent_dialog {
-                    dialog.select_current();
-                }
-                return Ok(());
-            }
-
-            // If in Resume mode with session picker and no session selected yet,
-            // open the picker regardless of which field is focused.
-            let should_pick = app.new_agent_dialog.as_ref().is_some_and(|d| {
-                let is_interactive =
-                    matches!(d.task_type, crate::tui::app::NewTaskType::Interactive);
-                is_interactive
-                    && matches!(d.task_mode, crate::tui::app::NewTaskMode::Resume)
-                    && d.has_session_picker()
-                    && d.selected_session.is_none()
-            });
-            if should_pick {
-                if let Some(dialog) = &mut app.new_agent_dialog {
-                    dialog.open_session_picker();
-                }
-            } else {
-                let _ = app.launch_new_agent();
-            }
-        }
+        KeyCode::Enter => handle_dialog_enter(app),
         _ => {
-            let Some(dialog) = &mut app.new_agent_dialog else {
+            let Some(dialog) = app.new_agent_dialog.as_mut() else {
                 return Ok(());
             };
+            handle_dialog_field_key(dialog, code);
+        }
+    }
 
-            let is_interactive =
-                matches!(dialog.task_type, crate::tui::app::NewTaskType::Interactive);
-            let is_terminal = matches!(dialog.task_type, crate::tui::app::NewTaskType::Terminal);
-            let is_background =
-                matches!(dialog.task_type, crate::tui::app::NewTaskType::Background);
+    Ok(())
+}
 
-            // Field layout:
-            //   Interactive: 0=type 1=mode 2=CLI 3=dir 4=yolo
-            //   Terminal:    0=type 1=dir 2=shell
-            //   Background:  0=type 1=trigger 2=CLI 3=model 4=prompt 5=cron/watch 6=dir
-            let cli_field: usize = if is_interactive || is_background {
+#[derive(Clone, Copy)]
+struct DialogFields {
+    is_interactive: bool,
+    is_terminal: bool,
+    is_background: bool,
+    cli_field: usize,
+    model_field: usize,
+    prompt_field: usize,
+    extra_field: usize,
+    dir_field: usize,
+    yolo_field: usize,
+}
+
+impl DialogFields {
+    fn from(dialog: &NewAgentDialog) -> Self {
+        let is_interactive = matches!(dialog.task_type, NewTaskType::Interactive);
+        let is_terminal = matches!(dialog.task_type, NewTaskType::Terminal);
+        let is_background = matches!(dialog.task_type, NewTaskType::Background);
+
+        Self {
+            is_interactive,
+            is_terminal,
+            is_background,
+            cli_field: if is_interactive || is_background {
                 2
             } else {
                 0
-            };
-            let model_field: usize = 3; // background only
-            let prompt_field: usize = 4; // background only
-            let extra_field: usize = 5; // background only
-            let dir_field: usize = if is_interactive {
+            },
+            model_field: 3,
+            prompt_field: 4,
+            extra_field: 5,
+            dir_field: if is_interactive {
                 3
             } else if is_terminal {
                 1
             } else {
                 6
-            };
-            let yolo_field: usize = 4; // interactive only
-            let _ = (prompt_field, extra_field);
-
-            match dialog.field {
-                // Type selector (field 0)
-                0 => match code {
-                    KeyCode::Left => {
-                        dialog.task_type = match dialog.task_type {
-                            crate::tui::app::NewTaskType::Interactive => {
-                                crate::tui::app::NewTaskType::Background
-                            }
-                            crate::tui::app::NewTaskType::Terminal => {
-                                crate::tui::app::NewTaskType::Interactive
-                            }
-                            crate::tui::app::NewTaskType::Background => {
-                                crate::tui::app::NewTaskType::Terminal
-                            }
-                        };
-                        dialog.field = 0;
-                        dialog.refresh_dir_entries();
-                    }
-                    KeyCode::Right => {
-                        dialog.task_type = match dialog.task_type {
-                            crate::tui::app::NewTaskType::Interactive => {
-                                crate::tui::app::NewTaskType::Terminal
-                            }
-                            crate::tui::app::NewTaskType::Terminal => {
-                                crate::tui::app::NewTaskType::Background
-                            }
-                            crate::tui::app::NewTaskType::Background => {
-                                crate::tui::app::NewTaskType::Interactive
-                            }
-                        };
-                        dialog.field = 0;
-                        dialog.refresh_dir_entries();
-                    }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = 1,
-                    _ => {}
-                },
-                // Mode selector (Interactive only — field 1)
-                1 if is_interactive => match code {
-                    KeyCode::Left => {
-                        dialog.task_mode = match dialog.task_mode {
-                            crate::tui::app::NewTaskMode::Interactive => {
-                                crate::tui::app::NewTaskMode::Resume
-                            }
-                            crate::tui::app::NewTaskMode::Resume => {
-                                crate::tui::app::NewTaskMode::Interactive
-                            }
-                        };
-                        dialog.selected_session = None;
-                    }
-                    KeyCode::Right => {
-                        dialog.task_mode = match dialog.task_mode {
-                            crate::tui::app::NewTaskMode::Interactive => {
-                                crate::tui::app::NewTaskMode::Resume
-                            }
-                            crate::tui::app::NewTaskMode::Resume => {
-                                crate::tui::app::NewTaskMode::Interactive
-                            }
-                        };
-                        dialog.selected_session = None;
-                    }
-                    KeyCode::Delete | KeyCode::Backspace
-                        if matches!(dialog.task_mode, crate::tui::app::NewTaskMode::Resume) =>
-                    {
-                        dialog.clear_selected_session();
-                    }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
-                    _ => {}
-                },
-                // Trigger selector (Background only — field 1)
-                1 if is_background => match code {
-                    KeyCode::Left | KeyCode::Right => {
-                        dialog.background_trigger = match dialog.background_trigger {
-                            crate::tui::app::BackgroundTrigger::Cron => {
-                                crate::tui::app::BackgroundTrigger::Watch
-                            }
-                            crate::tui::app::BackgroundTrigger::Watch => {
-                                crate::tui::app::BackgroundTrigger::Cron
-                            }
-                        };
-                        dialog.refresh_dir_entries();
-                    }
-                    KeyCode::Down | KeyCode::Tab => dialog.field = cli_field,
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
-                    _ => {}
-                },
-                // CLI field (field 2 for interactive/background) — Space opens picker
-                n if n == cli_field && !is_terminal => match code {
-                    KeyCode::Char(' ') => {
-                        dialog.open_cli_picker();
-                    }
-                    KeyCode::Char(c) => {
-                        dialog.open_cli_picker();
-                        dialog.push_cli_picker_filter(c);
-                    }
-                    KeyCode::Left => {
-                        let count = dialog.available_clis.len();
-                        if count > 0 {
-                            dialog.set_cli_index((dialog.cli_index + count - 1) % count);
-                        }
-                    }
-                    KeyCode::Right => {
-                        let count = dialog.available_clis.len();
-                        if count > 0 {
-                            dialog.set_cli_index((dialog.cli_index + 1) % count);
-                        }
-                    }
-                    KeyCode::Down => {
-                        if is_interactive {
-                            dialog.field = yolo_field;
-                        } else {
-                            dialog.field = model_field;
-                        }
-                    }
-                    KeyCode::Up => {
-                        dialog.field = if is_interactive || is_background {
-                            1
-                        } else {
-                            0
-                        };
-                    }
-                    _ => {}
-                },
-                // Model field (Background only — field 3) — Space opens picker
-                n if n == model_field && is_background => match code {
-                    KeyCode::Char(' ') => {
-                        dialog.model_picker_open = true;
-                        dialog.model_suggestion_idx = 0;
-                        dialog.refresh_model_suggestions();
-                    }
-                    KeyCode::Char(c) => {
-                        dialog.model.push(c);
-                        dialog.model_picker_open = true;
-                        dialog.model_suggestion_idx = 0;
-                        dialog.refresh_model_suggestions();
-                    }
-                    KeyCode::Backspace => {
-                        dialog.model.pop();
-                        dialog.model_picker_open = !dialog.model.is_empty();
-                        dialog.model_suggestion_idx = 0;
-                        dialog.refresh_model_suggestions();
-                    }
-                    KeyCode::Down if dialog.model_picker_open => {
-                        let len = dialog.model_suggestions.len();
-                        if len > 0 {
-                            dialog.model_suggestion_idx = (dialog.model_suggestion_idx + 1) % len;
-                        }
-                    }
-                    KeyCode::Up if dialog.model_picker_open => {
-                        let len = dialog.model_suggestions.len();
-                        if len > 0 {
-                            dialog.model_suggestion_idx = dialog
-                                .model_suggestion_idx
-                                .checked_sub(1)
-                                .unwrap_or(len - 1);
-                        }
-                    }
-                    KeyCode::Right if dialog.model_picker_open => {
-                        dialog.accept_model_suggestion();
-                    }
-                    KeyCode::Enter if dialog.model_picker_open => {
-                        dialog.accept_model_suggestion();
-                        dialog.model_picker_open = false;
-                    }
-                    KeyCode::Esc | KeyCode::Left if dialog.model_picker_open => {
-                        dialog.model_picker_open = false;
-                    }
-                    KeyCode::Up => {
-                        dialog.model_picker_open = false;
-                        dialog.field = cli_field;
-                    }
-                    KeyCode::Down => {
-                        dialog.model_picker_open = false;
-                        dialog.field = prompt_field;
-                    }
-                    _ => {}
-                },
-                // Prompt (Background only — field 4)
-                4 if is_background => match code {
-                    KeyCode::Char(c) => dialog.prompt.push(c),
-                    KeyCode::Backspace => {
-                        dialog.prompt.pop();
-                    }
-                    KeyCode::Up => dialog.field = model_field,
-                    KeyCode::Down => dialog.field = extra_field,
-                    _ => {}
-                },
-                // Cron expr (Background+Cron — field 5)
-                5 if is_background
-                    && matches!(
-                        dialog.background_trigger,
-                        crate::tui::app::BackgroundTrigger::Cron
-                    ) =>
-                {
-                    match code {
-                        KeyCode::Char(c) => dialog.cron_expr.push(c),
-                        KeyCode::Backspace => {
-                            dialog.cron_expr.pop();
-                        }
-                        KeyCode::Up => dialog.field = prompt_field,
-                        KeyCode::Down => dialog.field = dir_field,
-                        _ => {}
-                    }
-                }
-                // Directory browser — ↑↓ navigate  Enter select dir  → enter dir  ← go up
-                // For Background+Watch, dir_field == 6 but extra_field == 5 handles the path browser
-                n if n == dir_field
-                    || (n == extra_field
-                        && is_background
-                        && dialog.background_trigger
-                            == crate::tui::app::BackgroundTrigger::Watch) =>
-                {
-                    let is_watch_dir = n == extra_field
-                        && is_background
-                        && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
-                    match code {
-                        KeyCode::Up => {
-                            if dialog.dir_selected > 0 {
-                                dialog.dir_selected -= 1;
-                            } else {
-                                // At top of list: move focus to previous field
-                                dialog.field = if is_watch_dir {
-                                    prompt_field
-                                } else if is_interactive {
-                                    cli_field
-                                } else if is_terminal {
-                                    0
-                                } else {
-                                    extra_field
-                                };
-                            }
-                        }
-                        KeyCode::Down => {
-                            let filtered_len = dialog.filtered_dir_entries().len();
-                            if filtered_len > 0 && dialog.dir_selected + 1 < filtered_len {
-                                dialog.dir_selected += 1;
-                            } else {
-                                // At bottom of list: move focus to next field
-                                dialog.field = if is_interactive {
-                                    yolo_field
-                                } else if is_terminal {
-                                    2 // shell field
-                                } else {
-                                    // Background: dir is the last field, stay
-                                    dialog.field
-                                };
-                            }
-                        }
-                        KeyCode::BackTab => {
-                            dialog.field = if is_watch_dir {
-                                prompt_field
-                            } else if is_interactive {
-                                cli_field
-                            } else if is_terminal {
-                                0
-                            } else {
-                                extra_field
-                            };
-                        }
-                        KeyCode::Tab => {
-                            dialog.field = if is_interactive {
-                                yolo_field
-                            } else if is_terminal {
-                                2 // shell field
-                            } else {
-                                // Background: dir is the last field, stay
-                                dialog.field
-                            };
-                        }
-                        KeyCode::Enter => {
-                            dialog.select_current();
-                        }
-                        KeyCode::Right => {
-                            dialog.navigate_to_selected();
-                        }
-                        KeyCode::Left => {
-                            dialog.go_up();
-                        }
-                        KeyCode::Backspace if !dialog.dir_filter.is_empty() => {
-                            dialog.dir_filter.pop();
-                            dialog.dir_selected = 0;
-                        }
-                        KeyCode::Char(c) => {
-                            dialog.dir_filter.push(c);
-                            dialog.dir_selected = 0;
-                        }
-                        _ => {}
-                    }
-                }
-                // Shell picker (Terminal only — field 2): ←→ cycle shells
-                2 if is_terminal => match code {
-                    KeyCode::Left | KeyCode::Right => {
-                        let count = dialog.available_shells.len();
-                        if count > 0 {
-                            dialog.shell_index = if code == KeyCode::Right {
-                                (dialog.shell_index + 1) % count
-                            } else {
-                                (dialog.shell_index + count - 1) % count
-                            };
-                        }
-                    }
-                    KeyCode::Up | KeyCode::BackTab => dialog.field = dir_field,
-                    _ => {}
-                },
-                // Yolo toggle (interactive only — field 4)
-                n if n == yolo_field && is_interactive => match code {
-                    KeyCode::Char(' ') if dialog.selected_yolo_flag().is_some() => {
-                        dialog.yolo_mode = !dialog.yolo_mode;
-                    }
-                    KeyCode::Char(' ') => {}
-                    KeyCode::Up | KeyCode::BackTab => {
-                        dialog.field = cli_field;
-                    }
-                    KeyCode::Down | KeyCode::Tab => {
-                        dialog.field = dir_field;
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
+            },
+            yolo_field: 4,
         }
     }
-    Ok(())
+
+    fn is_active_dir_field(self, dialog: &NewAgentDialog) -> bool {
+        dialog.field == self.dir_field || self.is_watch_dir_field(dialog)
+    }
+
+    fn is_watch_dir_field(self, dialog: &NewAgentDialog) -> bool {
+        self.is_background
+            && dialog.field == self.extra_field
+            && matches!(dialog.background_trigger, BackgroundTrigger::Watch)
+    }
+
+    fn cli_up_target(self) -> usize {
+        if self.is_interactive || self.is_background {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn previous_dir_field(self, is_watch_dir: bool) -> usize {
+        if is_watch_dir {
+            self.prompt_field
+        } else if self.is_interactive {
+            self.cli_field
+        } else if self.is_terminal {
+            0
+        } else {
+            self.extra_field
+        }
+    }
+
+    fn next_dir_field(self, current_field: usize) -> usize {
+        if self.is_interactive {
+            self.yolo_field
+        } else if self.is_terminal {
+            2
+        } else {
+            current_field
+        }
+    }
+}
+
+fn handle_picker_key(dialog: &mut NewAgentDialog, code: KeyCode) -> bool {
+    if dialog.session_picker_open {
+        handle_session_picker_key(dialog, code);
+        return true;
+    }
+
+    if dialog.cli_picker_open {
+        handle_cli_picker_key(dialog, code);
+        return true;
+    }
+
+    false
+}
+
+fn handle_session_picker_key(dialog: &mut NewAgentDialog, code: KeyCode) {
+    match code {
+        KeyCode::Down => move_session_picker(dialog, true),
+        KeyCode::Up => move_session_picker(dialog, false),
+        KeyCode::Enter => dialog.confirm_session_pick(),
+        KeyCode::Esc | KeyCode::Backspace => dialog.session_picker_open = false,
+        _ => {}
+    }
+}
+
+fn move_session_picker(dialog: &mut NewAgentDialog, forward: bool) {
+    let Some(next) = wrapped_index(
+        dialog.session_picker_idx,
+        dialog.session_entries.len(),
+        forward,
+    ) else {
+        return;
+    };
+    dialog.session_picker_idx = next;
+}
+
+fn handle_cli_picker_key(dialog: &mut NewAgentDialog, code: KeyCode) {
+    match code {
+        KeyCode::Down => dialog.move_cli_picker_next(),
+        KeyCode::Up => dialog.move_cli_picker_prev(),
+        KeyCode::Enter => confirm_cli_picker(dialog),
+        KeyCode::Esc => dialog.close_cli_picker(),
+        KeyCode::Backspace => dialog.pop_cli_picker_filter(),
+        KeyCode::Char(c) => dialog.push_cli_picker_filter(c),
+        _ => {}
+    }
+}
+
+fn confirm_cli_picker(dialog: &mut NewAgentDialog) {
+    let filtered = dialog.filtered_cli_indices();
+    let Some(&idx) = filtered.get(dialog.cli_picker_idx) else {
+        dialog.close_cli_picker();
+        return;
+    };
+
+    dialog.set_cli_index(idx);
+    dialog.close_cli_picker();
+}
+
+fn handle_dialog_enter(app: &mut App) {
+    {
+        let Some(dialog) = app.new_agent_dialog.as_mut() else {
+            return;
+        };
+
+        let fields = DialogFields::from(dialog);
+        if fields.is_active_dir_field(dialog) {
+            dialog.select_current();
+            return;
+        }
+
+        if should_open_session_picker(dialog) {
+            dialog.open_session_picker();
+            return;
+        }
+    }
+
+    let _ = app.launch_new_agent();
+}
+
+fn should_open_session_picker(dialog: &NewAgentDialog) -> bool {
+    matches!(dialog.task_type, NewTaskType::Interactive)
+        && matches!(dialog.task_mode, NewTaskMode::Resume)
+        && dialog.has_session_picker()
+        && dialog.selected_session.is_none()
+}
+
+fn handle_dialog_field_key(dialog: &mut NewAgentDialog, code: KeyCode) {
+    let fields = DialogFields::from(dialog);
+
+    match dialog.field {
+        0 => handle_type_field(dialog, code),
+        1 if fields.is_interactive => handle_mode_field(dialog, code, fields),
+        1 if fields.is_background => handle_trigger_field(dialog, code, fields),
+        n if n == fields.cli_field && !fields.is_terminal => handle_cli_field(dialog, code, fields),
+        n if n == fields.model_field && fields.is_background => {
+            handle_model_field(dialog, code, fields);
+        }
+        4 if fields.is_background => handle_prompt_field(dialog, code, fields),
+        5 if fields.is_background
+            && matches!(dialog.background_trigger, BackgroundTrigger::Cron) =>
+        {
+            handle_cron_field(dialog, code, fields);
+        }
+        n if n == fields.dir_field
+            || (n == fields.extra_field && fields.is_watch_dir_field(dialog)) =>
+        {
+            handle_directory_field(dialog, code, fields, fields.is_watch_dir_field(dialog));
+        }
+        2 if fields.is_terminal => handle_shell_field(dialog, code, fields),
+        n if n == fields.yolo_field && fields.is_interactive => {
+            handle_yolo_field(dialog, code, fields);
+        }
+        _ => {}
+    }
+}
+
+fn handle_type_field(dialog: &mut NewAgentDialog, code: KeyCode) {
+    match code {
+        KeyCode::Left => cycle_task_type(dialog, false),
+        KeyCode::Right => cycle_task_type(dialog, true),
+        KeyCode::Down | KeyCode::Tab => dialog.field = 1,
+        _ => {}
+    }
+}
+
+fn cycle_task_type(dialog: &mut NewAgentDialog, forward: bool) {
+    dialog.task_type = match (dialog.task_type, forward) {
+        (NewTaskType::Interactive, true) => NewTaskType::Terminal,
+        (NewTaskType::Terminal, true) => NewTaskType::Background,
+        (NewTaskType::Background, true) => NewTaskType::Interactive,
+        (NewTaskType::Interactive, false) => NewTaskType::Background,
+        (NewTaskType::Terminal, false) => NewTaskType::Interactive,
+        (NewTaskType::Background, false) => NewTaskType::Terminal,
+    };
+    dialog.field = 0;
+    dialog.refresh_dir_entries();
+}
+
+fn handle_mode_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Left | KeyCode::Right => toggle_task_mode(dialog),
+        KeyCode::Delete | KeyCode::Backspace if matches!(dialog.task_mode, NewTaskMode::Resume) => {
+            dialog.clear_selected_session();
+        }
+        KeyCode::Down | KeyCode::Tab => dialog.field = fields.cli_field,
+        KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
+        _ => {}
+    }
+}
+
+fn toggle_task_mode(dialog: &mut NewAgentDialog) {
+    dialog.task_mode = match dialog.task_mode {
+        NewTaskMode::Interactive => NewTaskMode::Resume,
+        NewTaskMode::Resume => NewTaskMode::Interactive,
+    };
+    dialog.selected_session = None;
+}
+
+fn handle_trigger_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Left | KeyCode::Right => toggle_background_trigger(dialog),
+        KeyCode::Down | KeyCode::Tab => dialog.field = fields.cli_field,
+        KeyCode::Up | KeyCode::BackTab => dialog.field = 0,
+        _ => {}
+    }
+}
+
+fn toggle_background_trigger(dialog: &mut NewAgentDialog) {
+    dialog.background_trigger = match dialog.background_trigger {
+        BackgroundTrigger::Cron => BackgroundTrigger::Watch,
+        BackgroundTrigger::Watch => BackgroundTrigger::Cron,
+    };
+    dialog.refresh_dir_entries();
+}
+
+fn handle_cli_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Char(' ') => dialog.open_cli_picker(),
+        KeyCode::Char(c) => {
+            dialog.open_cli_picker();
+            dialog.push_cli_picker_filter(c);
+        }
+        KeyCode::Left | KeyCode::Right => {
+            step_cli_selection(dialog, matches!(code, KeyCode::Right));
+        }
+        KeyCode::Down => {
+            dialog.field = if fields.is_interactive {
+                fields.yolo_field
+            } else {
+                fields.model_field
+            };
+        }
+        KeyCode::Up => dialog.field = fields.cli_up_target(),
+        _ => {}
+    }
+}
+
+fn step_cli_selection(dialog: &mut NewAgentDialog, forward: bool) {
+    let Some(next) = wrapped_index(dialog.cli_index, dialog.available_clis.len(), forward) else {
+        return;
+    };
+    dialog.set_cli_index(next);
+}
+
+fn handle_model_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Char(' ') => reopen_model_picker(dialog, true),
+        KeyCode::Char(c) => {
+            dialog.model.push(c);
+            reopen_model_picker(dialog, true);
+        }
+        KeyCode::Backspace => {
+            dialog.model.pop();
+            reopen_model_picker(dialog, !dialog.model.is_empty());
+        }
+        KeyCode::Down if dialog.model_picker_open => move_model_picker(dialog, true),
+        KeyCode::Up if dialog.model_picker_open => move_model_picker(dialog, false),
+        KeyCode::Right if dialog.model_picker_open => dialog.accept_model_suggestion(),
+        KeyCode::Enter if dialog.model_picker_open => confirm_model_picker(dialog),
+        KeyCode::Esc | KeyCode::Left if dialog.model_picker_open => {
+            dialog.model_picker_open = false;
+        }
+        KeyCode::Up => {
+            dialog.model_picker_open = false;
+            dialog.field = fields.cli_field;
+        }
+        KeyCode::Down => {
+            dialog.model_picker_open = false;
+            dialog.field = fields.prompt_field;
+        }
+        _ => {}
+    }
+}
+
+fn reopen_model_picker(dialog: &mut NewAgentDialog, open: bool) {
+    dialog.model_picker_open = open;
+    dialog.model_suggestion_idx = 0;
+    dialog.refresh_model_suggestions();
+}
+
+fn move_model_picker(dialog: &mut NewAgentDialog, forward: bool) {
+    let Some(next) = wrapped_index(
+        dialog.model_suggestion_idx,
+        dialog.model_suggestions.len(),
+        forward,
+    ) else {
+        return;
+    };
+    dialog.model_suggestion_idx = next;
+}
+
+fn confirm_model_picker(dialog: &mut NewAgentDialog) {
+    dialog.accept_model_suggestion();
+    dialog.model_picker_open = false;
+}
+
+fn handle_prompt_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Char(c) => dialog.prompt.push(c),
+        KeyCode::Backspace => {
+            dialog.prompt.pop();
+        }
+        KeyCode::Up => dialog.field = fields.model_field,
+        KeyCode::Down => dialog.field = fields.extra_field,
+        _ => {}
+    }
+}
+
+fn handle_cron_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Char(c) => dialog.cron_expr.push(c),
+        KeyCode::Backspace => {
+            dialog.cron_expr.pop();
+        }
+        KeyCode::Up => dialog.field = fields.prompt_field,
+        KeyCode::Down => dialog.field = fields.dir_field,
+        _ => {}
+    }
+}
+
+fn handle_directory_field(
+    dialog: &mut NewAgentDialog,
+    code: KeyCode,
+    fields: DialogFields,
+    is_watch_dir: bool,
+) {
+    match code {
+        KeyCode::Up => move_directory_up(dialog, fields, is_watch_dir),
+        KeyCode::Down => move_directory_down(dialog, fields),
+        KeyCode::BackTab => dialog.field = fields.previous_dir_field(is_watch_dir),
+        KeyCode::Tab => dialog.field = fields.next_dir_field(dialog.field),
+        KeyCode::Enter => dialog.select_current(),
+        KeyCode::Right => dialog.navigate_to_selected(),
+        KeyCode::Left => dialog.go_up(),
+        KeyCode::Backspace if !dialog.dir_filter.is_empty() => {
+            dialog.dir_filter.pop();
+            dialog.dir_selected = 0;
+        }
+        KeyCode::Char(c) => {
+            dialog.dir_filter.push(c);
+            dialog.dir_selected = 0;
+        }
+        _ => {}
+    }
+}
+
+fn move_directory_up(dialog: &mut NewAgentDialog, fields: DialogFields, is_watch_dir: bool) {
+    if dialog.dir_selected > 0 {
+        dialog.dir_selected -= 1;
+        return;
+    }
+
+    dialog.field = fields.previous_dir_field(is_watch_dir);
+}
+
+fn move_directory_down(dialog: &mut NewAgentDialog, fields: DialogFields) {
+    let filtered_len = dialog.filtered_dir_entries().len();
+    if filtered_len > 0 && dialog.dir_selected + 1 < filtered_len {
+        dialog.dir_selected += 1;
+        return;
+    }
+
+    dialog.field = fields.next_dir_field(dialog.field);
+}
+
+fn handle_shell_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Left | KeyCode::Right => {
+            step_shell_selection(dialog, matches!(code, KeyCode::Right));
+        }
+        KeyCode::Up | KeyCode::BackTab => dialog.field = fields.dir_field,
+        _ => {}
+    }
+}
+
+fn step_shell_selection(dialog: &mut NewAgentDialog, forward: bool) {
+    let Some(next) = wrapped_index(dialog.shell_index, dialog.available_shells.len(), forward)
+    else {
+        return;
+    };
+    dialog.shell_index = next;
+}
+
+fn handle_yolo_field(dialog: &mut NewAgentDialog, code: KeyCode, fields: DialogFields) {
+    match code {
+        KeyCode::Char(' ') if dialog.selected_yolo_flag().is_some() => {
+            dialog.yolo_mode = !dialog.yolo_mode;
+        }
+        KeyCode::Char(' ') => {}
+        KeyCode::Up | KeyCode::BackTab => dialog.field = fields.cli_field,
+        KeyCode::Down | KeyCode::Tab => dialog.field = fields.dir_field,
+        _ => {}
+    }
+}
+
+fn wrapped_index(current: usize, len: usize, forward: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+
+    Some(if forward {
+        (current + 1) % len
+    } else {
+        current.checked_sub(1).unwrap_or(len - 1)
+    })
 }

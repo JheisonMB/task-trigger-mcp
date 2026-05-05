@@ -22,7 +22,6 @@ use super::context_transfer::{
 use crate::tui::prompt_templates::PromptTemplates;
 
 pub(crate) use data::send_mcp_task_run;
-pub use dialog::{BackgroundTrigger, NewTaskMode, NewTaskType};
 
 // ── Types ───────────────────────────────────────────────────────
 

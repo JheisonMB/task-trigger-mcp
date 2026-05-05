@@ -6,365 +6,536 @@ use super::search_picker::handle_suggestion_picker_key;
 use super::terminal_warp::{
     handle_terminal_direct_pty_key, handle_terminal_warp_key, record_terminal_command,
 };
-use crate::tui::agent::key_to_bytes;
+use crate::tui::agent::{key_to_bytes, InteractiveAgent};
 use crate::tui::app::types::{AgentEntry, App, Focus};
 
+#[derive(Clone, Copy)]
+enum FocusedAgent {
+    Interactive(usize),
+    Terminal(usize),
+}
+
 pub fn handle_agent_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
-    // Suggestion picker intercepts keys when open (terminal autocomplete)
     if app.suggestion_picker.is_some() {
         return handle_suggestion_picker_key(app, code);
     }
 
-    // Split picker intercepts ALL keys when open
-    if app.split_picker_open {
-        match code {
-            KeyCode::Down => {
-                let len = app.split_picker_sessions.len();
-                if len > 0 {
-                    app.split_picker_idx = (app.split_picker_idx + 1) % len;
-                }
-            }
-            KeyCode::Up => {
-                let len = app.split_picker_sessions.len();
-                if len > 0 {
-                    app.split_picker_idx = app.split_picker_idx.checked_sub(1).unwrap_or(len - 1);
-                }
-            }
-            KeyCode::Tab => {
-                app.split_picker_orientation = match app.split_picker_orientation {
-                    crate::domain::models::SplitOrientation::Horizontal => {
-                        crate::domain::models::SplitOrientation::Vertical
-                    }
-                    crate::domain::models::SplitOrientation::Vertical => {
-                        crate::domain::models::SplitOrientation::Horizontal
-                    }
-                };
-            }
-            KeyCode::Enter => {
-                app.create_split();
-            }
-            KeyCode::Esc => {
-                app.split_picker_open = false;
-            }
-            _ => {}
-        }
+    if handle_split_picker_key(app, code)
+        || handle_background_agent_key(app, code)
+        || handle_focus_shortcuts(app, code, modifiers)
+    {
         return Ok(());
     }
 
-    // Background agents (non-interactive, non-terminal, non-group): simple log-scrolling
-    if !matches!(
+    let Some(target) = resolve_focused_agent(app) else {
+        return Ok(());
+    };
+
+    if handle_scroll_navigation(app, target, code, modifiers) {
+        return Ok(());
+    }
+
+    reset_scroll_on_input(app, target, code);
+    if handle_target_input(app, target, code, modifiers)? {
+        return Ok(());
+    }
+
+    forward_key_to_focused_agent(app, target, code, modifiers);
+    Ok(())
+}
+
+fn handle_split_picker_key(app: &mut App, code: KeyCode) -> bool {
+    if !app.split_picker_open {
+        return false;
+    }
+
+    match code {
+        KeyCode::Down => cycle_split_picker(app, true),
+        KeyCode::Up => cycle_split_picker(app, false),
+        KeyCode::Tab => toggle_split_orientation(app),
+        KeyCode::Enter => app.create_split(),
+        KeyCode::Esc => app.split_picker_open = false,
+        _ => {}
+    }
+
+    true
+}
+
+fn cycle_split_picker(app: &mut App, forward: bool) {
+    let len = app.split_picker_sessions.len();
+    if len == 0 {
+        return;
+    }
+
+    app.split_picker_idx = if forward {
+        (app.split_picker_idx + 1) % len
+    } else {
+        app.split_picker_idx.checked_sub(1).unwrap_or(len - 1)
+    };
+}
+
+fn toggle_split_orientation(app: &mut App) {
+    app.split_picker_orientation = match app.split_picker_orientation {
+        crate::domain::models::SplitOrientation::Horizontal => {
+            crate::domain::models::SplitOrientation::Vertical
+        }
+        crate::domain::models::SplitOrientation::Vertical => {
+            crate::domain::models::SplitOrientation::Horizontal
+        }
+    };
+}
+
+fn handle_background_agent_key(app: &mut App, code: KeyCode) -> bool {
+    if matches!(
         app.selected_agent(),
         Some(AgentEntry::Interactive(_))
             | Some(AgentEntry::Terminal(_))
             | Some(AgentEntry::Group(_))
     ) {
-        match code {
-            KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Preview,
-            KeyCode::Down | KeyCode::Char('j') => app.scroll_log_down(),
-            KeyCode::Up | KeyCode::Char('k') => app.scroll_log_up(),
-            KeyCode::Char('q') => app.running = false,
-            KeyCode::F(1) => app.show_legend = !app.show_legend,
-            _ => {}
-        }
-        return Ok(());
+        return false;
     }
 
-    // Ctrl+T: open context transfer modal (Interactive and Terminal)
-    if code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
-        if app.active_split_id.is_some() {
-            // In split mode, open context transfer for the focused panel's session
-            app.open_context_transfer_for_split();
-        } else if matches!(
-            app.selected_agent(),
-            Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
-        ) {
-            app.open_context_transfer_modal();
-        }
-        return Ok(());
+    match code {
+        KeyCode::Esc | KeyCode::Char('h') => app.focus = Focus::Preview,
+        KeyCode::Down | KeyCode::Char('j') => app.scroll_log_down(),
+        KeyCode::Up | KeyCode::Char('k') => app.scroll_log_up(),
+        KeyCode::Char('q') => app.running = false,
+        KeyCode::F(1) => app.show_legend = !app.show_legend,
+        _ => {}
     }
 
-    // Ctrl+S: open split picker
-    if code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
-        app.open_split_picker();
-        return Ok(());
+    true
+}
+
+fn handle_focus_shortcuts(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    handle_context_transfer_shortcut(app, code, modifiers)
+        || handle_split_picker_shortcut(app, code, modifiers)
+        || handle_split_panel_focus_shortcut(app, code, modifiers)
+        || handle_preview_shortcut(app, code)
+        || handle_termination_shortcut(app, code, modifiers)
+        || handle_legend_shortcut(app, code)
+        || handle_agent_cycle_shortcut(app, code, modifiers)
+}
+
+fn handle_context_transfer_shortcut(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    if code != KeyCode::Char('t') || !modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
     }
 
-    // Ctrl+Left/Right: switch panel focus in split view
+    if app.active_split_id.is_some() {
+        app.open_context_transfer_for_split();
+    } else if matches!(
+        app.selected_agent(),
+        Some(AgentEntry::Interactive(_)) | Some(AgentEntry::Terminal(_))
+    ) {
+        app.open_context_transfer_modal();
+    }
+
+    true
+}
+
+fn handle_split_picker_shortcut(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    if code != KeyCode::Char('s') || !modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+
+    app.open_split_picker();
+    true
+}
+
+fn handle_split_panel_focus_shortcut(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+
+    match code {
+        KeyCode::Left => app.split_right_focused = false,
+        KeyCode::Right => app.split_right_focused = true,
+        _ => return false,
+    }
+
+    true
+}
+
+fn handle_preview_shortcut(app: &mut App, code: KeyCode) -> bool {
+    if code != KeyCode::F(10) {
+        return false;
+    }
+
+    app.active_split_id = None;
+    app.focus = Focus::Preview;
+    true
+}
+
+fn handle_termination_shortcut(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    if code != KeyCode::F(4) {
+        return false;
+    }
+
     if modifiers.contains(KeyModifiers::SHIFT) {
-        match code {
-            KeyCode::Left => {
-                app.split_right_focused = false;
-                return Ok(());
-            }
-            KeyCode::Right => {
-                app.split_right_focused = true;
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
-    // F10 = switch to Preview mode
-    if code == KeyCode::F(10) {
-        app.active_split_id = None;
-        app.focus = Focus::Preview;
-        return Ok(());
-    }
-
-    // F4 behavior depends on context:
-    // - In split mode: dissolve split (keep sessions alive)
-    // - In normal agent mode: terminate session
-    if code == KeyCode::F(4) && !modifiers.contains(KeyModifiers::SHIFT) {
         if app.active_split_id.is_some() {
-            // In split mode: dissolve only
-            app.dissolve_split();
-        } else {
-            // In normal mode: terminate session
             app.terminate_focused_session();
         }
-        return Ok(());
+        return true;
     }
 
-    // Shift+F4 = terminate session AND dissolve split (only in split mode)
-    if code == KeyCode::F(4) && modifiers.contains(KeyModifiers::SHIFT) {
-        if app.active_split_id.is_some() {
-            app.terminate_focused_session();
-        }
-        return Ok(());
-    }
-
-    // F1 = toggle legend (intercept before PTY)
-    if code == KeyCode::F(1) {
-        app.show_legend = !app.show_legend;
-        return Ok(());
-    }
-
-    // Shift+Down/Up = cycle between interactive agents
-    if modifiers.contains(KeyModifiers::SHIFT) {
-        match code {
-            KeyCode::Down => {
-                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
-                app.next_interactive();
-                return Ok(());
-            }
-            KeyCode::Up => {
-                app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
-                app.prev_interactive();
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
-
-    // In split mode, direct input to the focused split panel's session
-    let (agent_vec, idx) = if let Some(ref split_id) = app.active_split_id {
-        let session_name = app
-            .split_groups
-            .iter()
-            .find(|g| g.id == *split_id)
-            .map(|g| {
-                if app.split_right_focused {
-                    g.session_b.clone()
-                } else {
-                    g.session_a.clone()
-                }
-            });
-        match session_name {
-            Some(name) => resolve_session(app, &name),
-            None => {
-                app.focus = Focus::Preview;
-                return Ok(());
-            }
-        }
+    if app.active_split_id.is_some() {
+        app.dissolve_split();
     } else {
-        // Normal (non-split) mode: use the selected agent
-        match app.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => {
-                let idx = *idx;
-                if idx >= app.interactive_agents.len() {
-                    app.focus = Focus::Preview;
-                    return Ok(());
-                }
-                ("interactive", idx)
-            }
-            Some(AgentEntry::Terminal(idx)) => {
-                let idx = *idx;
-                if idx >= app.terminal_agents.len() {
-                    app.focus = Focus::Preview;
-                    return Ok(());
-                }
-                ("terminal", idx)
-            }
-            _ => {
-                app.focus = Focus::Home;
-                return Ok(());
-            }
-        }
-    };
+        app.terminate_focused_session();
+    }
+    true
+}
 
-    // Bounds check — if the resolved index is out-of-range, bail to Preview
-    let in_bounds = if agent_vec == "interactive" {
-        idx < app.interactive_agents.len()
-    } else {
-        idx < app.terminal_agents.len()
-    };
-    if !in_bounds {
+fn handle_legend_shortcut(app: &mut App, code: KeyCode) -> bool {
+    if code != KeyCode::F(1) {
+        return false;
+    }
+
+    app.show_legend = !app.show_legend;
+    true
+}
+
+fn handle_agent_cycle_shortcut(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+
+    match code {
+        KeyCode::Down => app.next_interactive(),
+        KeyCode::Up => app.prev_interactive(),
+        _ => return false,
+    }
+
+    app.sidebar_mode = crate::tui::app::SidebarMode::Agents;
+    true
+}
+
+fn resolve_focused_agent(app: &mut App) -> Option<FocusedAgent> {
+    if app.active_split_id.is_some() {
+        return resolve_split_focused_agent(app);
+    }
+
+    resolve_selected_focused_agent(app)
+}
+
+fn resolve_split_focused_agent(app: &mut App) -> Option<FocusedAgent> {
+    let Some(session_name) = active_split_session_name(app) else {
         app.focus = Focus::Preview;
-        return Ok(());
-    }
-
-    let pty_owns_navigation = if agent_vec == "interactive" {
-        app.interactive_agents[idx].in_alternate_screen()
-    } else {
-        app.terminal_agents[idx].in_alternate_screen()
+        return None;
     };
 
-    macro_rules! agent_ref {
-        () => {
-            if agent_vec == "interactive" {
-                &app.interactive_agents[idx]
-            } else {
-                &app.terminal_agents[idx]
-            }
-        };
-    }
-    macro_rules! agent_mut {
-        () => {
-            if agent_vec == "interactive" {
-                &mut app.interactive_agents[idx]
-            } else {
-                &mut app.terminal_agents[idx]
-            }
-        };
+    let (agent_vec, idx) = resolve_session(app, session_name);
+    resolve_agent_target(app, agent_vec, idx, Focus::Preview)
+}
+
+fn active_split_session_name(app: &App) -> Option<&str> {
+    let split_id = app.active_split_id.as_deref()?;
+    let group = app.split_groups.iter().find(|group| group.id == split_id)?;
+
+    Some(if app.split_right_focused {
+        group.session_b.as_str()
+    } else {
+        group.session_a.as_str()
+    })
+}
+
+fn resolve_selected_focused_agent(app: &mut App) -> Option<FocusedAgent> {
+    let target = match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => FocusedAgent::Interactive(*idx),
+        Some(AgentEntry::Terminal(idx)) => FocusedAgent::Terminal(*idx),
+        _ => {
+            app.focus = Focus::Home;
+            return None;
+        }
+    };
+
+    resolve_agent_target_for_selection(app, target)
+}
+
+fn resolve_agent_target_for_selection(app: &mut App, target: FocusedAgent) -> Option<FocusedAgent> {
+    if focused_agent(app, target).is_some() {
+        return Some(target);
     }
 
-    // Shift+Up/Down = always scroll (even when not already scrolled)
+    app.focus = Focus::Preview;
+    None
+}
+
+fn resolve_agent_target(
+    app: &mut App,
+    agent_vec: &str,
+    idx: usize,
+    invalid_focus: Focus,
+) -> Option<FocusedAgent> {
+    let target = match agent_vec {
+        "interactive" => FocusedAgent::Interactive(idx),
+        "terminal" => FocusedAgent::Terminal(idx),
+        _ => {
+            app.focus = invalid_focus;
+            return None;
+        }
+    };
+
+    if focused_agent(app, target).is_some() {
+        return Some(target);
+    }
+
+    app.focus = invalid_focus;
+    None
+}
+
+fn focused_agent(app: &App, target: FocusedAgent) -> Option<&InteractiveAgent> {
+    match target {
+        FocusedAgent::Interactive(idx) => app.interactive_agents.get(idx),
+        FocusedAgent::Terminal(idx) => app.terminal_agents.get(idx),
+    }
+}
+
+fn focused_agent_mut(app: &mut App, target: FocusedAgent) -> Option<&mut InteractiveAgent> {
+    match target {
+        FocusedAgent::Interactive(idx) => app.interactive_agents.get_mut(idx),
+        FocusedAgent::Terminal(idx) => app.terminal_agents.get_mut(idx),
+    }
+}
+
+fn handle_scroll_navigation(
+    app: &mut App,
+    target: FocusedAgent,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    let pty_owns_navigation =
+        focused_agent(app, target).is_some_and(InteractiveAgent::in_alternate_screen);
     if modifiers.contains(KeyModifiers::SHIFT) && !pty_owns_navigation {
-        match code {
-            KeyCode::Up => {
-                let max = agent_ref!().max_scroll();
-                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max);
-                return Ok(());
-            }
-            KeyCode::Down => {
-                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
-                return Ok(());
-            }
-            _ => {}
+        if let Some((scroll_up, step)) = shift_scroll_request(code) {
+            return scroll_focused_agent(app, target, scroll_up, step);
         }
     }
 
-    // Up/Down = scroll PTY history when scrolled up, otherwise pass to PTY.
-    let max_scroll = agent_ref!().max_scroll();
-    let scrolled = agent_ref!().scroll_offset > 0;
-    if !pty_owns_navigation {
-        match code {
-            KeyCode::Up if scrolled => {
-                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 3).min(max_scroll);
-                return Ok(());
-            }
-            KeyCode::Down if scrolled => {
-                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(3);
-                return Ok(());
-            }
-            KeyCode::PageUp => {
-                agent_mut!().scroll_offset = (agent_ref!().scroll_offset + 15).min(max_scroll);
-                return Ok(());
-            }
-            KeyCode::PageDown => {
-                agent_mut!().scroll_offset = agent_ref!().scroll_offset.saturating_sub(15);
-                return Ok(());
-            }
-            _ => {}
-        }
+    if pty_owns_navigation {
+        return false;
     }
 
-    // Typing resets scroll to live view
-    if agent_ref!().scroll_offset > 0 {
-        let resets_scroll = matches!(
-            code,
-            KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Tab
-        );
-        if resets_scroll {
-            agent_mut!().scroll_offset = 0;
-        }
+    let scrolled = focused_agent(app, target).is_some_and(|agent| agent.scroll_offset > 0);
+    let Some((scroll_up, step)) = standard_scroll_request(code, scrolled) else {
+        return false;
+    };
+
+    scroll_focused_agent(app, target, scroll_up, step)
+}
+
+fn shift_scroll_request(code: KeyCode) -> Option<(bool, usize)> {
+    match code {
+        KeyCode::Up => Some((true, 3)),
+        KeyCode::Down => Some((false, 3)),
+        _ => None,
+    }
+}
+
+fn standard_scroll_request(code: KeyCode, scrolled: bool) -> Option<(bool, usize)> {
+    match code {
+        KeyCode::Up if scrolled => Some((true, 3)),
+        KeyCode::Down if scrolled => Some((false, 3)),
+        KeyCode::PageUp => Some((true, 15)),
+        KeyCode::PageDown => Some((false, 15)),
+        _ => None,
+    }
+}
+
+fn scroll_focused_agent(app: &mut App, target: FocusedAgent, scroll_up: bool, step: usize) -> bool {
+    let Some(max_scroll) = focused_agent(app, target).map(InteractiveAgent::max_scroll) else {
+        return false;
+    };
+    let Some(agent) = focused_agent_mut(app, target) else {
+        return false;
+    };
+
+    if scroll_up {
+        agent.scroll_offset = (agent.scroll_offset + step).min(max_scroll);
+    } else {
+        agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
     }
 
-    // Record the prompt when the user presses Enter (interactive only)
-    // Skip recording if a sensitive prompt (password/passphrase) is active
-    if agent_vec == "interactive" {
-        if code == KeyCode::Enter {
-            let is_sensitive = app.interactive_agents[idx].is_sensitive_input_active();
-            if let Ok(input) = app.interactive_agents[idx].input_buffer.lock() {
-                let captured = input.trim().to_string();
-                if !captured.is_empty() && !is_sensitive {
-                    app.interactive_agents[idx].record_prompt(&captured);
-                }
-            }
-            if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-                input.clear();
-            }
-        } else if let KeyCode::Char(c) = code {
-            if !modifiers.contains(KeyModifiers::CONTROL) {
-                if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-                    input.push(c);
-                }
-            }
-        } else if code == KeyCode::Backspace {
-            if let Ok(mut input) = app.interactive_agents[idx].input_buffer.lock() {
-                input.pop();
-            }
-        }
+    true
+}
+
+fn reset_scroll_on_input(app: &mut App, target: FocusedAgent, code: KeyCode) {
+    if !matches!(
+        code,
+        KeyCode::Char(_) | KeyCode::Enter | KeyCode::Backspace | KeyCode::Tab
+    ) {
+        return;
     }
 
-    // Terminal: track input buffer + record history on Enter
-    if agent_vec == "terminal" {
-        // Ctrl+W = toggle warp mode
-        if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
-            app.terminal_agents[idx].warp_mode = !app.terminal_agents[idx].warp_mode;
-            app.terminal_agents[idx].warp_passthrough = false;
-            return Ok(());
-        }
-
-        let warp = app.terminal_agents[idx].warp_mode;
-
-        if warp {
-            if app.terminal_agents[idx].should_bypass_warp_input() {
-                return handle_terminal_direct_pty_key(app, idx, code, modifiers);
-            }
-            return handle_terminal_warp_key(app, idx, code, modifiers);
-        }
-
-        // Non-warp terminal: track input for history but forward keystrokes normally
-        if code == KeyCode::Enter {
-            let captured = app.terminal_agents[idx]
-                .input_buffer
-                .lock()
-                .map(|buf| buf.trim().to_string())
-                .unwrap_or_default();
-            record_terminal_command(app, idx, &captured);
-            if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
-                input.clear();
-            }
-        } else if code == KeyCode::Tab {
-            // Non-warp mode: Tab goes directly to PTY (no suggestion picker)
-        } else if let KeyCode::Char(c) = code {
-            if !modifiers.contains(KeyModifiers::CONTROL) {
-                if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
-                    input.push(c);
-                }
-            }
-        } else if code == KeyCode::Backspace {
-            if let Ok(mut input) = app.terminal_agents[idx].input_buffer.lock() {
-                input.pop();
-            }
-        }
+    let Some(agent) = focused_agent_mut(app, target) else {
+        return;
+    };
+    if agent.scroll_offset == 0 {
+        return;
     }
 
+    agent.scroll_offset = 0;
+}
+
+fn handle_target_input(
+    app: &mut App,
+    target: FocusedAgent,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<bool> {
+    match target {
+        FocusedAgent::Interactive(idx) => {
+            handle_interactive_input(app, idx, code, modifiers);
+            Ok(false)
+        }
+        FocusedAgent::Terminal(idx) => handle_terminal_input(app, idx, code, modifiers),
+    }
+}
+
+fn handle_interactive_input(app: &mut App, idx: usize, code: KeyCode, modifiers: KeyModifiers) {
+    let target = FocusedAgent::Interactive(idx);
+    if code == KeyCode::Enter {
+        record_interactive_prompt(app, idx);
+        clear_input_buffer(app, target);
+        return;
+    }
+
+    track_plain_input(app, target, code, modifiers);
+}
+
+fn record_interactive_prompt(app: &mut App, idx: usize) {
+    if app.interactive_agents[idx].is_sensitive_input_active() {
+        return;
+    }
+
+    let Some(captured) = trimmed_input_buffer(app, FocusedAgent::Interactive(idx)) else {
+        return;
+    };
+    if captured.is_empty() {
+        return;
+    }
+
+    app.interactive_agents[idx].record_prompt(&captured);
+}
+
+fn handle_terminal_input(
+    app: &mut App,
+    idx: usize,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<bool> {
+    if code == KeyCode::Char('w') && modifiers.contains(KeyModifiers::CONTROL) {
+        toggle_terminal_warp_mode(app, idx);
+        return Ok(true);
+    }
+
+    if app.terminal_agents[idx].warp_mode {
+        return handle_terminal_warp_input(app, idx, code, modifiers);
+    }
+
+    track_terminal_input(app, idx, code, modifiers);
+    Ok(false)
+}
+
+fn toggle_terminal_warp_mode(app: &mut App, idx: usize) {
+    app.terminal_agents[idx].warp_mode = !app.terminal_agents[idx].warp_mode;
+    app.terminal_agents[idx].warp_passthrough = false;
+}
+
+fn handle_terminal_warp_input(
+    app: &mut App,
+    idx: usize,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> Result<bool> {
+    if app.terminal_agents[idx].should_bypass_warp_input() {
+        handle_terminal_direct_pty_key(app, idx, code, modifiers)?;
+        return Ok(true);
+    }
+
+    handle_terminal_warp_key(app, idx, code, modifiers)?;
+    Ok(true)
+}
+
+fn track_terminal_input(app: &mut App, idx: usize, code: KeyCode, modifiers: KeyModifiers) {
+    let target = FocusedAgent::Terminal(idx);
+    if code == KeyCode::Enter {
+        let captured = trimmed_input_buffer(app, target).unwrap_or_default();
+        record_terminal_command(app, idx, &captured);
+        clear_input_buffer(app, target);
+        return;
+    }
+    if code == KeyCode::Tab {
+        return;
+    }
+
+    track_plain_input(app, target, code, modifiers);
+}
+
+fn track_plain_input(app: &mut App, target: FocusedAgent, code: KeyCode, modifiers: KeyModifiers) {
+    let KeyCode::Char(ch) = code else {
+        if code == KeyCode::Backspace {
+            pop_input_buffer(app, target);
+        }
+        return;
+    };
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        return;
+    }
+
+    let _ = with_input_buffer_mut(app, target, |input| input.push(ch));
+}
+
+fn trimmed_input_buffer(app: &App, target: FocusedAgent) -> Option<String> {
+    let agent = focused_agent(app, target)?;
+    let Ok(input) = agent.input_buffer.lock() else {
+        return None;
+    };
+
+    Some(input.trim().to_string())
+}
+
+fn with_input_buffer_mut<R>(
+    app: &mut App,
+    target: FocusedAgent,
+    f: impl FnOnce(&mut String) -> R,
+) -> Option<R> {
+    let agent = focused_agent_mut(app, target)?;
+    let Ok(mut input) = agent.input_buffer.lock() else {
+        return None;
+    };
+
+    Some(f(&mut input))
+}
+
+fn clear_input_buffer(app: &mut App, target: FocusedAgent) {
+    let _ = with_input_buffer_mut(app, target, String::clear);
+}
+
+fn pop_input_buffer(app: &mut App, target: FocusedAgent) {
+    let _ = with_input_buffer_mut(app, target, |input| {
+        input.pop();
+    });
+}
+
+fn forward_key_to_focused_agent(
+    app: &mut App,
+    target: FocusedAgent,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) {
     let bytes = key_to_bytes(code, modifiers);
-    if !bytes.is_empty() {
-        let _ = agent_mut!().write_to_pty(&bytes);
+    if bytes.is_empty() {
+        return;
     }
 
-    Ok(())
+    let Some(agent) = focused_agent_mut(app, target) else {
+        return;
+    };
+    let _ = agent.write_to_pty(&bytes);
 }

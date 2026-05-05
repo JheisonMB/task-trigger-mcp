@@ -19,9 +19,14 @@ use inquire::Select;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+const LIST_ACTION: &str = "List — show installed skills";
+const VALIDATE_ACTION: &str = "Validate — check symlink integrity";
+const REMOVE_ACTION: &str = "Remove — uninstall a skill";
+const SKILL_ACTIONS: [&str; 3] = [LIST_ACTION, VALIDATE_ACTION, REMOVE_ACTION];
+
 /// Well-known skills master directory path.
 pub fn global_skills_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agents").join("skills"))
+    dirs::home_dir().map(|h| global_skills_dir_for(&h))
 }
 
 /// Ensure the global skills directory exists.
@@ -41,7 +46,7 @@ pub fn create_platform_symlinks(
     home: &Path,
     platforms: &[&crate::setup_module::Platform],
 ) -> Result<Vec<String>> {
-    let global = home.join(".agents").join("skills");
+    let global = global_skills_dir_for(home);
     if !global.exists() {
         return Ok(Vec::new());
     }
@@ -49,44 +54,57 @@ pub fn create_platform_symlinks(
     let skill_entries = list_skill_dirs(&global);
     let mut created = Vec::new();
 
-    for platform in platforms {
-        let Some(ref skills_rel) = platform.skills_dir else {
-            continue;
-        };
-        let platform_skills = home.join(skills_rel);
-        if let Err(e) = std::fs::create_dir_all(&platform_skills) {
-            tracing::warn!("Could not create skills dir for {}: {}", platform.name, e);
-            continue;
-        }
-
-        for skill_name in &skill_entries {
-            let link = platform_skills.join(skill_name);
-            let target = global.join(skill_name);
-
-            // Skip if symlink/dir already exists and points to the right place
-            if link.exists() || link.is_symlink() {
-                continue;
-            }
-
-            #[cfg(unix)]
-            {
-                if let Err(e) = std::os::unix::fs::symlink(&target, &link) {
-                    tracing::warn!("Symlink {}: {}", link.display(), e);
-                } else {
-                    created.push(format!("{}/{}", platform.name, skill_name));
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                // On Windows, copy the directory instead of symlinking
-                if copy_dir_recursive(&target, &link).is_ok() {
-                    created.push(format!("{}/{}", platform.name, skill_name));
-                }
-            }
-        }
+    for (platform, platform_skills) in platform_skill_dirs(home, platforms) {
+        create_platform_symlinks_for_platform(
+            platform,
+            &platform_skills,
+            &global,
+            &skill_entries,
+            &mut created,
+        );
     }
 
     Ok(created)
+}
+
+fn create_platform_symlinks_for_platform(
+    platform: &crate::setup_module::Platform,
+    platform_skills: &Path,
+    global: &Path,
+    skill_entries: &[String],
+    created: &mut Vec<String>,
+) {
+    if !ensure_platform_skills_dir(platform, platform_skills) {
+        return;
+    }
+
+    for skill_name in skill_entries {
+        if let Some(created_link) =
+            create_platform_skill_link(&platform.name, platform_skills, global, skill_name)
+        {
+            created.push(created_link);
+        }
+    }
+}
+
+fn create_platform_skill_link(
+    platform_name: &str,
+    platform_skills: &Path,
+    global: &Path,
+    skill_name: &str,
+) -> Option<String> {
+    let link = platform_skills.join(skill_name);
+    if link.exists() || link.is_symlink() {
+        return None;
+    }
+
+    let target = global.join(skill_name);
+    if let Err(error) = install_skill_link(&target, &link) {
+        tracing::warn!("Symlink {}: {}", link.display(), error);
+        return None;
+    }
+
+    Some(format!("{platform_name}/{skill_name}"))
 }
 
 /// Validate symlink integrity: return broken symlink paths.
@@ -96,28 +114,25 @@ pub fn find_broken_symlinks(
     home: &Path,
     platforms: &[&crate::setup_module::Platform],
 ) -> Vec<PathBuf> {
-    let mut broken = Vec::new();
+    platform_skill_dirs(home, platforms)
+        .flat_map(|(_, platform_skills)| broken_symlinks_in_dir(&platform_skills))
+        .collect()
+}
 
-    for platform in platforms {
-        let Some(ref skills_rel) = platform.skills_dir else {
-            continue;
-        };
-        let platform_skills = home.join(skills_rel);
-        if !platform_skills.exists() {
-            continue;
-        }
-
-        if let Ok(rd) = std::fs::read_dir(&platform_skills) {
-            for entry in rd.flatten() {
-                let path = entry.path();
-                if path.is_symlink() && !path.exists() {
-                    broken.push(path);
-                }
-            }
-        }
+fn broken_symlinks_in_dir(dir: &Path) -> Vec<PathBuf> {
+    if !dir.exists() {
+        return Vec::new();
     }
 
-    broken
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_symlink() && !path.exists())
+        .collect()
 }
 
 /// List immediate subdirectory names inside `dir` that look like skill folders
@@ -129,10 +144,7 @@ pub fn list_skill_dirs(dir: &Path) -> Vec<String> {
     let mut names: Vec<String> = rd
         .flatten()
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-        .filter(|e| {
-            let p = e.path();
-            p.join("SKILL.md").exists() || p.join("INSTRUCTIONS.md").exists()
-        })
+        .filter(|e| contains_skill_instructions(&e.path()))
         .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
         .collect();
     names.sort();
@@ -142,15 +154,10 @@ pub fn list_skill_dirs(dir: &Path) -> Vec<String> {
 /// Locate the instructions file for a skill directory.
 /// Returns `Some(path)` for `SKILL.md`, then `INSTRUCTIONS.md`, otherwise `None`.
 pub fn find_skill_instructions(skill_dir: &Path) -> Option<PathBuf> {
-    let skill_md = skill_dir.join("SKILL.md");
-    if skill_md.exists() {
-        return Some(skill_md);
-    }
-    let instructions_md = skill_dir.join("INSTRUCTIONS.md");
-    if instructions_md.exists() {
-        return Some(instructions_md);
-    }
-    None
+    ["SKILL.md", "INSTRUCTIONS.md"]
+        .into_iter()
+        .map(|name| skill_dir.join(name))
+        .find(|path| path.exists())
 }
 
 // ── Essential Pack download ────────────────────────────────────────────────
@@ -165,34 +172,58 @@ const ESSENTIAL_PACK_API: &str = "https://api.github.com/repos/UniverLab/skills/
 /// `INSTRUCTIONS.md` is downloaded to `~/.agents/skills/<skill_name>/`.
 pub fn download_essential_pack() -> Result<usize> {
     let global = ensure_global_skills_dir()?;
+    let client = build_github_client()?;
+    let Some(entries) = fetch_essential_pack_entries(&client)? else {
+        return Ok(0);
+    };
 
-    let client = reqwest::blocking::Client::builder()
+    download_missing_skill_dirs(&client, &global, &entries)
+}
+
+fn build_github_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
         .user_agent("canopy")
-        .build()?;
+        .build()
+        .map_err(Into::into)
+}
 
-    let resp = client
+fn fetch_essential_pack_entries(
+    client: &reqwest::blocking::Client,
+) -> Result<Option<Vec<GhEntry>>> {
+    let response = client
         .get(ESSENTIAL_PACK_API)
         .send()
         .context("Failed to connect to GitHub API")?;
 
-    if !resp.status().is_success() {
+    if !response.status().is_success() {
         tracing::warn!(
             "GitHub API returned {} for {}; skipping essential skills download.",
-            resp.status(),
+            response.status(),
             ESSENTIAL_PACK_REPO
         );
-        return Ok(0);
+        return Ok(None);
     }
 
-    let entries: Vec<GhEntry> = resp.json().context("Failed to parse GitHub API response")?;
+    let entries = response
+        .json()
+        .context("Failed to parse GitHub API response")?;
+    Ok(Some(entries))
+}
 
+fn download_missing_skill_dirs(
+    client: &reqwest::blocking::Client,
+    global: &Path,
+    entries: &[GhEntry],
+) -> Result<usize> {
     let mut downloaded = 0usize;
-    for entry in entries.iter().filter(|e| e.entry_type == "dir") {
+
+    for entry in entries.iter().filter(|entry| entry.entry_type == "dir") {
         let skill_dir = global.join(&entry.name);
         if skill_dir.exists() {
             continue;
         }
-        if download_skill_dir(&client, &entry.name, &skill_dir)? {
+
+        if download_skill_dir(client, &entry.name, &skill_dir)? {
             downloaded += 1;
         }
     }
@@ -204,44 +235,66 @@ pub fn download_essential_pack() -> Result<usize> {
 fn download_skill_dir(
     client: &reqwest::blocking::Client,
     skill_name: &str,
-    skill_dir: &std::path::Path,
+    skill_dir: &Path,
 ) -> Result<bool> {
-    let dir_url = format!("{}/{}", ESSENTIAL_PACK_API, skill_name);
-    let dir_resp = match client.get(&dir_url).send() {
-        Ok(r) if r.status().is_success() => r,
-        _ => return Ok(false),
+    let Some(dir_entries) = fetch_skill_dir_entries(client, skill_name)? else {
+        return Ok(false);
     };
-    let dir_entries: Vec<GhEntry> = match dir_resp.json() {
-        Ok(e) => e,
-        Err(_) => return Ok(false),
-    };
-
-    let has_instructions = dir_entries
-        .iter()
-        .any(|e| e.name == "SKILL.md" || e.name == "INSTRUCTIONS.md");
-    if !has_instructions {
+    if !has_skill_instructions_entry(&dir_entries) {
         return Ok(false);
     }
 
     std::fs::create_dir_all(skill_dir)?;
+    write_skill_files(client, skill_dir, &dir_entries);
+    Ok(true)
+}
 
-    for file in dir_entries.iter().filter(|e| e.entry_type == "file") {
-        let Some(ref raw_url) = file.download_url else {
-            continue;
-        };
-        let Ok(file_resp) = client.get(raw_url).send() else {
-            continue;
-        };
-        if !file_resp.status().is_success() {
-            continue;
-        }
-        let Ok(content) = file_resp.bytes() else {
-            continue;
-        };
-        let _ = std::fs::write(skill_dir.join(&file.name), &content);
+fn fetch_skill_dir_entries(
+    client: &reqwest::blocking::Client,
+    skill_name: &str,
+) -> Result<Option<Vec<GhEntry>>> {
+    let dir_url = format!("{ESSENTIAL_PACK_API}/{skill_name}");
+    let Ok(response) = client.get(&dir_url).send() else {
+        return Ok(None);
+    };
+    if !response.status().is_success() {
+        return Ok(None);
     }
 
-    Ok(true)
+    let Ok(entries) = response.json() else {
+        return Ok(None);
+    };
+    Ok(Some(entries))
+}
+
+fn has_skill_instructions_entry(entries: &[GhEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| matches!(entry.name.as_str(), "SKILL.md" | "INSTRUCTIONS.md"))
+}
+
+fn write_skill_files(client: &reqwest::blocking::Client, skill_dir: &Path, entries: &[GhEntry]) {
+    for file in entries.iter().filter(|entry| entry.entry_type == "file") {
+        write_skill_file(client, skill_dir, file);
+    }
+}
+
+fn write_skill_file(client: &reqwest::blocking::Client, skill_dir: &Path, file: &GhEntry) {
+    let Some(raw_url) = file.download_url.as_deref() else {
+        return;
+    };
+
+    let Ok(response) = client.get(raw_url).send() else {
+        return;
+    };
+    if !response.status().is_success() {
+        return;
+    }
+
+    let Ok(content) = response.bytes() else {
+        return;
+    };
+    let _ = std::fs::write(skill_dir.join(&file.name), &content);
 }
 
 #[derive(serde::Deserialize)]
@@ -258,28 +311,36 @@ struct GhEntry {
 /// Intended for the future `canopy skills` subcommand.
 #[allow(dead_code)]
 pub fn run_skills_wizard(home: &Path, platforms: &[&crate::setup_module::Platform]) -> Result<()> {
+    print_skills_wizard_header();
+
+    let global = global_skills_dir_for(home);
+    let action = prompt_skills_action()?;
+    handle_skills_action(action, home, &global, platforms)
+}
+
+fn print_skills_wizard_header() {
     println!();
     println!("  \x1b[1mSkills Manager\x1b[0m");
     println!("  ─────────────────────────────────────────────");
+}
 
-    let global = home.join(".agents").join("skills");
+fn prompt_skills_action() -> Result<&'static str> {
+    Select::new("What would you like to do?", SKILL_ACTIONS.to_vec())
+        .with_help_message("↑↓ navigate | Enter select | Esc cancel")
+        .prompt()
+        .map_err(|error| anyhow::anyhow!("Cancelled: {}", error))
+}
 
-    let action = Select::new(
-        "What would you like to do?",
-        vec![
-            "List — show installed skills",
-            "Validate — check symlink integrity",
-            "Remove — uninstall a skill",
-        ],
-    )
-    .with_help_message("↑↓ navigate | Enter select | Esc cancel")
-    .prompt()
-    .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
-
+fn handle_skills_action(
+    action: &str,
+    home: &Path,
+    global: &Path,
+    platforms: &[&crate::setup_module::Platform],
+) -> Result<()> {
     match action {
-        a if a.starts_with("List") => list_skills(&global),
-        a if a.starts_with("Validate") => validate_skills(home, platforms),
-        a if a.starts_with("Remove") => remove_skill(home, &global, platforms),
+        LIST_ACTION => list_skills(global),
+        VALIDATE_ACTION => validate_skills(home, platforms),
+        REMOVE_ACTION => remove_skill(home, global, platforms),
         _ => Ok(()),
     }
 }
@@ -295,8 +356,8 @@ fn list_skills(global: &Path) -> Result<()> {
         println!("  Run \x1b[1mcanopy setup\x1b[0m to download the Essential Pack.");
     } else {
         println!("  Installed skills ({}):", skills.len());
-        for s in &skills {
-            println!("    \x1b[32m•\x1b[0m {s}");
+        for skill in &skills {
+            println!("    \x1b[32m•\x1b[0m {skill}");
         }
     }
     Ok(())
@@ -307,26 +368,27 @@ fn validate_skills(home: &Path, platforms: &[&crate::setup_module::Platform]) ->
     let broken = find_broken_symlinks(home, platforms);
     if broken.is_empty() {
         println!("  \x1b[32m✓\x1b[0m All skill symlinks are healthy.");
-    } else {
-        println!("  \x1b[31m✗\x1b[0m Broken symlinks ({}):", broken.len());
-        for p in &broken {
-            println!("    \x1b[31m✗\x1b[0m {}", p.display());
-        }
-        print!("  Remove broken symlinks? [Y/n] ");
-        io::stdout().flush()?;
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        if input.trim().to_lowercase() != "n" {
-            for p in &broken {
-                let _ = std::fs::remove_file(p);
-            }
-            println!(
-                "  \x1b[32m✓\x1b[0m Removed {} broken symlink(s).",
-                broken.len()
-            );
-        }
+        return Ok(());
     }
+
+    print_broken_symlinks(&broken);
+    if !prompt_yes_no("  Remove broken symlinks? [Y/n] ")? {
+        return Ok(());
+    }
+
+    remove_paths(&broken);
+    println!(
+        "  \x1b[32m✓\x1b[0m Removed {} broken symlink(s).",
+        broken.len()
+    );
     Ok(())
+}
+
+fn print_broken_symlinks(broken: &[PathBuf]) {
+    println!("  \x1b[31m✗\x1b[0m Broken symlinks ({}):", broken.len());
+    for path in broken {
+        println!("    \x1b[31m✗\x1b[0m {}", path.display());
+    }
 }
 
 #[allow(dead_code)]
@@ -335,50 +397,122 @@ fn remove_skill(
     global: &Path,
     platforms: &[&crate::setup_module::Platform],
 ) -> Result<()> {
-    let skills = list_skill_dirs(global);
-    if skills.is_empty() {
-        println!("  \x1b[33m⚠\x1b[0m  No skills to remove.");
+    let Some(selected) = prompt_skill_selection(global)? else {
         return Ok(());
-    }
-
-    let selected = Select::new("Select skill to remove:", skills)
-        .with_help_message("This removes the master copy and all platform symlinks")
-        .prompt()
-        .map_err(|e| anyhow::anyhow!("Cancelled: {}", e))?;
-
-    print!("  Remove \x1b[1m{selected}\x1b[0m and all its platform symlinks? [Y/n] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim().to_lowercase() == "n" {
+    };
+    if !prompt_yes_no(&format!(
+        "  Remove \x1b[1m{selected}\x1b[0m and all its platform symlinks? [Y/n] "
+    ))? {
         println!("  Cancelled.");
         return Ok(());
     }
 
-    // Remove master
-    let master = global.join(&selected);
-    let _ = std::fs::remove_dir_all(&master);
-
-    // Remove platform symlinks
-    for platform in platforms {
-        let Some(ref skills_rel) = platform.skills_dir else {
-            continue;
-        };
-        let link = home.join(skills_rel).join(&selected);
-        if link.exists() || link.is_symlink() {
-            let _ = if link.is_symlink() || link.is_file() {
-                std::fs::remove_file(&link)
-            } else {
-                std::fs::remove_dir_all(&link)
-            };
-        }
-    }
-
+    remove_skill_installation(home, global, platforms, &selected);
     println!("  \x1b[32m✓\x1b[0m '{selected}' removed.");
     Ok(())
 }
 
+fn prompt_skill_selection(global: &Path) -> Result<Option<String>> {
+    let skills = list_skill_dirs(global);
+    if skills.is_empty() {
+        println!("  \x1b[33m⚠\x1b[0m  No skills to remove.");
+        return Ok(None);
+    }
+
+    Select::new("Select skill to remove:", skills)
+        .with_help_message("This removes the master copy and all platform symlinks")
+        .prompt()
+        .map(Some)
+        .map_err(|error| anyhow::anyhow!("Cancelled: {}", error))
+}
+
+fn remove_skill_installation(
+    home: &Path,
+    global: &Path,
+    platforms: &[&crate::setup_module::Platform],
+    selected: &str,
+) {
+    let _ = std::fs::remove_dir_all(global.join(selected));
+
+    for (_, platform_skills) in platform_skill_dirs(home, platforms) {
+        remove_skill_path(&platform_skills.join(selected));
+    }
+}
+
+fn remove_skill_path(path: &Path) {
+    if !(path.exists() || path.is_symlink()) {
+        return;
+    }
+
+    let _ = if path.is_symlink() || path.is_file() {
+        std::fs::remove_file(path)
+    } else {
+        std::fs::remove_dir_all(path)
+    };
+}
+
+fn prompt_yes_no(prompt: &str) -> Result<bool> {
+    print!("{prompt}");
+    io::stdout().flush()?;
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(!matches!(input.trim(), "n" | "N"))
+}
+
 // ── Utilities ──────────────────────────────────────────────────────────────
+
+fn global_skills_dir_for(home: &Path) -> PathBuf {
+    home.join(".agents").join("skills")
+}
+
+fn contains_skill_instructions(dir: &Path) -> bool {
+    find_skill_instructions(dir).is_some()
+}
+
+fn platform_skill_dirs<'a>(
+    home: &'a Path,
+    platforms: &'a [&'a crate::setup_module::Platform],
+) -> impl Iterator<Item = (&'a crate::setup_module::Platform, PathBuf)> + 'a {
+    platforms.iter().copied().filter_map(move |platform| {
+        platform_skill_dir(home, platform).map(|skills_dir| (platform, skills_dir))
+    })
+}
+
+fn platform_skill_dir(home: &Path, platform: &crate::setup_module::Platform) -> Option<PathBuf> {
+    let skills_dir = platform.skills_dir.as_deref()?;
+    Some(home.join(skills_dir))
+}
+
+fn ensure_platform_skills_dir(platform: &crate::setup_module::Platform, path: &Path) -> bool {
+    if let Err(error) = std::fs::create_dir_all(path) {
+        tracing::warn!(
+            "Could not create skills dir for {}: {}",
+            platform.name,
+            error
+        );
+        return false;
+    }
+
+    true
+}
+
+#[cfg(unix)]
+fn install_skill_link(target: &Path, link: &Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn install_skill_link(target: &Path, link: &Path) -> Result<()> {
+    copy_dir_recursive(target, link)
+}
+
+fn remove_paths(paths: &[PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+}
 
 /// Recursively copy a directory (used on non-Unix systems as symlink fallback).
 #[cfg(not(unix))]
