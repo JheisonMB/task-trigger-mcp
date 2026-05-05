@@ -332,7 +332,7 @@ fn test_rag_info_summary_counts_chunks_and_queue_states() {
         "/tmp/project/src/lib.rs",
         &[crate::db::project::Chunk {
             id: "chunk-1".to_string(),
-            project_hash: Some(project.hash.clone()),
+            project_hash: Some(project.hash),
             source_path: "/tmp/project/src/lib.rs".to_string(),
             chunk_index: 0,
             content: "needle".to_string(),

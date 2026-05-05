@@ -15,423 +15,497 @@ use ratatui::style::Color;
 pub(super) fn draw_sidebar(frame: &mut Frame, area: Rect, app: &mut App) {
     app.sidebar_click_map.clear();
 
-    let bg_indices: Vec<usize> = app
-        .agents
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| {
-            !matches!(
-                a,
-                AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_)
-            )
-        })
-        .map(|(i, _)| i)
-        .collect();
-    let ix_indices: Vec<usize> = app
-        .agents
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a, AgentEntry::Interactive(_)))
-        .map(|(i, _)| i)
-        .collect();
-    let term_indices: Vec<usize> = app
-        .agents
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a, AgentEntry::Terminal(_)))
-        .map(|(i, _)| i)
-        .collect();
+    let (background_indices, interactive_indices, terminal_indices) = agent_indices_by_kind(app);
+    let areas = split_sidebar_content(area, app);
 
-    let has_bg = !bg_indices.is_empty();
-    let has_ix = !ix_indices.is_empty();
-    let has_term = !term_indices.is_empty();
-    let has_groups = !app.split_groups.is_empty();
-    let has_projects = !app.projects.is_empty();
+    if app.sidebar_mode == SidebarMode::Projects {
+        draw_projects_sidebar(frame, areas, app);
+        return;
+    }
 
-    // Responsive dashboard height based on how many lines the dashboard will render.
-    // Base lines: cpu + mem + disk + load/procs = 4. +1 for gpu if it has data, +1 for swap if used.
-    let mut dashboard_content_lines = 4u16;
+    let has_agents = !background_indices.is_empty()
+        || !interactive_indices.is_empty()
+        || !terminal_indices.is_empty()
+        || !app.split_groups.is_empty();
+    if !has_agents {
+        draw_empty_agents_sidebar(frame, areas, app);
+        return;
+    }
+
+    draw_agents_sidebar(
+        frame,
+        areas,
+        &background_indices,
+        &interactive_indices,
+        &terminal_indices,
+        app,
+    );
+}
+
+#[derive(Clone, Copy)]
+struct SidebarContentAreas {
+    content: Rect,
+    dashboard: Option<Rect>,
+}
+
+#[derive(Default)]
+struct ProjectsLayout {
+    projects: Option<Rect>,
+    rag_queue: Option<Rect>,
+    brain: Option<Rect>,
+}
+
+#[derive(Default)]
+struct AgentLayout {
+    background: Option<Rect>,
+    interactive: Option<Rect>,
+    terminal: Option<Rect>,
+    groups: Option<Rect>,
+    brain: Option<Rect>,
+    rag_info: Option<Rect>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct AgentSectionHeights {
+    background: Option<u16>,
+    interactive: Option<u16>,
+    terminal: Option<u16>,
+    groups: Option<u16>,
+}
+
+impl AgentSectionHeights {
+    fn total(self) -> u16 {
+        self.background.unwrap_or(0)
+            + self.interactive.unwrap_or(0)
+            + self.terminal.unwrap_or(0)
+            + self.groups.unwrap_or(0)
+    }
+
+    fn count(self) -> u16 {
+        self.background.is_some() as u16
+            + self.interactive.is_some() as u16
+            + self.terminal.is_some() as u16
+            + self.groups.is_some() as u16
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ScrollState {
+    start: usize,
+    max_visible: usize,
+    has_up: bool,
+    has_down: bool,
+}
+
+#[derive(Clone, Copy)]
+struct AgentCardMeta<'a> {
+    accent: Color,
+    status_color: Color,
+    agent_type: &'static str,
+    type_detail: &'a str,
+    work_dir: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+struct GroupRowStyle {
+    bg: Color,
+    fg: Color,
+    modifier: Modifier,
+    prefix_color: Color,
+    active_tag: &'static str,
+}
+
+fn agent_indices_by_kind(app: &App) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+    app.agents.iter().enumerate().fold(
+        (Vec::new(), Vec::new(), Vec::new()),
+        |mut indices, (index, agent)| {
+            match agent {
+                AgentEntry::Interactive(_) => indices.1.push(index),
+                AgentEntry::Terminal(_) => indices.2.push(index),
+                AgentEntry::Group(_) => {}
+                _ => indices.0.push(index),
+            }
+            indices
+        },
+    )
+}
+
+fn dashboard_height(app: &App) -> u16 {
+    let mut content_lines = 4u16;
     let gpu_will_show = app.system_info.gpu_info.as_ref().is_some_and(|gpu| {
         let has_vram =
             matches!((gpu.vram_used, gpu.vram_total), (Some(_), Some(total)) if total > 0);
         gpu.usage.is_some() || gpu.temperature.is_some() || has_vram
     });
     if gpu_will_show {
-        dashboard_content_lines += 1;
+        content_lines += 1;
     }
     if app.system_info.swap_used > 0 {
-        dashboard_content_lines += 1;
+        content_lines += 1;
     }
-    let dashboard_height = dashboard_content_lines + 2; // +2 for borders
-    let dashboard_area = if area.height >= dashboard_height {
-        Some(Rect::new(
-            area.x,
-            area.y + area.height - dashboard_height,
-            area.width,
-            dashboard_height,
-        ))
-    } else {
-        None
-    };
+    content_lines + 2
+}
 
-    let content_area = if let Some(dashboard) = dashboard_area {
+fn split_sidebar_content(area: Rect, app: &App) -> SidebarContentAreas {
+    let height = dashboard_height(app);
+    let dashboard = (area.height >= height).then_some(Rect::new(
+        area.x,
+        area.y + area.height - height,
+        area.width,
+        height,
+    ));
+    let content = dashboard.map_or(area, |dashboard| {
         Rect::new(
             area.x,
             area.y,
             area.width,
             area.height.saturating_sub(dashboard.height),
         )
-    } else {
-        area
+    });
+    SidebarContentAreas { content, dashboard }
+}
+
+fn section_block<'a>(title: &'a str, title_style: Style, border_style: Style) -> Block<'a> {
+    Block::default()
+        .title_bottom(
+            Line::from(Span::styled(title, title_style))
+                .alignment(ratatui::layout::Alignment::Right),
+        )
+        .borders(Borders::ALL)
+        .border_style(border_style)
+}
+
+fn render_titled_panel(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    title_style: Style,
+    border_style: Style,
+    render_inner: impl FnOnce(&mut Frame, Rect),
+) {
+    let block = section_block(title, title_style, border_style);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    render_inner(frame, inner);
+}
+
+fn take_top(area: &mut Rect, height: u16) -> Option<Rect> {
+    if area.height == 0 || height == 0 {
+        return None;
+    }
+
+    let [top, rest] = Layout::vertical([
+        Constraint::Length(height.min(area.height)),
+        Constraint::Min(0),
+    ])
+    .areas(*area);
+    *area = rest;
+    Some(top)
+}
+
+fn scroll_state(total_items: usize, selected: Option<usize>, max_visible: usize) -> ScrollState {
+    let start = selected.map_or(0, |selected| {
+        if selected >= max_visible {
+            selected.saturating_sub(max_visible - 1)
+        } else {
+            0
+        }
+    });
+
+    ScrollState {
+        start,
+        max_visible,
+        has_up: start > 0,
+        has_down: total_items.saturating_sub(start) > max_visible,
+    }
+}
+
+fn render_brain_if_visible(frame: &mut Frame, area: Option<Rect>, app: &App) {
+    let Some(area) = area.filter(|area| area.height >= 3 && area.width >= 6) else {
+        return;
     };
-
-    if app.sidebar_mode == SidebarMode::Projects {
-        let rag_items = &app.global_rag_queue;
-        let show_rag_info = app.rag_info.has_rag_activity();
-        let rag_info_height = if show_rag_info && content_area.height >= 6 {
-            6
-        } else {
-            0
-        };
-        let (content_top, rag_info_area) = if rag_info_height > 0 {
-            let [top, bottom] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(rag_info_height)])
-                    .areas(content_area);
-            (top, Some(bottom))
-        } else {
-            (content_area, None)
-        };
-
-        let projects_needed = if has_projects {
-            (app.projects.len() as u16 * 3 + 2).min(content_top.height)
-        } else {
-            0
-        };
-        let show_queue_box = app.playground_active && !rag_items.is_empty();
-        let rag_needed = if show_queue_box {
-            (rag_items.len() as u16 * 2 + 3).min(14)
-        } else {
-            0
-        };
-
-        let (projects_area, rag_area, brain_area) = match (has_projects, rag_needed > 0) {
-            (true, true) if projects_needed + rag_needed < content_top.height => {
-                let [top, mid, rest] = Layout::vertical([
-                    Constraint::Length(projects_needed),
-                    Constraint::Length(rag_needed),
-                    Constraint::Min(0),
-                ])
-                .areas(content_top);
-                (Some(top), Some(mid), Some(rest))
-            }
-            (true, _) if projects_needed < content_top.height => {
-                let [top, rest] =
-                    Layout::vertical([Constraint::Length(projects_needed), Constraint::Min(0)])
-                        .areas(content_top);
-                let rag_area = if rag_needed > 0 && rest.height >= 3 {
-                    Some(rest)
-                } else {
-                    None
-                };
-                (Some(top), rag_area, None)
-            }
-            (true, _) => (Some(content_top), None, None),
-            (false, true) => (None, Some(content_top), None),
-            (false, false) => (None, None, Some(content_top)),
-        };
-
-        if let Some(projects_area) = projects_area {
-            let block = Block::default()
-                .title_bottom(
-                    Line::from(Span::styled(" projects ", Style::default().fg(DIM)))
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .borders(Borders::ALL)
-                .border_style(projects_panel_border_style(
-                    app,
-                    ProjectsPanelFocus::Projects,
-                ));
-            let inner = block.inner(projects_area);
-            frame.render_widget(block, projects_area);
-            draw_projects_list(frame, inner, app);
-        }
-
-        if let Some(rag_area) = rag_area.filter(|a| a.height >= 3) {
-            let queue_title = if app.rag_paused {
-                " ragQueue ⏸ "
-            } else {
-                " ragQueue "
-            };
-            let block = Block::default()
-                .title_bottom(
-                    Line::from(Span::styled(queue_title, Style::default().fg(DIM)))
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(DIM));
-            let inner = block.inner(rag_area);
-            frame.render_widget(block, rag_area);
-            draw_rag_queue(frame, inner, rag_items, app.selected_rag_queue);
-        }
-
-        if let Some(brain_area) = brain_area.filter(|area| area.height >= 3 && area.width >= 6) {
-            if let Some(brain) = app.sidebar_brain.as_ref() {
-                crate::tui::ui::panel::draw_brians_brain(frame, brain_area, brain);
-            }
-        }
-
-        if let Some(rag_info_area) = rag_info_area.filter(|area| area.height >= 3) {
-            let block = Block::default()
-                .title_bottom(
-                    Line::from(Span::styled(" ragInfo ", Style::default().fg(DIM)))
-                        .alignment(ratatui::layout::Alignment::Right),
-                )
-                .borders(Borders::ALL)
-                .border_style(projects_panel_border_style(
-                    app,
-                    ProjectsPanelFocus::RagInfo,
-                ));
-            let inner = block.inner(rag_info_area);
-            frame.render_widget(block, rag_info_area);
-            draw_rag_info(frame, inner, app);
-        }
-
-        if let Some(dashboard_area) = dashboard_area {
-            crate::tui::ui::system_dashboard::render_system_dashboard(
-                frame,
-                dashboard_area,
-                &app.system_info,
-                app.temperature_unit,
-            );
-        }
+    let Some(brain) = app.sidebar_brain.as_ref() else {
         return;
-    }
+    };
+    crate::tui::ui::panel::draw_brians_brain(frame, area, brain);
+}
 
-    if !has_bg && !has_ix && !has_term && !has_groups {
-        // In agents mode with no agents, still show RagInfo if chunks exist.
-        let show_rag = app.rag_info.has_rag_activity();
-        let rag_h = 6u16;
-        let remaining = area
-            .height
-            .saturating_sub(dashboard_area.map(|d| d.height).unwrap_or(0));
-        let (brain_area_rect, rag_info_area_empty) = if show_rag && remaining >= rag_h + 3 {
-            let base = Rect::new(area.x, area.y, area.width, remaining);
-            let [top, bottom] =
-                Layout::vertical([Constraint::Min(0), Constraint::Length(rag_h)]).areas(base);
-            (top, Some(bottom))
-        } else {
-            let r = Rect::new(area.x, area.y, area.width, remaining);
-            (r, None)
-        };
-        if brain_area_rect.height >= 3 && brain_area_rect.width >= 6 {
-            if let Some(brain) = app.sidebar_brain.as_ref() {
-                crate::tui::ui::panel::draw_brians_brain(frame, brain_area_rect, brain);
-            }
-        }
-        if let Some(ri_area) = rag_info_area_empty {
-            draw_agents_rag_info_panel(frame, ri_area, app);
-        }
-        if let Some(dashboard_area) = dashboard_area {
-            crate::tui::ui::system_dashboard::render_system_dashboard(
-                frame,
-                dashboard_area,
-                &app.system_info,
-                app.temperature_unit,
-            );
-        }
+fn render_dashboard_if_present(frame: &mut Frame, area: Option<Rect>, app: &App) {
+    let Some(area) = area else {
         return;
-    }
+    };
+    crate::tui::ui::system_dashboard::render_system_dashboard(
+        frame,
+        area,
+        &app.system_info,
+        app.temperature_unit,
+    );
+}
 
-    // Carve out a RagInfo slot at the bottom of the agents content area when
-    // there are indexed chunks — before computing section sizes.
-    let rag_info_h_agents = 6u16;
-    let show_agents_rag_info =
-        app.rag_info.has_rag_activity() && content_area.height >= rag_info_h_agents + 4;
-    let (agents_content, agents_rag_info_area) = if show_agents_rag_info {
+fn draw_projects_sidebar(frame: &mut Frame, areas: SidebarContentAreas, app: &App) {
+    let rag_items = &app.global_rag_queue;
+    let show_rag_info = app.rag_info.has_rag_activity() && areas.content.height >= 6;
+    let (content_top, rag_info_area) = if show_rag_info {
         let [top, bottom] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(rag_info_h_agents)])
-                .areas(content_area);
+            Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).areas(areas.content);
         (top, Some(bottom))
     } else {
-        (content_area, None)
+        (areas.content, None)
     };
-    // Use agents_content instead of content_area for section layout.
-    let content_area = agents_content;
 
-    let bg_needed = if has_bg {
-        bg_indices.len() as u16 * 4 + 2
+    let has_projects = !app.projects.is_empty();
+    let projects_needed = if has_projects {
+        (app.projects.len() as u16 * 3 + 2).min(content_top.height)
     } else {
         0
     };
-    let ix_needed = if has_ix {
-        ix_indices.len() as u16 * 4 + 2
+    let rag_needed = if app.playground_active && !rag_items.is_empty() {
+        (rag_items.len() as u16 * 2 + 3).min(14)
     } else {
         0
     };
-    let term_needed = if has_term {
-        term_indices.len() as u16 * 4 + 2
-    } else {
-        0
-    };
-    let grp_needed = if has_groups {
-        app.split_groups.len() as u16 * 2 + 2
-    } else {
-        0
-    };
-    let total_needed = bg_needed + ix_needed + term_needed + grp_needed;
+    let layout = layout_projects_sections(content_top, has_projects, projects_needed, rag_needed);
 
-    let border_color = DIM;
-    let section_count = has_bg as u16 + has_ix as u16 + has_term as u16 + has_groups as u16;
-    let mut brain_area: Option<Rect> = None;
-
-    let (bg_area, ix_area, term_area, grp_area) = if total_needed <= content_area.height
-        || section_count == 1
-    {
-        let mut remaining = content_area;
-        let bg_a = if has_bg {
-            let [top, rest] = Layout::vertical([Constraint::Length(bg_needed), Constraint::Min(0)])
-                .areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let ix_a = if has_ix {
-            let [top, rest] = Layout::vertical([Constraint::Length(ix_needed), Constraint::Min(0)])
-                .areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let term_a = if has_term {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(term_needed), Constraint::Min(0)])
-                    .areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let grp_a = if has_groups && remaining.height > 0 {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(grp_needed), Constraint::Min(0)])
-                    .areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        if remaining.height > 0 {
-            brain_area = Some(remaining);
-        }
-        (bg_a, ix_a, term_a, grp_a)
-    } else {
-        // Distribute evenly
-        let per = content_area.height / section_count;
-        let mut remaining = content_area;
-        let bg_a = if has_bg {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let ix_a = if has_ix {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let term_a = if has_term {
-            let [top, rest] =
-                Layout::vertical([Constraint::Length(per), Constraint::Min(0)]).areas(remaining);
-            remaining = rest;
-            Some(top)
-        } else {
-            None
-        };
-        let grp_a = if has_groups && remaining.height > 0 {
-            Some(remaining)
-        } else {
-            None
-        };
-        (bg_a, ix_a, term_a, grp_a)
-    };
-
-    if let Some(bg_area) = bg_area {
-        let block = Block::default()
-            .title_bottom(
-                Line::from(Span::styled(" background ", Style::default().fg(DIM)))
-                    .alignment(ratatui::layout::Alignment::Right),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let inner = block.inner(bg_area);
-        frame.render_widget(block, bg_area);
-        draw_agent_list(frame, inner, &bg_indices, app, ACCENT);
-    }
-
-    if let Some(ix_area) = ix_area {
-        let block = Block::default()
-            .title_bottom(
-                Line::from(Span::styled(" interactive ", Style::default().fg(DIM)))
-                    .alignment(ratatui::layout::Alignment::Right),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let inner = block.inner(ix_area);
-        frame.render_widget(block, ix_area);
-        draw_agent_list(frame, inner, &ix_indices, app, INTERACTIVE_COLOR);
-    }
-
-    if let Some(term_area) = term_area {
-        let block = Block::default()
-            .title_bottom(
-                Line::from(Span::styled(" terminal ", Style::default().fg(DIM)))
-                    .alignment(ratatui::layout::Alignment::Right),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let inner = block.inner(term_area);
-        frame.render_widget(block, term_area);
-        draw_agent_list(frame, inner, &term_indices, app, Color::Green);
-    }
-
-    if let Some(grp_area) = grp_area {
-        let block = Block::default()
-            .title_bottom(
-                Line::from(Span::styled(" groups ", Style::default().fg(DIM)))
-                    .alignment(ratatui::layout::Alignment::Right),
-            )
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let inner = block.inner(grp_area);
-        frame.render_widget(block, grp_area);
-        draw_groups_list(frame, inner, app);
-    }
-
-    if let Some(brain_area) = brain_area.filter(|area| area.height >= 3 && area.width >= 6) {
-        if let Some(brain) = app.sidebar_brain.as_ref() {
-            crate::tui::ui::panel::draw_brians_brain(frame, brain_area, brain);
-        }
-    }
-
-    if let Some(ri_area) = agents_rag_info_area {
-        draw_agents_rag_info_panel(frame, ri_area, app);
-    }
-
-    if let Some(dashboard_area) = dashboard_area {
-        crate::tui::ui::system_dashboard::render_system_dashboard(
+    if let Some(projects_area) = layout.projects {
+        render_titled_panel(
             frame,
-            dashboard_area,
-            &app.system_info,
-            app.temperature_unit,
+            projects_area,
+            " projects ",
+            Style::default().fg(DIM),
+            projects_panel_border_style(app, ProjectsPanelFocus::Projects),
+            |frame, inner| draw_projects_list(frame, inner, app),
         );
     }
+
+    if let Some(rag_area) = layout.rag_queue.filter(|area| area.height >= 3) {
+        let queue_title = if app.rag_paused {
+            " ragQueue ⏸ "
+        } else {
+            " ragQueue "
+        };
+        render_titled_panel(
+            frame,
+            rag_area,
+            queue_title,
+            Style::default().fg(DIM),
+            Style::default().fg(DIM),
+            |frame, inner| draw_rag_queue(frame, inner, rag_items, app.selected_rag_queue),
+        );
+    }
+
+    render_brain_if_visible(frame, layout.brain, app);
+
+    if let Some(rag_info_area) = rag_info_area.filter(|area| area.height >= 3) {
+        render_titled_panel(
+            frame,
+            rag_info_area,
+            " ragInfo ",
+            Style::default().fg(DIM),
+            projects_panel_border_style(app, ProjectsPanelFocus::RagInfo),
+            |frame, inner| draw_rag_info(frame, inner, app),
+        );
+    }
+
+    render_dashboard_if_present(frame, areas.dashboard, app);
+}
+
+fn layout_projects_sections(
+    content_top: Rect,
+    has_projects: bool,
+    projects_needed: u16,
+    rag_needed: u16,
+) -> ProjectsLayout {
+    if has_projects && rag_needed > 0 && projects_needed + rag_needed < content_top.height {
+        let mut remaining = content_top;
+        let projects = take_top(&mut remaining, projects_needed);
+        let rag_queue = take_top(&mut remaining, rag_needed);
+        return ProjectsLayout {
+            projects,
+            rag_queue,
+            brain: Some(remaining),
+        };
+    }
+
+    if has_projects && projects_needed < content_top.height {
+        let mut remaining = content_top;
+        return ProjectsLayout {
+            projects: take_top(&mut remaining, projects_needed),
+            rag_queue: (rag_needed > 0 && remaining.height >= 3).then_some(remaining),
+            brain: None,
+        };
+    }
+
+    if has_projects {
+        return ProjectsLayout {
+            projects: Some(content_top),
+            ..ProjectsLayout::default()
+        };
+    }
+
+    if rag_needed > 0 {
+        return ProjectsLayout {
+            rag_queue: Some(content_top),
+            ..ProjectsLayout::default()
+        };
+    }
+
+    ProjectsLayout {
+        brain: Some(content_top),
+        ..ProjectsLayout::default()
+    }
+}
+
+fn draw_empty_agents_sidebar(frame: &mut Frame, areas: SidebarContentAreas, app: &App) {
+    let show_rag_info = app.rag_info.has_rag_activity() && areas.content.height >= 9;
+    let (brain_area, rag_info_area) = if show_rag_info {
+        let [top, bottom] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).areas(areas.content);
+        (Some(top), Some(bottom))
+    } else {
+        (Some(areas.content), None)
+    };
+
+    render_brain_if_visible(frame, brain_area, app);
+    if let Some(rag_info_area) = rag_info_area {
+        draw_agents_rag_info_panel(frame, rag_info_area, app);
+    }
+    render_dashboard_if_present(frame, areas.dashboard, app);
+}
+
+fn draw_agents_sidebar(
+    frame: &mut Frame,
+    areas: SidebarContentAreas,
+    background_indices: &[usize],
+    interactive_indices: &[usize],
+    terminal_indices: &[usize],
+    app: &mut App,
+) {
+    let show_rag_info = app.rag_info.has_rag_activity() && areas.content.height >= 10;
+    let (content_area, rag_info_area) = if show_rag_info {
+        let [top, bottom] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(6)]).areas(areas.content);
+        (top, Some(bottom))
+    } else {
+        (areas.content, None)
+    };
+
+    let heights = AgentSectionHeights {
+        background: (!background_indices.is_empty())
+            .then_some(background_indices.len() as u16 * 4 + 2),
+        interactive: (!interactive_indices.is_empty())
+            .then_some(interactive_indices.len() as u16 * 4 + 2),
+        terminal: (!terminal_indices.is_empty()).then_some(terminal_indices.len() as u16 * 4 + 2),
+        groups: (!app.split_groups.is_empty()).then_some(app.split_groups.len() as u16 * 2 + 2),
+    };
+    let mut layout = layout_agent_sections(content_area, heights);
+    layout.rag_info = rag_info_area;
+
+    render_agent_list_panel(
+        frame,
+        layout.background,
+        " background ",
+        background_indices,
+        app,
+        ACCENT,
+    );
+    render_agent_list_panel(
+        frame,
+        layout.interactive,
+        " interactive ",
+        interactive_indices,
+        app,
+        INTERACTIVE_COLOR,
+    );
+    render_agent_list_panel(
+        frame,
+        layout.terminal,
+        " terminal ",
+        terminal_indices,
+        app,
+        Color::Green,
+    );
+    render_groups_panel(frame, layout.groups, app);
+    render_brain_if_visible(frame, layout.brain, app);
+    if let Some(rag_info_area) = layout.rag_info {
+        draw_agents_rag_info_panel(frame, rag_info_area, app);
+    }
+    render_dashboard_if_present(frame, areas.dashboard, app);
+}
+
+fn layout_agent_sections(content_area: Rect, heights: AgentSectionHeights) -> AgentLayout {
+    let total_needed = heights.total();
+    let section_count = heights.count();
+    let mut layout = AgentLayout::default();
+    let mut remaining = content_area;
+
+    if total_needed <= content_area.height || section_count == 1 {
+        if let Some(height) = heights.background {
+            layout.background = take_top(&mut remaining, height);
+        }
+        if let Some(height) = heights.interactive {
+            layout.interactive = take_top(&mut remaining, height);
+        }
+        if let Some(height) = heights.terminal {
+            layout.terminal = take_top(&mut remaining, height);
+        }
+        if let Some(height) = heights.groups.filter(|_| remaining.height > 0) {
+            layout.groups = take_top(&mut remaining, height);
+        }
+        if remaining.height > 0 {
+            layout.brain = Some(remaining);
+        }
+        return layout;
+    }
+
+    let per_section = content_area.height / section_count;
+    if heights.background.is_some() {
+        layout.background = take_top(&mut remaining, per_section);
+    }
+    if heights.interactive.is_some() {
+        layout.interactive = take_top(&mut remaining, per_section);
+    }
+    if heights.terminal.is_some() {
+        layout.terminal = take_top(&mut remaining, per_section);
+    }
+    if heights.groups.is_some() && remaining.height > 0 {
+        layout.groups = Some(remaining);
+    }
+    layout
+}
+
+fn render_agent_list_panel(
+    frame: &mut Frame,
+    area: Option<Rect>,
+    title: &str,
+    indices: &[usize],
+    app: &mut App,
+    accent: Color,
+) {
+    let Some(area) = area else {
+        return;
+    };
+    render_titled_panel(
+        frame,
+        area,
+        title,
+        Style::default().fg(DIM),
+        Style::default().fg(DIM),
+        |frame, inner| draw_agent_list(frame, inner, indices, app, accent),
+    );
+}
+
+fn render_groups_panel(frame: &mut Frame, area: Option<Rect>, app: &mut App) {
+    let Some(area) = area else {
+        return;
+    };
+    render_titled_panel(
+        frame,
+        area,
+        " groups ",
+        Style::default().fg(DIM),
+        Style::default().fg(DIM),
+        |frame, inner| draw_groups_list(frame, inner, app),
+    );
 }
 
 fn draw_projects_list(frame: &mut Frame, area: Rect, app: &App) {
@@ -446,68 +520,86 @@ fn draw_projects_list(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let row_h = 3u16;
-    let max_visible = (area.height / row_h).max(1) as usize;
-    let total_items = app.projects.len();
-    let scroll_start = if app.selected_project >= max_visible {
-        app.selected_project.saturating_sub(max_visible - 1)
-    } else {
-        0
-    };
-    let has_scroll_up = scroll_start > 0;
-    let has_scroll_down = total_items.saturating_sub(scroll_start) > max_visible;
-
+    let scroll = scroll_state(
+        app.projects.len(),
+        Some(app.selected_project),
+        (area.height / 3).max(1) as usize,
+    );
+    let panel_focused = app.projects_panel_focus == ProjectsPanelFocus::Projects;
     let mut y = area.y;
 
-    // Draw projects
     for (idx, project) in app
         .projects
         .iter()
         .enumerate()
-        .skip(scroll_start)
-        .take(max_visible)
+        .skip(scroll.start)
+        .take(scroll.max_visible)
     {
         if y + 2 > area.y + area.height {
             break;
         }
-        let selected = app.selected_project == idx;
-        let panel_focused = app.projects_panel_focus == ProjectsPanelFocus::Projects;
-        let title_style = if selected && panel_focused {
-            Style::default()
-                .fg(Color::Black)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else if selected {
-            Style::default()
-                .fg(Color::White)
-                .bg(BG_SELECTED)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
-        };
-        let meta_style = if selected {
-            Style::default().fg(Color::White).bg(BG_SELECTED)
-        } else {
-            Style::default().fg(DIM)
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_str(&project.name, area.width as usize),
-                title_style,
-            ))),
-            Rect::new(area.x, y, area.width, 1),
+        draw_project_row(
+            frame,
+            area,
+            y,
+            project,
+            idx == app.selected_project,
+            panel_focused,
         );
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("{}  {}", project.hash, last_two_segments(&project.path)),
-                meta_style,
-            ))),
-            Rect::new(area.x, y + 1, area.width, 1),
-        );
-        y += row_h;
+        y += 3;
     }
 
-    draw_scroll_indicators(frame, area, has_scroll_up, has_scroll_down);
+    draw_scroll_indicators(frame, area, scroll.has_up, scroll.has_down);
+}
+
+fn draw_project_row(
+    frame: &mut Frame,
+    area: Rect,
+    y: u16,
+    project: &crate::domain::project::Project,
+    selected: bool,
+    panel_focused: bool,
+) {
+    let title_style = project_title_style(selected, panel_focused);
+    let meta_style = project_meta_style(selected);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_str(&project.name, area.width as usize),
+            title_style,
+        ))),
+        Rect::new(area.x, y, area.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}  {}", project.hash, last_two_segments(&project.path)),
+            meta_style,
+        ))),
+        Rect::new(area.x, y + 1, area.width, 1),
+    );
+}
+
+fn project_title_style(selected: bool, panel_focused: bool) -> Style {
+    if selected && panel_focused {
+        return Style::default()
+            .fg(Color::Black)
+            .bg(ACCENT)
+            .add_modifier(Modifier::BOLD);
+    }
+    if selected {
+        return Style::default()
+            .fg(Color::White)
+            .bg(BG_SELECTED)
+            .add_modifier(Modifier::BOLD);
+    }
+    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+}
+
+fn project_meta_style(selected: bool) -> Style {
+    if selected {
+        Style::default().fg(Color::White).bg(BG_SELECTED)
+    } else {
+        Style::default().fg(DIM)
+    }
 }
 
 fn draw_rag_queue(
@@ -560,34 +652,6 @@ fn draw_rag_queue(
 }
 
 fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
-    let status_line = if app.rag_paused {
-        Line::from(Span::styled(
-            " ⏸ paused ",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else if app.rag_info.processing_items > 0 {
-        Line::from(Span::styled(
-            " ◉ indexing ",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else if app.rag_info.queued_items > 0 {
-        Line::from(Span::styled(
-            " ⏳ pending ",
-            Style::default().fg(Color::Yellow),
-        ))
-    } else {
-        Line::from(Span::styled(" ✓ ready ", Style::default().fg(ACCENT)))
-    };
-    let queue_text = if app.rag_info.processing_items > 0 {
-        format!(
-            "{} queued · {} indexing",
-            app.rag_info.queued_items, app.rag_info.processing_items
-        )
-    } else if app.rag_info.queued_items > 0 {
-        format!("{} queued", app.rag_info.queued_items)
-    } else {
-        "empty".to_string()
-    };
     let lines = vec![
         Line::from(vec![
             Span::styled(" chunks ", Style::default().fg(DIM)),
@@ -609,9 +673,9 @@ fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled(" queue ", Style::default().fg(DIM)),
-            Span::styled(queue_text, Style::default().fg(Color::White)),
+            Span::styled(rag_queue_text(app), Style::default().fg(Color::White)),
         ]),
-        status_line,
+        rag_status_line(app),
         Line::from(Span::styled(
             " Enter opens playground ",
             Style::default().fg(ACCENT),
@@ -620,37 +684,82 @@ fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn agents_rag_info_border_style(app: &App) -> Style {
-    let focused = app.sidebar_mode == SidebarMode::Agents
-        && matches!(app.focus, Focus::Home | Focus::Preview)
-        && app.agents_rag_focused
-        && !app.playground_active;
-    Style::default().fg(if focused { ACCENT } else { DIM })
+fn rag_status_line(app: &App) -> Line<'static> {
+    if app.rag_paused {
+        return Line::from(Span::styled(
+            " ⏸ paused ",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if app.rag_info.processing_items > 0 {
+        return Line::from(Span::styled(
+            " ◉ indexing ",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    if app.rag_info.queued_items > 0 {
+        return Line::from(Span::styled(
+            " ⏳ pending ",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+    Line::from(Span::styled(" ✓ ready ", Style::default().fg(ACCENT)))
 }
 
-fn draw_agents_rag_info_panel(frame: &mut Frame, area: Rect, app: &App) {
-    let is_focused = app.sidebar_mode == SidebarMode::Agents
+fn rag_queue_text(app: &App) -> String {
+    if app.rag_info.processing_items > 0 {
+        return format!(
+            "{} queued · {} indexing",
+            app.rag_info.queued_items, app.rag_info.processing_items
+        );
+    }
+    if app.rag_info.queued_items > 0 {
+        return format!("{} queued", app.rag_info.queued_items);
+    }
+    "empty".to_string()
+}
+
+fn is_agents_rag_info_focused(app: &App) -> bool {
+    app.sidebar_mode == SidebarMode::Agents
         && matches!(app.focus, Focus::Home | Focus::Preview)
         && app.agents_rag_focused
-        && !app.playground_active;
-    let queue_title = if app.rag_paused {
+        && !app.playground_active
+}
+
+fn agents_rag_info_title(app: &App) -> &'static str {
+    if app.rag_paused {
         " ragInfo ⏸ "
     } else {
         " ragInfo "
-    };
-    let title_fg = if is_focused { ACCENT } else { DIM };
-    let block = Block::default()
-        .title_bottom(
-            Line::from(Span::styled(queue_title, Style::default().fg(title_fg)))
-                .alignment(ratatui::layout::Alignment::Right),
-        )
-        .borders(Borders::ALL)
-        .border_style(agents_rag_info_border_style(app));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height >= 1 {
-        draw_rag_info(frame, inner, app);
     }
+}
+
+fn agents_rag_info_border_style(app: &App) -> Style {
+    Style::default().fg(if is_agents_rag_info_focused(app) {
+        ACCENT
+    } else {
+        DIM
+    })
+}
+
+fn draw_agents_rag_info_panel(frame: &mut Frame, area: Rect, app: &App) {
+    let title_style = Style::default().fg(if is_agents_rag_info_focused(app) {
+        ACCENT
+    } else {
+        DIM
+    });
+    render_titled_panel(
+        frame,
+        area,
+        agents_rag_info_title(app),
+        title_style,
+        agents_rag_info_border_style(app),
+        |frame, inner| {
+            if inner.height >= 1 {
+                draw_rag_info(frame, inner, app);
+            }
+        },
+    );
 }
 
 fn projects_panel_border_style(app: &App, panel: ProjectsPanelFocus) -> Style {
@@ -669,44 +778,27 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut A
         return;
     }
 
-    // Calculate how many cards fit in the visible area
     let max_visible = ((area.height.saturating_sub(card_h)) / row_h + 1) as usize;
-
-    // Find the selected agent's position within this list
     let selected_local = indices.iter().position(|&idx| idx == app.selected);
-
-    // Compute scroll offset so the selected item is always visible
-    let scroll_start = selected_local.map_or(0, |sel| {
-        if sel >= max_visible {
-            sel.saturating_sub(max_visible - 1)
-        } else {
-            0
-        }
-    });
-
-    let has_scroll_up = scroll_start > 0;
-    let has_scroll_down = indices.len().saturating_sub(scroll_start) > max_visible;
-
+    let scroll = scroll_state(indices.len(), selected_local, max_visible);
     let mut y = area.y;
-    let end = indices.len().min(scroll_start + max_visible + 1);
-    for (rel_i, &idx) in indices[scroll_start..end].iter().enumerate() {
+    let end = indices.len().min(scroll.start + scroll.max_visible + 1);
+
+    for (rel_i, &idx) in indices[scroll.start..end].iter().enumerate() {
         if y + card_h > area.y + area.height {
             break;
         }
+
         let card_area = Rect::new(area.x, y, area.width, card_h);
-        let agent = &app.agents[idx];
         let selected = idx == app.selected && !app.agents_rag_focused;
-        draw_sidebar_card(frame, card_area, agent, app, selected, accent);
+        draw_sidebar_card(frame, card_area, &app.agents[idx], app, selected, accent);
         app.sidebar_click_map.push((idx, y, y + card_h));
-        let global_i = scroll_start + rel_i;
-        if global_i < indices.len() - 1 {
-            y += row_h;
-        } else {
-            y += card_h;
-        }
+
+        let is_last_visible = scroll.start + rel_i >= indices.len() - 1;
+        y += if is_last_visible { card_h } else { row_h };
     }
 
-    draw_scroll_indicators(frame, area, has_scroll_up, has_scroll_down);
+    draw_scroll_indicators(frame, area, scroll.has_up, scroll.has_down);
 }
 
 fn draw_scroll_indicators(frame: &mut Frame, area: Rect, has_up: bool, has_down: bool) {
@@ -737,156 +829,194 @@ fn draw_sidebar_card(
     selected: bool,
     _accent: Color,
 ) {
-    let w = area.width as usize;
+    let meta = agent_card_meta(agent, app);
+    let status_color = effective_status_color(meta.status_color, agent, app, selected);
     let bg = if selected { BG_SELECTED } else { Color::Reset };
+    let name = agent.id(app);
 
-    let accent = match agent {
-        AgentEntry::Interactive(idx) => app.interactive_agents[*idx].accent_color,
-        AgentEntry::Terminal(idx) => app.terminal_agents[*idx].accent_color,
-        _ => ACCENT,
-    };
+    let mut name_spans = vec![Span::styled(
+        name,
+        Style::default()
+            .add_modifier(Modifier::BOLD)
+            .fg(if selected { meta.accent } else { Color::White }),
+    )];
+    if is_agent_in_group(name, app) {
+        name_spans.push(Span::styled(" [▣]", Style::default().fg(DIM)));
+    }
+    render_sidebar_card_line(frame, area, 0, bg, status_color, name_spans);
 
-    let (mut status_color, agent_type, type_detail) = match agent {
-        AgentEntry::Agent(a) => {
-            let has_active = app.active_runs.contains_key(&a.id);
-            let color = if !a.enabled {
+    let type_detail = format!(
+        "{} · {}",
+        meta.agent_type,
+        truncate_str(meta.type_detail, area.width.saturating_sub(6) as usize)
+    );
+    render_sidebar_card_line(
+        frame,
+        area,
+        1,
+        bg,
+        status_color,
+        vec![Span::styled(type_detail, Style::default().fg(DIM))],
+    );
+
+    let dir_text = meta
+        .work_dir
+        .filter(|dir| !dir.is_empty())
+        .map(last_two_segments)
+        .unwrap_or_else(|| "/".to_string());
+    render_sidebar_card_line(
+        frame,
+        area,
+        2,
+        bg,
+        status_color,
+        vec![Span::styled(dir_text, Style::default().fg(DIM))],
+    );
+}
+
+fn agent_card_meta<'a>(agent: &'a AgentEntry, app: &'a App) -> AgentCardMeta<'a> {
+    match agent {
+        AgentEntry::Agent(agent) => AgentCardMeta {
+            accent: ACCENT,
+            status_color: if !agent.enabled {
                 STATUS_DISABLED
-            } else if has_active {
+            } else if app.active_runs.contains_key(&agent.id) {
                 STATUS_RUNNING
-            } else if a.last_run_ok == Some(false) {
+            } else if agent.last_run_ok == Some(false) {
                 STATUS_FAIL
             } else {
                 STATUS_OK
-            };
-            (color, a.trigger_type_label(), a.cli.as_str())
+            },
+            agent_type: agent.trigger_type_label(),
+            type_detail: agent.cli.as_str(),
+            work_dir: agent.working_dir.as_deref().or_else(|| agent.watch_path()),
+        },
+        AgentEntry::Interactive(index) => {
+            let agent = &app.interactive_agents[*index];
+            AgentCardMeta {
+                accent: agent.accent_color,
+                status_color: session_status_color(&agent.status),
+                agent_type: "pty",
+                type_detail: agent.cli.as_str(),
+                work_dir: Some(agent.working_dir.as_str()),
+            }
         }
-        AgentEntry::Interactive(idx) => {
-            let a = &app.interactive_agents[*idx];
-            let color = match &a.status {
-                AgentStatus::Running => STATUS_RUNNING,
-                AgentStatus::Exited(0) => STATUS_OK,
-                AgentStatus::Exited(_) => STATUS_FAIL,
-            };
-            (color, "pty", a.cli.as_str())
+        AgentEntry::Terminal(index) => {
+            let agent = &app.terminal_agents[*index];
+            AgentCardMeta {
+                accent: agent.accent_color,
+                status_color: session_status_color(&agent.status),
+                agent_type: "term",
+                type_detail: agent.shell.as_str(),
+                work_dir: Some(agent.working_dir.as_str()),
+            }
         }
-        AgentEntry::Terminal(idx) => {
-            let a = &app.terminal_agents[*idx];
-            let color = match &a.status {
-                AgentStatus::Running => STATUS_RUNNING,
-                AgentStatus::Exited(0) => STATUS_OK,
-                AgentStatus::Exited(_) => STATUS_FAIL,
-            };
-            (color, "term", a.shell.as_str())
-        }
-        AgentEntry::Group(_) => (STATUS_OK, "group", ""),
-    };
+        AgentEntry::Group(_) => AgentCardMeta {
+            accent: ACCENT,
+            status_color: STATUS_OK,
+            agent_type: "group",
+            type_detail: "",
+            work_dir: None,
+        },
+    }
+}
 
-    let mut is_waiting = match agent {
-        AgentEntry::Interactive(idx) => app.interactive_agents[*idx].is_waiting_for_input(),
-        AgentEntry::Terminal(idx) => app.terminal_agents[*idx].is_waiting_for_input(),
-        _ => false,
-    };
+fn session_status_color(status: &AgentStatus) -> Color {
+    match status {
+        AgentStatus::Running => STATUS_RUNNING,
+        AgentStatus::Exited(0) => STATUS_OK,
+        AgentStatus::Exited(_) => STATUS_FAIL,
+    }
+}
 
-    // If the user has selected this agent and focused the agent/preview panel,
-    // treat it as "attended" and suppress the waiting indicator so the user
-    // isn't distracted while interacting.
+fn effective_status_color(base: Color, agent: &AgentEntry, app: &App, selected: bool) -> Color {
+    if !agent_is_waiting(agent, app, selected) {
+        return base;
+    }
+
+    if (app.animation_tick / 10) % 2 == 0 {
+        super::STATUS_WAIT_ON
+    } else {
+        super::STATUS_WAIT_OFF
+    }
+}
+
+fn agent_is_waiting(agent: &AgentEntry, app: &App, selected: bool) -> bool {
     if selected && matches!(app.focus, Focus::Agent | Focus::Preview) {
-        is_waiting = false;
+        return false;
     }
 
-    // Blink animation: 10 ticks per phase (~500 ms on / 500 ms off) — quicker but
-    // still readable.
-    let blink_cycle = (app.animation_tick / 10) % 2;
+    match agent {
+        AgentEntry::Interactive(index) => app.interactive_agents[*index].is_waiting_for_input(),
+        AgentEntry::Terminal(index) => app.terminal_agents[*index].is_waiting_for_input(),
+        _ => false,
+    }
+}
 
-    if is_waiting {
-        status_color = if blink_cycle == 0 {
-            super::STATUS_WAIT_ON
+fn is_agent_in_group(name: &str, app: &App) -> bool {
+    app.split_groups
+        .iter()
+        .any(|group| group.session_a == name || group.session_b == name)
+}
+
+fn render_sidebar_card_line<'a>(
+    frame: &mut Frame,
+    area: Rect,
+    line_offset: u16,
+    bg: Color,
+    status_color: Color,
+    mut spans: Vec<Span<'a>>,
+) {
+    if area.height < line_offset + 1 {
+        return;
+    }
+
+    spans.insert(0, Span::raw(" "));
+    spans.insert(0, Span::styled("▌", Style::default().fg(status_color)));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+        Rect::new(area.x, area.y + line_offset, area.width, 1),
+    );
+}
+
+fn group_agent_indices(app: &App) -> Vec<usize> {
+    app.agents
+        .iter()
+        .enumerate()
+        .filter(|(_, agent)| matches!(agent, AgentEntry::Group(_)))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+fn group_row_style(is_selected: bool, is_active: bool) -> GroupRowStyle {
+    GroupRowStyle {
+        bg: if is_selected {
+            BG_SELECTED
         } else {
-            super::STATUS_WAIT_OFF
-        };
-    }
-
-    // Line 1: accent bar + id + [▣] if in a group
-    if area.height >= 1 {
-        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
-        let name = agent.id(app);
-        let in_group = app
-            .split_groups
-            .iter()
-            .any(|g| g.session_a == name || g.session_b == name);
-        let mut spans = vec![
-            accent_bar,
-            Span::raw(" "),
-            Span::styled(
-                name,
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(if selected { accent } else { Color::White }),
-            ),
-        ];
-        if in_group {
-            spans.push(Span::styled(" [▣]", Style::default().fg(DIM)));
-        }
-        let line = Line::from(spans);
-        let r = Rect::new(area.x, area.y, area.width, 1);
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
-    }
-
-    // Line 2: accent bar + type · detail
-    if area.height >= 2 {
-        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
-        let line = Line::from(vec![
-            accent_bar,
-            Span::raw(" "),
-            Span::styled(
-                format!(
-                    "{} · {}",
-                    agent_type,
-                    truncate_str(type_detail, w.saturating_sub(6))
-                ),
-                Style::default().fg(DIM),
-            ),
-        ]);
-        let r = Rect::new(area.x, area.y + 1, area.width, 1);
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
-    }
-
-    // Line 3: accent bar + working dir
-    if area.height >= 3 {
-        let accent_bar = Span::styled("▌", Style::default().fg(status_color));
-        let work_dir = match agent {
-            AgentEntry::Agent(a) => a.working_dir.as_deref().or_else(|| a.watch_path()),
-            AgentEntry::Interactive(idx) => Some(app.interactive_agents[*idx].working_dir.as_str()),
-            AgentEntry::Terminal(idx) => Some(app.terminal_agents[*idx].working_dir.as_str()),
-            AgentEntry::Group(_) => None,
-        };
-        let dir_text = work_dir
-            .filter(|d| !d.is_empty())
-            .map(last_two_segments)
-            .unwrap_or_else(|| "/".to_string());
-
-        // Add waiting indicator if applicable
-        let display_text = dir_text;
-
-        let dir_span = Span::styled(display_text, Style::default().fg(DIM));
-        let line = Line::from(vec![accent_bar, Span::raw(" "), dir_span]);
-        let r = Rect::new(area.x, area.y + 2, area.width, 1);
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(bg)), r);
+            Color::Reset
+        },
+        fg: if is_selected {
+            ACCENT
+        } else if is_active {
+            Color::Green
+        } else {
+            Color::White
+        },
+        modifier: if is_active || is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        },
+        prefix_color: if is_active { Color::Green } else { DIM },
+        active_tag: if is_active { " ●" } else { "" },
     }
 }
 
 fn draw_groups_list(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Collect the agent-list indices for Group entries
-    let group_agent_indices: Vec<usize> = app
-        .agents
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| matches!(a, AgentEntry::Group(_)))
-        .map(|(i, _)| i)
-        .collect();
-
+    let group_agent_indices = group_agent_indices(app);
     let mut y = area.y;
-    for (pos, (&agent_idx, group)) in group_agent_indices
+
+    for (position, (&agent_idx, group)) in group_agent_indices
         .iter()
         .zip(app.split_groups.iter())
         .enumerate()
@@ -894,54 +1024,36 @@ fn draw_groups_list(frame: &mut Frame, area: Rect, app: &mut App) {
         if y >= area.y + area.height {
             break;
         }
+
         let is_selected = agent_idx == app.selected && !app.agents_rag_focused;
         let is_active = app
             .active_split_id
             .as_deref()
             .is_some_and(|id| id == group.id);
-
+        let style = group_row_style(is_selected, is_active);
         let label = format!("{} · {}", group.session_a, group.session_b);
-        let bg = if is_selected {
-            BG_SELECTED
-        } else {
-            Color::Reset
-        };
-        let fg = if is_selected {
-            ACCENT // Use green (ACCENT) for selected group, like terminals
-        } else if is_active {
-            Color::Green
-        } else {
-            Color::White
-        };
-        let modifier = if is_active || is_selected {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        };
-
-        let prefix_color = if is_active { Color::Green } else { DIM };
-        let active_tag = if is_active { " ●" } else { "" };
-
-        let prefix = Span::styled("▌ ", Style::default().fg(prefix_color).bg(bg));
+        let text = format!(
+            "{}{}",
+            truncate_str(&label, area.width.saturating_sub(6) as usize),
+            style.active_tag
+        );
         let line = Line::from(vec![
-            prefix,
+            Span::styled("▌ ", Style::default().fg(style.prefix_color).bg(style.bg)),
             Span::styled(
-                format!(
-                    "{}{}",
-                    truncate_str(&label, area.width.saturating_sub(6) as usize),
-                    active_tag
-                ),
-                Style::default().fg(fg).bg(bg).add_modifier(modifier),
+                text,
+                Style::default()
+                    .fg(style.fg)
+                    .bg(style.bg)
+                    .add_modifier(style.modifier),
             ),
         ]);
-        let r = Rect::new(area.x, y, area.width, 1);
-        frame.render_widget(Paragraph::new(line), r);
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
         app.sidebar_click_map.push((agent_idx, y, y + 1));
 
-        if pos < group_agent_indices.len() - 1 {
-            y += 2; // spacer between groups
+        y += if position < group_agent_indices.len() - 1 {
+            2
         } else {
-            y += 1;
-        }
+            1
+        };
     }
 }

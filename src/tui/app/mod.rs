@@ -1114,6 +1114,54 @@ impl App {
         }
     }
 }
+
+fn log_contains_error(log_up: &str) -> bool {
+    [
+        "ERROR",
+        "FAILED",
+        "EXCEPTION",
+        "PANIC",
+        "SEGFAULT",
+        "TIMED OUT",
+        "CONNECTION REFUSED",
+        "PERMISSION DENIED",
+        "HALTED",
+        "PROBLEMA",
+        "FALLO",
+        "FALLANDO",
+    ]
+    .iter()
+    .any(|kw| log_up.contains(kw))
+}
+
+fn log_contains_success(log_up: &str) -> bool {
+    [
+        "SUCCESS",
+        "ALL TESTS PASSED",
+        "BUILD SUCCEEDED",
+        "FINISHED",
+        "COMPLETED",
+        "DONE.",
+        "STABILIZED",
+        "READY",
+        "CONVERGED",
+        "DEPLOYED",
+        "EXCELENTE",
+        "COMPLETADO",
+        "HECHO",
+        "LISTO",
+        "TERMINADO",
+    ]
+    .iter()
+    .any(|kw| log_up.contains(kw))
+}
+
+fn log_contains_spawn(log_up: &str) -> bool {
+    ["SPAWNING", "STARTING UP", "BOOTSTRAPPING", "INITIALIZING"]
+        .iter()
+        .any(|kw| log_up.contains(kw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_resumed_session_args;
@@ -1222,51 +1270,4 @@ mod tests {
         assert!(args.contains("--resume-picker"));
         assert_eq!(args.matches("--trust-all-tools").count(), 1);
     }
-}
-
-fn log_contains_error(log_up: &str) -> bool {
-    [
-        "ERROR",
-        "FAILED",
-        "EXCEPTION",
-        "PANIC",
-        "SEGFAULT",
-        "TIMED OUT",
-        "CONNECTION REFUSED",
-        "PERMISSION DENIED",
-        "HALTED",
-        "PROBLEMA",
-        "FALLO",
-        "FALLANDO",
-    ]
-    .iter()
-    .any(|kw| log_up.contains(kw))
-}
-
-fn log_contains_success(log_up: &str) -> bool {
-    [
-        "SUCCESS",
-        "ALL TESTS PASSED",
-        "BUILD SUCCEEDED",
-        "FINISHED",
-        "COMPLETED",
-        "DONE.",
-        "STABILIZED",
-        "READY",
-        "CONVERGED",
-        "DEPLOYED",
-        "EXCELENTE",
-        "COMPLETADO",
-        "HECHO",
-        "LISTO",
-        "TERMINADO",
-    ]
-    .iter()
-    .any(|kw| log_up.contains(kw))
-}
-
-fn log_contains_spawn(log_up: &str) -> bool {
-    ["SPAWNING", "STARTING UP", "BOOTSTRAPPING", "INITIALIZING"]
-        .iter()
-        .any(|kw| log_up.contains(kw))
 }
