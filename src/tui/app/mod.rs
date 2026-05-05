@@ -214,78 +214,114 @@ impl App {
 
     pub fn select_next(&mut self) {
         if self.sidebar_mode == SidebarMode::Projects {
-            match self.projects_panel_focus {
-                ProjectsPanelFocus::Projects => {
-                    if !self.projects.is_empty() {
-                        self.selected_project = (self.selected_project + 1) % self.projects.len();
-                        self.log_scroll = 0;
-                    }
-                }
-                ProjectsPanelFocus::RagInfo => {}
-            }
-        } else {
-            let has_rag = self.rag_info.has_rag_activity();
-            if has_rag {
-                if self.agents_rag_focused {
-                    self.agents_rag_focused = false;
-                    if !self.agents.is_empty() {
-                        self.selected = 0;
-                    }
-                    self.log_scroll = 0;
-                    return;
-                }
-                if self.agents.is_empty() || self.selected + 1 >= self.agents.len() {
-                    self.agents_rag_focused = true;
-                    self.log_scroll = 0;
-                    return;
-                }
-            }
-            if !self.agents.is_empty() {
-                self.selected = (self.selected + 1) % self.agents.len();
-                self.log_scroll = 0;
-            }
+            self.select_next_project_panel();
+            return;
         }
+
+        self.select_next_agent_panel();
+    }
+
+    fn select_next_project_panel(&mut self) {
+        if self.projects_panel_focus != ProjectsPanelFocus::Projects || self.projects.is_empty() {
+            return;
+        }
+
+        self.selected_project = (self.selected_project + 1) % self.projects.len();
+        self.reset_log_scroll();
+    }
+
+    fn select_next_agent_panel(&mut self) {
+        if !self.rag_info.has_rag_activity() {
+            self.advance_agent_selection();
+            return;
+        }
+
+        if self.agents_rag_focused {
+            self.agents_rag_focused = false;
+            if !self.agents.is_empty() {
+                self.selected = 0;
+            }
+            self.reset_log_scroll();
+            return;
+        }
+
+        if self.agents.is_empty() || self.selected + 1 >= self.agents.len() {
+            self.agents_rag_focused = true;
+            self.reset_log_scroll();
+            return;
+        }
+
+        self.advance_agent_selection();
+    }
+
+    fn advance_agent_selection(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+
+        self.selected = (self.selected + 1) % self.agents.len();
+        self.reset_log_scroll();
     }
 
     pub fn select_prev(&mut self) {
         if self.sidebar_mode == SidebarMode::Projects {
-            match self.projects_panel_focus {
-                ProjectsPanelFocus::Projects => {
-                    if !self.projects.is_empty() {
-                        self.selected_project = self
-                            .selected_project
-                            .checked_sub(1)
-                            .unwrap_or(self.projects.len() - 1);
-                        self.log_scroll = 0;
-                    }
-                }
-                ProjectsPanelFocus::RagInfo => {}
-            }
-        } else {
-            let has_rag = self.rag_info.has_rag_activity();
-            if has_rag {
-                if self.agents_rag_focused {
-                    self.agents_rag_focused = false;
-                    if !self.agents.is_empty() {
-                        self.selected = self.agents.len() - 1;
-                    }
-                    self.log_scroll = 0;
-                    return;
-                }
-                if self.agents.is_empty() || self.selected == 0 {
-                    self.agents_rag_focused = true;
-                    self.log_scroll = 0;
-                    return;
-                }
-            }
-            if !self.agents.is_empty() {
-                self.selected = self
-                    .selected
-                    .checked_sub(1)
-                    .unwrap_or(self.agents.len() - 1);
-                self.log_scroll = 0;
-            }
+            self.select_prev_project_panel();
+            return;
         }
+
+        self.select_prev_agent_panel();
+    }
+
+    fn select_prev_project_panel(&mut self) {
+        if self.projects_panel_focus != ProjectsPanelFocus::Projects || self.projects.is_empty() {
+            return;
+        }
+
+        self.selected_project = self
+            .selected_project
+            .checked_sub(1)
+            .unwrap_or(self.projects.len() - 1);
+        self.reset_log_scroll();
+    }
+
+    fn select_prev_agent_panel(&mut self) {
+        if !self.rag_info.has_rag_activity() {
+            self.retreat_agent_selection();
+            return;
+        }
+
+        if self.agents_rag_focused {
+            self.agents_rag_focused = false;
+            if !self.agents.is_empty() {
+                self.selected = self.agents.len() - 1;
+            }
+            self.reset_log_scroll();
+            return;
+        }
+
+        if self.agents.is_empty() || self.selected == 0 {
+            self.agents_rag_focused = true;
+            self.reset_log_scroll();
+            return;
+        }
+
+        self.retreat_agent_selection();
+    }
+
+    fn retreat_agent_selection(&mut self) {
+        if self.agents.is_empty() {
+            return;
+        }
+
+        self.selected = self
+            .selected
+            .checked_sub(1)
+            .unwrap_or(self.agents.len() - 1);
+        self.reset_log_scroll();
+    }
+
+    fn reset_log_scroll(&mut self) {
+        self.log_scroll = 0;
     }
 
     pub fn scroll_log_down(&mut self) {
@@ -379,12 +415,7 @@ impl App {
 
     pub fn activate_playground(&mut self) {
         self.playground_active = true;
-        self.playground_query.clear();
-        self.playground_results.clear();
-        self.playground_selected = 0;
-        self.playground_last_executed_query.clear();
-        self.playground_detail_mode = false;
-        self.playground_scroll = 0;
+        self.reset_playground_state();
 
         // If a project is selected in the projects sidebar, default to searching that project
         self.playground_project_hash = self
@@ -395,6 +426,10 @@ impl App {
 
     pub fn deactivate_playground(&mut self) {
         self.playground_active = false;
+        self.reset_playground_state();
+    }
+
+    fn reset_playground_state(&mut self) {
         self.playground_query.clear();
         self.playground_results.clear();
         self.playground_selected = 0;
@@ -417,7 +452,7 @@ impl App {
             SidebarMode::Projects => SidebarMode::Agents,
         };
         self.agents_rag_focused = false;
-        self.log_scroll = 0;
+        self.reset_log_scroll();
     }
 
     pub fn selected_playground_chunk(&self) -> Option<&crate::db::project::Chunk> {
@@ -428,21 +463,24 @@ impl App {
         self.sync_panel_visible = !self.sync_panel_visible;
     }
 
+    fn live_agent_for_entry(&self, entry: &AgentEntry) -> Option<&InteractiveAgent> {
+        match entry {
+            AgentEntry::Interactive(idx) => self.interactive_agents.get(*idx),
+            AgentEntry::Terminal(idx) => self.terminal_agents.get(*idx),
+            AgentEntry::Agent(_) | AgentEntry::Group(_) => None,
+        }
+    }
+
+    fn selected_live_agent(&self) -> Option<&InteractiveAgent> {
+        self.selected_agent()
+            .and_then(|entry| self.live_agent_for_entry(entry))
+    }
+
     /// Return the working directory of the currently selected agent,
     /// or the parent of the data directory as a fallback.
     pub fn current_workdir(&self) -> PathBuf {
-        self.selected_agent()
-            .and_then(|a| match a {
-                AgentEntry::Interactive(idx) => self
-                    .interactive_agents
-                    .get(*idx)
-                    .map(|ia| PathBuf::from(&ia.working_dir)),
-                AgentEntry::Terminal(idx) => self
-                    .terminal_agents
-                    .get(*idx)
-                    .map(|ta| PathBuf::from(&ta.working_dir)),
-                _ => None,
-            })
+        self.selected_live_agent()
+            .map(|agent| PathBuf::from(&agent.working_dir))
             .unwrap_or_else(|| {
                 self.data_dir
                     .parent()
@@ -452,16 +490,9 @@ impl App {
     }
 
     pub fn focused_agent_name(&self) -> String {
-        match self.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => {
-                self.interactive_agents.get(*idx).map(|a| a.name.clone())
-            }
-            Some(AgentEntry::Terminal(idx)) => {
-                self.terminal_agents.get(*idx).map(|a| a.name.clone())
-            }
-            _ => None,
-        }
-        .unwrap_or_default()
+        self.selected_live_agent()
+            .map(|agent| agent.name.clone())
+            .unwrap_or_default()
     }
 
     pub fn selected_id(&self) -> String {
@@ -478,34 +509,27 @@ impl App {
     }
 
     pub fn toggle_enable(&self) -> Result<()> {
-        let Some(agent) = self.agents.get(self.selected) else {
+        let Some(AgentEntry::Agent(agent)) = self.agents.get(self.selected) else {
             return Ok(());
         };
-        match agent {
-            AgentEntry::Agent(a) => {
-                self.db.update_agent_enabled(&a.id, !a.enabled)?;
-            }
-            AgentEntry::Interactive(_) => {}
-            AgentEntry::Terminal(_) => {}
-            AgentEntry::Group(_) => {}
-        }
+
+        self.db.update_agent_enabled(&agent.id, !agent.enabled)?;
         Ok(())
     }
 
     fn auto_hide_sidebar(&mut self) {
-        if let Ok((tw, _th)) = ratatui::crossterm::terminal::size() {
-            self.term_width = tw;
-            let should_hide = self.focus == Focus::Agent
-                && self.selected_agent().is_some_and(|a| {
-                    matches!(a, AgentEntry::Interactive(_) | AgentEntry::Terminal(_))
-                })
-                && tw < 80;
-            let should_show = tw >= 80 && !self.sidebar_visible;
-            if should_hide {
-                self.sidebar_visible = false;
-            } else if should_show {
-                self.sidebar_visible = true;
-            }
+        let Ok((tw, _th)) = ratatui::crossterm::terminal::size() else {
+            return;
+        };
+
+        self.term_width = tw;
+        let should_hide =
+            self.focus == Focus::Agent && self.selected_live_agent().is_some() && tw < 80;
+        let should_show = tw >= 80 && !self.sidebar_visible;
+        if should_hide {
+            self.sidebar_visible = false;
+        } else if should_show {
+            self.sidebar_visible = true;
         }
     }
 
@@ -553,30 +577,24 @@ impl App {
     }
 
     fn check_log_context(&mut self) {
-        use crate::tui::whimsg::WhimContext;
-
-        let raw_log = match self.agents.get(self.selected) {
-            Some(AgentEntry::Interactive(idx)) => self
-                .interactive_agents
-                .get(*idx)
-                .map(|a| a.last_lines(50))
-                .unwrap_or_default(),
-            Some(AgentEntry::Terminal(idx)) => self
-                .terminal_agents
-                .get(*idx)
-                .map(|a| a.last_lines(50))
-                .unwrap_or_default(),
-            _ => self.log_content.clone(),
-        };
-
+        let raw_log = self.selected_log_excerpt();
         if raw_log.is_empty() {
             return;
         }
 
-        let log_hash: u64 = raw_log.bytes().enumerate().fold(0u64, |acc, (i, b)| {
-            acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
-        });
+        self.notify_whimsg_for_log(&raw_log);
+    }
 
+    fn selected_log_excerpt(&self) -> String {
+        self.selected_live_agent()
+            .map(|agent| agent.last_lines(50))
+            .unwrap_or_else(|| self.log_content.clone())
+    }
+
+    fn notify_whimsg_for_log(&mut self, raw_log: &str) {
+        use crate::tui::whimsg::WhimContext;
+
+        let log_hash = calculate_log_hash(raw_log);
         if log_hash == self.whimsg_last_log_hash {
             return;
         }
@@ -615,28 +633,37 @@ impl App {
 
     /// Open the split picker to pair the current session with another.
     pub fn open_split_picker(&mut self) {
-        let mut sessions: Vec<(String, String)> = Vec::new();
-        for a in &self.interactive_agents {
-            sessions.push((a.name.clone(), "Interactive".to_string()));
-        }
-        for a in &self.terminal_agents {
-            sessions.push((a.name.clone(), "Terminal".to_string()));
-        }
+        let sessions = self.available_split_sessions();
         if sessions.len() < 2 {
             return;
         }
+
         self.split_picker_sessions = sessions;
         self.split_picker_idx = 0;
         self.split_picker_orientation = crate::domain::models::SplitOrientation::Horizontal;
         self.split_picker_open = true;
     }
 
+    fn available_split_sessions(&self) -> Vec<(String, String)> {
+        self.interactive_agents
+            .iter()
+            .map(|agent| (agent.name.clone(), "Interactive".to_string()))
+            .chain(
+                self.terminal_agents
+                    .iter()
+                    .map(|agent| (agent.name.clone(), "Terminal".to_string())),
+            )
+            .collect()
+    }
+
+    fn selected_session_name(&self) -> Option<String> {
+        self.selected_live_agent().map(|agent| agent.name.clone())
+    }
+
     /// Create a split group from the current session and the picker selection.
     pub fn create_split(&mut self) {
-        let current_name = match self.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => self.interactive_agents[*idx].name.clone(),
-            Some(AgentEntry::Terminal(idx)) => self.terminal_agents[*idx].name.clone(),
-            _ => return,
+        let Some(current_name) = self.selected_session_name() else {
+            return;
         };
         let Some((other_name, _)) = self
             .split_picker_sessions
@@ -648,6 +675,7 @@ impl App {
         if current_name == other_name {
             return;
         }
+
         let id = format!("split-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let group = crate::domain::models::SplitGroup {
             id: id.clone(),
@@ -665,7 +693,6 @@ impl App {
         self.active_split_id = Some(id);
         self.split_groups.push(group);
         self.split_picker_open = false;
-        // Immediately enter split view in agent focus
         self.split_right_focused = false;
         self.focus = Focus::Agent;
     }
@@ -703,12 +730,111 @@ impl App {
 
     /// Advance the modal from Preview to AgentPicker.
     pub fn context_transfer_to_picker(&mut self) {
-        if let Some(modal) = &mut self.context_transfer_modal {
-            if modal.step == ContextTransferStep::Preview {
-                modal.step = ContextTransferStep::AgentPicker;
-                modal.picker_selected = 0;
-            }
+        let Some(modal) = &mut self.context_transfer_modal else {
+            return;
+        };
+        if modal.step != ContextTransferStep::Preview {
+            return;
         }
+
+        modal.step = ContextTransferStep::AgentPicker;
+        modal.picker_selected = 0;
+    }
+
+    fn interactive_picker_destination(&self, dest_entry_idx: usize) -> Option<usize> {
+        self.picker_interactive_entries()
+            .get(dest_entry_idx)
+            .copied()
+            .filter(|idx| *idx < self.interactive_agents.len())
+    }
+
+    fn focus_interactive_agent(&mut self, dest_ia_idx: usize) {
+        if let Some(entry_pos) = self
+            .agents
+            .iter()
+            .position(|entry| matches!(entry, AgentEntry::Interactive(idx) if *idx == dest_ia_idx))
+        {
+            self.selected = entry_pos;
+        }
+        self.focus = Focus::Agent;
+    }
+
+    fn open_context_prompt_dialog(&mut self, context_payload: String, rag_query: Option<String>) {
+        let mut initial_content = HashMap::from([("context".to_string(), context_payload)]);
+        if let Some(query) = rag_query.filter(|query| !query.trim().is_empty()) {
+            initial_content.insert("rag_search".to_string(), format!("global: {query}"));
+        }
+        self.open_simple_prompt_dialog(Some(initial_content));
+    }
+
+    fn context_transfer_source_for_entry(
+        &self,
+        entry: &AgentEntry,
+    ) -> Option<ContextTransferSource> {
+        match entry {
+            AgentEntry::Interactive(idx) => self
+                .interactive_agents
+                .get(*idx)
+                .map(|_| ContextTransferSource::Interactive(*idx)),
+            AgentEntry::Terminal(idx) => self
+                .terminal_agents
+                .get(*idx)
+                .map(|_| ContextTransferSource::Terminal(*idx)),
+            AgentEntry::Agent(_) | AgentEntry::Group(_) => None,
+        }
+    }
+
+    fn context_transfer_source_for_kind(
+        &self,
+        kind: ContextSourceKind,
+        idx: usize,
+    ) -> Option<ContextTransferSource> {
+        match kind {
+            ContextSourceKind::Interactive => self
+                .interactive_agents
+                .get(idx)
+                .map(|_| ContextTransferSource::Interactive(idx)),
+            ContextSourceKind::Terminal => self
+                .terminal_agents
+                .get(idx)
+                .map(|_| ContextTransferSource::Terminal(idx)),
+        }
+    }
+
+    fn context_transfer_agent(&self, source: ContextTransferSource) -> Option<&InteractiveAgent> {
+        match source {
+            ContextTransferSource::Interactive(idx) => self.interactive_agents.get(idx),
+            ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx),
+        }
+    }
+
+    fn context_transfer_source_kind(source: ContextTransferSource) -> ContextSourceKind {
+        match source {
+            ContextTransferSource::Interactive(_) => ContextSourceKind::Interactive,
+            ContextTransferSource::Terminal(_) => ContextSourceKind::Terminal,
+        }
+    }
+
+    fn interactive_capture_units(
+        agent: &InteractiveAgent,
+        capture_kind: ContextCaptureKind,
+    ) -> usize {
+        match capture_kind {
+            ContextCaptureKind::Prompts => interactive_prompt_count(agent),
+            ContextCaptureKind::LinePages => interactive_line_page_count(agent),
+        }
+    }
+
+    fn context_transfer_max_units_for_source(
+        &self,
+        source: ContextTransferSource,
+        capture_kind: ContextCaptureKind,
+    ) -> Option<usize> {
+        let ContextTransferSource::Interactive(_) = source else {
+            return Some(20);
+        };
+        let agent = self.context_transfer_agent(source)?;
+        Some(Self::interactive_capture_units(agent, capture_kind).max(1))
     }
 
     /// Execute the context transfer to the selected destination agent.
@@ -720,40 +846,15 @@ impl App {
         let Some(modal) = self.context_transfer_modal.take() else {
             return;
         };
-
-        let dest_agent_idx = {
-            let picker_entries = self.picker_interactive_entries();
-            picker_entries.get(dest_entry_idx).copied()
-        };
-        let Some(dest_ia_idx) = dest_agent_idx else {
+        let Some(dest_ia_idx) = self.interactive_picker_destination(dest_entry_idx) else {
             return;
         };
-
-        if dest_ia_idx >= self.interactive_agents.len() {
-            return;
-        }
-
         let Some(payload) = self.build_context_transfer_payload(&modal) else {
             return;
         };
 
-        // Always switch tab to destination so the user sees where the context is going
-        if let Some(entry_pos) = self
-            .agents
-            .iter()
-            .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
-        {
-            self.selected = entry_pos;
-        }
-        self.focus = Focus::Agent;
-
-        // Prepare initial content for the simple prompt dialog
-        let mut initial_content = HashMap::new();
-        // Always put context transfer content in the "context" section
-        initial_content.insert("context".to_string(), payload);
-
-        // Open the prompt template dialog with the pre-filled context
-        self.open_simple_prompt_dialog(Some(initial_content));
+        self.focus_interactive_agent(dest_ia_idx);
+        self.open_context_prompt_dialog(payload, None);
     }
 
     pub(crate) fn refresh_context_transfer_preview(&mut self) {
@@ -779,33 +880,12 @@ impl App {
 
     pub(crate) fn context_transfer_max_units(&self) -> Option<usize> {
         let modal = self.context_transfer_modal.as_ref()?;
-        let max_units = match self.modal_source(modal)? {
-            ContextTransferSource::Interactive(idx) => self
-                .interactive_agents
-                .get(idx)
-                .map(|agent| match modal.capture_kind {
-                    ContextCaptureKind::Prompts => interactive_prompt_count(agent),
-                    ContextCaptureKind::LinePages => interactive_line_page_count(agent),
-                })
-                .unwrap_or(0)
-                .max(1),
-            ContextTransferSource::Terminal(_) => 20,
-        };
-        Some(max_units)
+        self.context_transfer_max_units_for_source(self.modal_source(modal)?, modal.capture_kind)
     }
 
     fn selected_context_transfer_source(&self) -> Option<ContextTransferSource> {
-        match self.selected_agent()? {
-            AgentEntry::Interactive(idx) => self
-                .interactive_agents
-                .get(*idx)
-                .map(|_| ContextTransferSource::Interactive(*idx)),
-            AgentEntry::Terminal(idx) => self
-                .terminal_agents
-                .get(*idx)
-                .map(|_| ContextTransferSource::Terminal(*idx)),
-            _ => None,
-        }
+        self.selected_agent()
+            .and_then(|entry| self.context_transfer_source_for_entry(entry))
     }
 
     fn active_split_session_name(&self) -> Option<String> {
@@ -839,7 +919,6 @@ impl App {
         let Some(source) = source else {
             return;
         };
-
         let Some(mut modal) = self.modal_for_context_transfer_source(source) else {
             return;
         };
@@ -858,35 +937,22 @@ impl App {
     ) -> Option<ContextTransferModal> {
         match source {
             ContextTransferSource::Interactive(idx) => {
-                self.interactive_agents.get(idx).map(|agent| {
-                    let capture_kind = interactive_capture_kind(agent);
-                    let max_units = match capture_kind {
-                        ContextCaptureKind::Prompts => interactive_prompt_count(agent),
-                        ContextCaptureKind::LinePages => interactive_line_page_count(agent),
-                    };
-                    let initial_units =
-                        initial_capture_units(max_units, &self.context_transfer_config);
-                    ContextTransferModal::new(idx, capture_kind, initial_units)
-                })
+                let agent = self.context_transfer_agent(source)?;
+                let capture_kind = interactive_capture_kind(agent);
+                let max_units = Self::interactive_capture_units(agent, capture_kind);
+                let initial_units = initial_capture_units(max_units, &self.context_transfer_config);
+                Some(ContextTransferModal::new(idx, capture_kind, initial_units))
             }
-            ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx).map(|_| {
+            ContextTransferSource::Terminal(idx) => {
+                self.context_transfer_agent(source)?;
                 let initial_units = initial_capture_units(20, &self.context_transfer_config);
-                ContextTransferModal::new_terminal(idx, initial_units)
-            }),
+                Some(ContextTransferModal::new_terminal(idx, initial_units))
+            }
         }
     }
 
     fn modal_source(&self, modal: &ContextTransferModal) -> Option<ContextTransferSource> {
-        match modal.source_kind() {
-            ContextSourceKind::Interactive => self
-                .interactive_agents
-                .get(modal.source_agent_idx)
-                .map(|_| ContextTransferSource::Interactive(modal.source_agent_idx)),
-            ContextSourceKind::Terminal => self
-                .terminal_agents
-                .get(modal.source_agent_idx)
-                .map(|_| ContextTransferSource::Terminal(modal.source_agent_idx)),
-        }
+        self.context_transfer_source_for_kind(modal.source_kind(), modal.source_agent_idx)
     }
 
     fn build_context_transfer_payload(&self, modal: &ContextTransferModal) -> Option<String> {
@@ -903,30 +969,18 @@ impl App {
         n_units: usize,
         capture_kind: ContextCaptureKind,
     ) -> Option<String> {
-        match source {
-            ContextTransferSource::Interactive(idx) => {
-                self.interactive_agents.get(idx).map(|agent| {
-                    build_context_payload_for(
-                        agent,
-                        n_units,
-                        ContextSourceKind::Interactive,
-                        capture_kind,
-                    )
-                })
-            }
-            ContextTransferSource::Terminal(idx) => self.terminal_agents.get(idx).map(|agent| {
-                build_context_payload_for(agent, n_units, ContextSourceKind::Terminal, capture_kind)
-            }),
-        }
+        let agent = self.context_transfer_agent(source)?;
+        Some(build_context_payload_for(
+            agent,
+            n_units,
+            Self::context_transfer_source_kind(source),
+            capture_kind,
+        ))
     }
 
     /// Collect interactive agent indices for use in the picker list.
     pub fn picker_interactive_entries(&self) -> Vec<usize> {
-        self.interactive_agents
-            .iter()
-            .enumerate()
-            .map(|(i, _)| i)
-            .collect()
+        (0..self.interactive_agents.len()).collect()
     }
 
     pub fn open_rag_transfer_modal(&mut self) {
@@ -957,30 +1011,125 @@ impl App {
         let Some(modal) = self.rag_transfer_modal.take() else {
             return;
         };
-
-        let dest_agent_idx = {
-            let picker_entries = self.picker_interactive_entries();
-            picker_entries.get(dest_entry_idx).copied()
-        };
-        let Some(dest_ia_idx) = dest_agent_idx else {
+        let Some(dest_ia_idx) = self.interactive_picker_destination(dest_entry_idx) else {
             return;
         };
 
-        if let Some(entry_pos) = self
-            .agents
-            .iter()
-            .position(|a| matches!(a, AgentEntry::Interactive(i) if *i == dest_ia_idx))
-        {
-            self.selected = entry_pos;
-        }
-        self.focus = Focus::Agent;
+        self.focus_interactive_agent(dest_ia_idx);
+        self.open_context_prompt_dialog(modal.context_payload, Some(modal.query));
+    }
 
-        let mut initial_content = HashMap::new();
-        initial_content.insert("context".to_string(), modal.context_payload);
-        if !modal.query.trim().is_empty() {
-            initial_content.insert("rag_search".to_string(), format!("global: {}", modal.query));
-        }
-        self.open_simple_prompt_dialog(Some(initial_content));
+    fn session_panel_size() -> (u16, u16) {
+        let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+        (tw.saturating_sub(28), th.saturating_sub(4))
+    }
+
+    fn interactive_agent_names(&self) -> Vec<&str> {
+        self.interactive_agents
+            .iter()
+            .map(|agent| agent.name.as_str())
+            .collect()
+    }
+
+    fn terminal_agent_names(&self) -> Vec<&str> {
+        self.terminal_agents
+            .iter()
+            .map(|agent| agent.name.as_str())
+            .collect()
+    }
+
+    fn resume_session_accent(
+        cli_config: Option<&crate::domain::cli_config::CliConfig>,
+    ) -> ratatui::style::Color {
+        cli_config
+            .and_then(|config| config.accent_color)
+            .map(|[r, g, b]| ratatui::style::Color::Rgb(r, g, b))
+            .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106))
+    }
+
+    fn resume_interactive_session(
+        &mut self,
+        session: &crate::db::session::InteractiveSession,
+        canopy_config: &crate::domain::canopy_config::CanopyConfig,
+        cols: u16,
+        rows: u16,
+    ) {
+        let cli = crate::domain::models::Cli::from_str(&session.cli);
+        let cli_config = canopy_config.get_cli(cli.as_str());
+        let args = build_resumed_session_args(
+            session,
+            cli_config.and_then(|config| config.interactive_args.as_deref()),
+            cli_config.and_then(|config| config.resume_args.as_deref()),
+            cli_config.and_then(|config| config.session_resume_cmd.as_deref()),
+            cli_config.and_then(|config| config.yolo_flag.as_deref()),
+        );
+        let existing_ids = self.interactive_agent_names();
+
+        let agent = match InteractiveAgent::spawn(
+            cli.clone(),
+            &session.working_dir,
+            cols,
+            rows,
+            args.as_deref(),
+            cli_config.and_then(|config| config.fallback_interactive_args.as_deref()),
+            Self::resume_session_accent(cli_config),
+            Some(&session.name),
+            &existing_ids,
+            None,
+            cli_config.and_then(|config| config.model_flag.as_deref()),
+        ) {
+            Ok(agent) => agent,
+            Err(e) => {
+                tracing::warn!("Failed to auto-resume session '{}': {e}", session.name);
+                return;
+            }
+        };
+
+        let _ = self.db.insert_interactive_session(
+            &agent.id,
+            &agent.name,
+            cli.as_str(),
+            &session.working_dir,
+            args.as_deref(),
+        );
+        self.interactive_agents.push(agent);
+    }
+
+    fn resume_terminal_session(
+        &mut self,
+        session: &crate::db::session::TerminalSession,
+        cols: u16,
+        rows: u16,
+    ) {
+        let existing_refs = self.terminal_agent_names();
+        let agent = match InteractiveAgent::spawn_terminal(
+            &session.shell,
+            &session.working_dir,
+            cols,
+            rows,
+            Some(&session.name),
+            &existing_refs,
+            crate::tui::ui::ACCENT,
+        ) {
+            Ok(agent) => agent,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to auto-resume terminal session '{}': {e}",
+                    session.name
+                );
+                return;
+            }
+        };
+
+        let _ = self.db.insert_terminal_session(
+            &agent.id,
+            &agent.name,
+            &session.shell,
+            &session.working_dir,
+        );
+        let hist = super::terminal_history::load_history(&self.data_dir, &agent.name);
+        self.terminal_histories.insert(agent.name.clone(), hist);
+        self.terminal_agents.push(agent);
     }
 
     pub fn auto_resume_sessions(&mut self) {
@@ -996,62 +1145,10 @@ impl App {
 
         let home = dirs::home_dir().unwrap_or_default();
         let canopy_config = crate::domain::canopy_config::CanopyConfig::load(&home.join(".canopy"));
-        let (cols, rows) = {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            (tw.saturating_sub(28), th.saturating_sub(4))
-        };
+        let (cols, rows) = Self::session_panel_size();
 
         for session in &sessions {
-            let cli = crate::domain::models::Cli::from_str(&session.cli);
-            let cli_config = canopy_config.get_cli(cli.as_str());
-
-            let accent = cli_config
-                .and_then(|c| c.accent_color)
-                .map(|[r, g, b]| ratatui::style::Color::Rgb(r, g, b))
-                .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
-
-            let args_str = build_resumed_session_args(
-                session,
-                cli_config.and_then(|c| c.interactive_args.as_deref()),
-                cli_config.and_then(|c| c.resume_args.as_deref()),
-                cli_config.and_then(|c| c.session_resume_cmd.as_deref()),
-                cli_config.and_then(|c| c.yolo_flag.as_deref()),
-            );
-            let args = args_str.as_deref();
-            let model_flag = cli_config.and_then(|c| c.model_flag.clone());
-            let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
-
-            let existing_ids: Vec<&str> = self
-                .interactive_agents
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect();
-
-            match InteractiveAgent::spawn(
-                cli.clone(),
-                &session.working_dir,
-                cols,
-                rows,
-                args,
-                fallback,
-                accent,
-                Some(&session.name),
-                &existing_ids,
-                None,
-                model_flag.as_deref(),
-            ) {
-                Ok(agent) => {
-                    let _ = self.db.insert_interactive_session(
-                        &agent.id,
-                        &agent.name,
-                        cli.as_str(),
-                        &session.working_dir,
-                        args,
-                    );
-                    self.interactive_agents.push(agent);
-                }
-                Err(e) => tracing::warn!("Failed to auto-resume session '{}': {e}", session.name),
-            }
+            self.resume_interactive_session(session, &canopy_config, cols, rows);
         }
 
         if !self.interactive_agents.is_empty() {
@@ -1070,49 +1167,22 @@ impl App {
         tracing::info!("Resuming {} terminal session(s)", sessions.len());
         let _ = self.db.mark_orphaned_terminal_sessions();
 
-        let (cols, rows) = {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            (tw.saturating_sub(28), th.saturating_sub(4))
-        };
+        let (cols, rows) = Self::session_panel_size();
 
         for session in &sessions {
-            let existing_refs: Vec<&str> = self
-                .terminal_agents
-                .iter()
-                .map(|a| a.name.as_str())
-                .collect();
-
-            match InteractiveAgent::spawn_terminal(
-                &session.shell,
-                &session.working_dir,
-                cols,
-                rows,
-                Some(&session.name),
-                &existing_refs,
-                crate::tui::ui::ACCENT,
-            ) {
-                Ok(agent) => {
-                    let _ = self.db.insert_terminal_session(
-                        &agent.id,
-                        &agent.name,
-                        &session.shell,
-                        &session.working_dir,
-                    );
-                    let hist = super::terminal_history::load_history(&self.data_dir, &agent.name);
-                    self.terminal_histories.insert(agent.name.clone(), hist);
-                    self.terminal_agents.push(agent);
-                }
-                Err(e) => tracing::warn!(
-                    "Failed to auto-resume terminal session '{}': {e}",
-                    session.name
-                ),
-            }
+            self.resume_terminal_session(session, cols, rows);
         }
 
         if !self.terminal_agents.is_empty() {
             let _ = self.refresh_agents();
         }
     }
+}
+
+fn calculate_log_hash(raw_log: &str) -> u64 {
+    raw_log.bytes().enumerate().fold(0u64, |acc, (idx, byte)| {
+        acc.wrapping_add((byte as u64).wrapping_mul(idx as u64 + 1))
+    })
 }
 
 fn log_contains_error(log_up: &str) -> bool {
