@@ -279,11 +279,10 @@ fn test_search_chunks_returns_recently_indexed_content() {
     let project = crate::domain::project::Project::new("/tmp/project");
     db.upsert_project(&project).unwrap();
     db.replace_chunks(
-        &project.hash,
         "src/lib.rs",
         &[crate::db::project::Chunk {
             id: "chunk-1".to_string(),
-            project_hash: project.hash.clone(),
+            project_hash: Some(project.hash.clone()),
             source_path: "src/lib.rs".to_string(),
             chunk_index: 0,
             content: "needle indexed chunk".to_string(),
@@ -305,21 +304,16 @@ fn test_rag_queue_roundtrip() {
     let project = crate::domain::project::Project::new("/tmp/project");
     db.upsert_project(&project).unwrap();
 
-    db.enqueue_rag_item(&project.hash, "/tmp/project/src/lib.rs", 111)
-        .unwrap();
-    db.mark_rag_item_processing(&project.hash, "/tmp/project/src/lib.rs", 222)
+    db.enqueue_rag_item("/tmp/project/src/lib.rs", 111).unwrap();
+    db.mark_rag_item_processing("/tmp/project/src/lib.rs", 222)
         .unwrap();
 
-    let items = db.list_rag_queue(Some(&project.hash), 10).unwrap();
+    let items = db.list_rag_queue(10).unwrap();
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].status, "processing");
 
-    db.remove_rag_item(&project.hash, "/tmp/project/src/lib.rs")
-        .unwrap();
-    assert!(db
-        .list_rag_queue(Some(&project.hash), 10)
-        .unwrap()
-        .is_empty());
+    db.remove_rag_item("/tmp/project/src/lib.rs").unwrap();
+    assert!(db.list_rag_queue(10).unwrap().is_empty());
 }
 
 #[test]
@@ -328,19 +322,17 @@ fn test_rag_info_summary_counts_chunks_and_queue_states() {
     let project = crate::domain::project::Project::new("/tmp/project");
     db.upsert_project(&project).unwrap();
 
-    db.enqueue_rag_item(&project.hash, "/tmp/project/src/lib.rs", 111)
+    db.enqueue_rag_item("/tmp/project/src/lib.rs", 111).unwrap();
+    db.enqueue_rag_item("/tmp/project/src/main.rs", 112)
         .unwrap();
-    db.enqueue_rag_item(&project.hash, "/tmp/project/src/main.rs", 112)
-        .unwrap();
-    db.mark_rag_item_processing(&project.hash, "/tmp/project/src/main.rs", 113)
+    db.mark_rag_item_processing("/tmp/project/src/main.rs", 113)
         .unwrap();
 
     db.replace_chunks(
-        &project.hash,
         "/tmp/project/src/lib.rs",
         &[crate::db::project::Chunk {
             id: "chunk-1".to_string(),
-            project_hash: project.hash.clone(),
+            project_hash: Some(project.hash.clone()),
             source_path: "/tmp/project/src/lib.rs".to_string(),
             chunk_index: 0,
             content: "needle".to_string(),

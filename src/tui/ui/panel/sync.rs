@@ -8,7 +8,12 @@ use crate::domain::sync::{MessageKind, MissionImpact, WorkspaceStatus};
 use crate::tui::app::types::SyncPanelState;
 use crate::tui::ui::{last_two_segments, ACCENT, DIM, ERROR_COLOR, STATUS_OK};
 
-pub(crate) fn draw_sync_panel(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
+pub(crate) fn draw_sync_panel(
+    frame: &mut Frame,
+    area: Rect,
+    state: &SyncPanelState,
+    scroll_offset: u16,
+) {
     let block = Block::default()
         .title(
             Line::from(Span::styled(" sync ", Style::default().fg(DIM)))
@@ -18,10 +23,10 @@ pub(crate) fn draw_sync_panel(frame: &mut Frame, area: Rect, state: &SyncPanelSt
         .border_style(Style::default().fg(DIM));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    draw_sync_section(frame, inner, state);
+    draw_sync_section(frame, inner, state, scroll_offset);
 }
 
-fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
+fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState, scroll_offset: u16) {
     let w = area.width as usize;
     let vibe_fg = vibe_color(state.vibe);
     let mut lines: Vec<Line> = vec![
@@ -65,6 +70,7 @@ fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(format!(" ({})", intent.agent_id), Style::default().fg(DIM)),
                 Span::styled(
                     format!(" [{}]", intent.impact.as_str()),
                     Style::default().fg(intent_color(intent.impact)),
@@ -108,13 +114,14 @@ fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
             MessageKind::Info => "·",
         };
         let color = kind_color(message.kind);
-        // Card header: icon agent_name
+        // Card header: icon agent_name (agent_id)
         lines.push(Line::from(vec![
             Span::styled(format!("┌{icon} "), Style::default().fg(color)),
             Span::styled(
                 &message.agent_name,
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
+            Span::styled(format!(" ({})", message.agent_id), Style::default().fg(DIM)),
         ]));
         // Message body — wrap
         for chunk in wrap_text(&message.message, w.saturating_sub(2)) {
@@ -126,7 +133,12 @@ fn draw_sync_section(frame: &mut Frame, area: Rect, state: &SyncPanelState) {
         lines.push(Line::from(Span::styled("└─", Style::default().fg(color))));
     }
 
-    frame.render_widget(Paragraph::new(lines).style(Style::default()), area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default())
+            .scroll((scroll_offset, 0)),
+        area,
+    );
 }
 
 /// Split `text` into chunks of at most `max_width` chars, breaking on whitespace.

@@ -203,26 +203,35 @@ pub fn load_all_histories(data_dir: &Path) -> SessionHistory {
             continue;
         }
         let hist_file = entry.path().join("history.toml");
-        if let Ok(content) = fs::read_to_string(&hist_file) {
-            if let Ok(hist) = toml::from_str::<SessionHistory>(&content) {
-                for cmd in hist.commands {
-                    if let Some(existing) = merged
-                        .commands
-                        .iter_mut()
-                        .find(|e| e.cmd == cmd.cmd && e.cwd == cmd.cwd)
-                    {
-                        existing.count += cmd.count;
-                        if cmd.last_run > existing.last_run {
-                            existing.last_run = cmd.last_run;
-                        }
-                    } else {
-                        merged.commands.push(cmd);
-                    }
-                }
-            }
+        let Ok(content) = fs::read_to_string(&hist_file) else {
+            continue;
+        };
+        let Ok(hist) = toml::from_str::<SessionHistory>(&content) else {
+            continue;
+        };
+        for cmd in hist.commands {
+            merge_history_entry(&mut merged, cmd);
         }
     }
     merged
+}
+
+fn merge_history_entry(
+    merged: &mut SessionHistory,
+    cmd: crate::tui::terminal_history::CommandEntry,
+) {
+    if let Some(existing) = merged
+        .commands
+        .iter_mut()
+        .find(|e| e.cmd == cmd.cmd && e.cwd == cmd.cwd)
+    {
+        existing.count += cmd.count;
+        if cmd.last_run > existing.last_run {
+            existing.last_run = cmd.last_run;
+        }
+    } else {
+        merged.commands.push(cmd);
+    }
 }
 
 // ── Autocomplete picker state ───────────────────────────────────
@@ -302,48 +311,25 @@ impl SuggestionPicker {
 
     /// Create a directory picker for `cd` from CWD children + history dirs.
     pub fn for_cd(partial: &str, cwd: &str, global_history: &SessionHistory) -> Self {
-        let mut items: Vec<SuggestionItem> = Vec::new();
+        let mut items = list_subdirs(cwd, false);
 
-        // 1. List CWD children (directories only)
-        if let Ok(entries) = fs::read_dir(cwd) {
-            let mut children: Vec<SuggestionItem> = entries
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') {
-                        return None;
-                    }
-                    Some(SuggestionItem {
-                        text: format!("./{name}"),
-                        label: format!("./{name}"),
-                        count: 0,
-                    })
-                })
-                .collect();
-            children.sort_by(|a, b| a.text.cmp(&b.text));
-            items.extend(children);
-        }
-
-        // 2. Add history-derived directories (deduplicated, not already in CWD children)
-        let history_dirs = global_history.known_directories();
-        for dir in history_dirs {
+        // Add history-derived directories (deduplicated, not already in CWD children)
+        for dir in global_history.known_directories() {
             if dir == cwd {
                 continue;
             }
             let abbreviated = abbreviate_path(&dir);
             if !items.iter().any(|i| i.text == dir || i.text == abbreviated) {
                 items.push(SuggestionItem {
-                    text: dir.clone(),
+                    text: dir,
                     label: abbreviated,
                     count: 0,
                 });
             }
         }
 
-        // Filter by partial input
-        let partial_lower = partial.to_lowercase();
         if !partial.is_empty() {
+            let partial_lower = partial.to_lowercase();
             items.retain(|i| i.text.to_lowercase().contains(&partial_lower));
         }
 
@@ -485,47 +471,22 @@ impl SuggestionPicker {
             return;
         };
         let cwd = cwd_path.to_string_lossy().to_string();
-        let mut items = Vec::new();
 
-        // Compute relative path from base directory for display
-        if let Some(relative_path) = pathdiff::diff_paths(&cwd, base_path) {
-            let relative_str = relative_path.to_string_lossy().to_string();
-            // Convert to relative path format (./subdir or ../parent)
-            let display_path = if relative_str.starts_with("..") {
-                relative_str
-            } else if relative_str == "." {
-                ".".to_string()
-            } else {
-                format!("./{}", relative_str)
-            };
-            self.input = display_path;
-        } else {
-            // Fallback to abbreviated path if relative path computation fails
-            self.input = abbreviate_path(&cwd);
-        }
+        // Update input to show relative path from base
+        self.input = pathdiff::diff_paths(&cwd, base_path)
+            .map(|rel| {
+                let s = rel.to_string_lossy();
+                if s.starts_with("..") {
+                    s.to_string()
+                } else if s == "." {
+                    ".".to_string()
+                } else {
+                    format!("./{s}")
+                }
+            })
+            .unwrap_or_else(|| abbreviate_path(&cwd));
 
-        // List subdirectories
-        if let Ok(entries) = fs::read_dir(&cwd) {
-            let mut children: Vec<SuggestionItem> = entries
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') {
-                        return None;
-                    }
-                    Some(SuggestionItem {
-                        text: format!("./{name}"),
-                        label: format!("  {name}/"),
-                        count: 0,
-                    })
-                })
-                .collect();
-            children.sort_by(|a, b| a.text.cmp(&b.text));
-            items.extend(children);
-        }
-
-        self.items = items;
+        self.items = list_subdirs(&cwd, true);
         self.selected = 0;
         self.scroll_offset = 0;
     }
@@ -534,6 +495,37 @@ impl SuggestionPicker {
     pub fn selected_text(&self) -> Option<&str> {
         self.items.get(self.selected).map(|i| i.text.as_str())
     }
+}
+
+/// List immediate subdirectories of `dir` as `SuggestionItem`s.
+/// `use_indent_label`: if true, labels are `"  name/"` (for refresh_items);
+/// otherwise labels are `"./name"` (for for_cd).
+fn list_subdirs(dir: &str, use_indent_label: bool) -> Vec<SuggestionItem> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut items: Vec<SuggestionItem> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                return None;
+            }
+            let label = if use_indent_label {
+                format!("  {name}/")
+            } else {
+                format!("./{name}")
+            };
+            Some(SuggestionItem {
+                text: format!("./{name}"),
+                label,
+                count: 0,
+            })
+        })
+        .collect();
+    items.sort_by(|a, b| a.text.cmp(&b.text));
+    items
 }
 
 /// Abbreviate a path (replace home dir with ~).

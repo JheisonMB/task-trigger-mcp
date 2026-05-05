@@ -359,42 +359,58 @@ pub fn strip_jsonc_comments(input: &str) -> String {
 
     while let Some(c) = chars.next() {
         if in_string {
-            out.push(c);
-            if c == '\\' {
-                if let Some(&next) = chars.peek() {
-                    out.push(next);
-                    chars.next();
+            in_string = handle_string_char(c, &mut chars, &mut out);
+        } else {
+            match c {
+                '"' => {
+                    in_string = true;
+                    out.push(c);
                 }
-            } else if c == '"' {
-                in_string = false;
-            }
-        } else if c == '"' {
-            in_string = true;
-            out.push(c);
-        } else if c == '/' {
-            match chars.peek() {
-                Some('/') => {
-                    for ch in chars.by_ref() {
-                        if ch == '\n' {
-                            out.push('\n');
-                            break;
-                        }
-                    }
-                }
-                Some('*') => {
-                    chars.next();
-                    while let Some(ch) = chars.next() {
-                        if ch == '*' && chars.peek() == Some(&'/') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
+                '/' => handle_comment_or_slash(&mut chars, &mut out),
                 _ => out.push(c),
             }
-        } else {
-            out.push(c);
         }
     }
     out
+}
+
+/// Handle a character inside a JSON string. Returns `false` when the string ends.
+fn handle_string_char(
+    c: char,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+    out: &mut String,
+) -> bool {
+    out.push(c);
+    if c == '\\' {
+        if let Some(&next) = chars.peek() {
+            out.push(next);
+            chars.next();
+        }
+        return true; // still in string
+    }
+    c != '"' // false = string ended
+}
+
+/// Handle `/` outside a string: skip `//` line comment, `/* */` block comment, or emit `/`.
+fn handle_comment_or_slash(chars: &mut std::iter::Peekable<std::str::Chars<'_>>, out: &mut String) {
+    match chars.peek() {
+        Some('/') => {
+            for ch in chars.by_ref() {
+                if ch == '\n' {
+                    out.push('\n');
+                    break;
+                }
+            }
+        }
+        Some('*') => {
+            chars.next();
+            while let Some(ch) = chars.next() {
+                if ch == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    break;
+                }
+            }
+        }
+        _ => out.push('/'),
+    }
 }

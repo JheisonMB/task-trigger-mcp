@@ -57,12 +57,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 Constraint::Length(sync_width),
             ])
             .areas(body_area);
-            panel::draw_sync_panel(frame, sync, sync_state);
+            panel::draw_sync_panel(frame, sync, sync_state, app.sync_scroll_offset);
+            app.last_sync_area = Some(sync);
             (panel, Some(sync))
         } else {
+            app.last_sync_area = None;
             (body_area, None)
         }
     } else {
+        app.last_sync_area = None;
         (body_area, None)
     };
 

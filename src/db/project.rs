@@ -12,7 +12,7 @@ use crate::domain::project::{extract_readme_description, Project};
 #[derive(Debug, Clone)]
 pub struct Chunk {
     pub id: String,
-    pub project_hash: String,
+    pub project_hash: Option<String>,
     pub source_path: String,
     pub chunk_index: i32,
     pub content: String,
@@ -22,8 +22,6 @@ pub struct Chunk {
 
 #[derive(Debug, Clone)]
 pub struct RagQueueItem {
-    pub project_hash: String,
-    pub project_name: Option<String>,
     pub source_path: String,
     pub status: String,
     pub queued_at: i64,
@@ -82,45 +80,27 @@ impl Database {
         crate::rag::ragignore::ensure_ragignore(&canonical);
 
         self.upsert_project(&project)?;
-        self.queue_project_files(&project.hash, &canonical)?;
+        self.queue_project_files(&canonical)?;
         Ok(project)
     }
 
-    /// Scan project directory and queue all discoverable files for RAG ingestion.
-    /// Max depth: 10 levels. Max file size: 5 MB.
-    fn queue_project_files(&self, project_hash: &str, root: &Path) -> Result<()> {
-        const MAX_DEPTH: usize = 10;
-        const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
+    /// Scan project directory and write all files to rag_queue.
+    /// Filtering by ragignore is done by IngestionManager, not here.
+    fn queue_project_files(&self, root: &Path) -> Result<()> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;
 
-        let patterns = crate::rag::ragignore::load_patterns(root);
+        let mut queue = vec![(root.to_path_buf(), 0usize)];
 
-        let mut queue = vec![(root.to_path_buf(), 0)];
         while let Some((current_path, depth)) = queue.pop() {
-            if depth > MAX_DEPTH {
+            let Ok(entries) = std::fs::read_dir(&current_path) else {
                 continue;
-            }
-
-            if let Ok(entries) = std::fs::read_dir(&current_path) {
-                for entry in entries.flatten() {
-                    let entry_path = entry.path();
-                    if crate::rag::ragignore::is_ignored(&entry_path, root, &patterns) {
-                        continue;
-                    }
-                    if let Ok(metadata) = entry.metadata() {
-                        if metadata.is_dir() {
-                            queue.push((entry_path, depth + 1));
-                        } else if metadata.len() <= MAX_FILE_SIZE {
-                            if let Some(file_path_str) = entry_path.to_str() {
-                                if is_indexable_path(file_path_str) {
-                                    let _ = self.enqueue_rag_item(project_hash, file_path_str, now);
-                                }
-                            }
-                        }
-                    }
-                }
+            };
+            for entry in entries.flatten() {
+                process_dir_entry(&entry, root, &[], depth, &mut queue, |path| {
+                    let _ = self.enqueue_rag_item(path, now);
+                });
             }
         }
         Ok(())
@@ -131,14 +111,8 @@ impl Database {
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        conn.execute(
-            "DELETE FROM rag_queue WHERE project_hash=?1",
-            rusqlite::params![hash],
-        )?;
-        conn.execute(
-            "DELETE FROM rag_chunks WHERE project_hash=?1",
-            rusqlite::params![hash],
-        )?;
+        // With global RAG, deleting a project does NOT delete chunks.
+        // Chunks are keyed by source_path, not project_hash.
         conn.execute(
             "DELETE FROM projects WHERE hash=?1",
             rusqlite::params![hash],
@@ -248,92 +222,62 @@ impl Database {
         Ok(n > 0)
     }
 
-    pub fn enqueue_rag_item(
-        &self,
-        project_hash: &str,
-        source_path: &str,
-        queued_at: i64,
-    ) -> Result<()> {
+    /// Enqueue a file for RAG indexing. project_hash is optional metadata.
+    pub fn enqueue_rag_item(&self, source_path: &str, queued_at: i64) -> Result<()> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         conn.execute(
-            "INSERT INTO rag_queue (project_hash, source_path, status, queued_at, updated_at)
-             VALUES (?1, ?2, 'queued', ?3, ?3)
-             ON CONFLICT(project_hash, source_path) DO UPDATE SET
+            "INSERT INTO rag_queue (source_path, status, queued_at, updated_at)
+             VALUES (?1, 'queued', ?2, ?2)
+             ON CONFLICT(source_path) DO UPDATE SET
                 status='queued',
                 queued_at=excluded.queued_at,
                 updated_at=excluded.updated_at",
-            rusqlite::params![project_hash, source_path, queued_at],
+            rusqlite::params![source_path, queued_at],
         )?;
         Ok(())
     }
 
-    pub fn mark_rag_item_processing(
-        &self,
-        project_hash: &str,
-        source_path: &str,
-        updated_at: i64,
-    ) -> Result<bool> {
+    pub fn mark_rag_item_processing(&self, source_path: &str, updated_at: i64) -> Result<bool> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let n = conn.execute(
             "UPDATE rag_queue
-             SET status='processing', updated_at=?3
-             WHERE project_hash=?1 AND source_path=?2",
-            rusqlite::params![project_hash, source_path, updated_at],
+             SET status='processing', updated_at=?2
+             WHERE source_path=?1",
+            rusqlite::params![source_path, updated_at],
         )?;
         Ok(n > 0)
     }
 
-    pub fn remove_rag_item(&self, project_hash: &str, source_path: &str) -> Result<bool> {
+    pub fn remove_rag_item(&self, source_path: &str) -> Result<bool> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
         let n = conn.execute(
-            "DELETE FROM rag_queue WHERE project_hash=?1 AND source_path=?2",
-            rusqlite::params![project_hash, source_path],
+            "DELETE FROM rag_queue WHERE source_path=?1",
+            rusqlite::params![source_path],
         )?;
         Ok(n > 0)
     }
 
-    pub fn list_rag_queue(
-        &self,
-        project_hash: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<RagQueueItem>> {
+    pub fn list_rag_queue(&self, limit: usize) -> Result<Vec<RagQueueItem>> {
         let conn = self
             .conn
             .lock()
             .map_err(|e| anyhow::anyhow!("Lock poisoned: {}", e))?;
-        let sql = if project_hash.is_some() {
-            "SELECT q.project_hash, p.name, q.source_path, q.status, q.queued_at
-             FROM rag_queue q
-             LEFT JOIN projects p ON p.hash = q.project_hash
-             WHERE q.project_hash=?1
-             ORDER BY
-                CASE q.status WHEN 'processing' THEN 0 ELSE 1 END,
-                q.queued_at ASC
-             LIMIT ?2"
-        } else {
-            "SELECT q.project_hash, p.name, q.source_path, q.status, q.queued_at
-             FROM rag_queue q
-             LEFT JOIN projects p ON p.hash = q.project_hash
-             ORDER BY
-                CASE q.status WHEN 'processing' THEN 0 ELSE 1 END,
-                q.queued_at ASC
-             LIMIT ?1"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = if let Some(hash) = project_hash {
-            stmt.query_map(rusqlite::params![hash, limit as i64], row_to_rag_queue_item)?
-        } else {
-            stmt.query_map(rusqlite::params![limit as i64], row_to_rag_queue_item)?
-        };
+        let mut stmt = conn.prepare(
+            "SELECT source_path, status, queued_at
+             FROM rag_queue
+             ORDER BY CASE status WHEN 'processing' THEN 0 ELSE 1 END, queued_at ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![limit as i64], row_to_rag_queue_item)?;
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
@@ -345,8 +289,8 @@ impl Database {
 
         let total_chunks =
             conn.query_row("SELECT COUNT(*) FROM rag_chunks", [], |row| row.get(0))?;
-        let indexed_projects = conn.query_row(
-            "SELECT COUNT(DISTINCT project_hash) FROM rag_chunks",
+        let indexed_files = conn.query_row(
+            "SELECT COUNT(DISTINCT source_path) FROM rag_chunks",
             [],
             |row| row.get(0),
         )?;
@@ -363,7 +307,7 @@ impl Database {
 
         Ok(RagInfoSummary {
             total_chunks,
-            indexed_projects,
+            indexed_projects: indexed_files, // Now counts unique files, not projects
             queued_items,
             processing_items,
         })
@@ -372,12 +316,8 @@ impl Database {
     // ── RAG chunks (FTS5) ──────────────────────────────────────────────
 
     /// Delete all chunks for a file, then insert new ones.
-    pub fn replace_chunks(
-        &self,
-        project_hash: &str,
-        source_path: &str,
-        chunks: &[Chunk],
-    ) -> Result<()> {
+    /// project_hash is now optional metadata (not part of the key).
+    pub fn replace_chunks(&self, source_path: &str, chunks: &[Chunk]) -> Result<()> {
         let mut conn = self
             .conn
             .lock()
@@ -386,8 +326,8 @@ impl Database {
         let tx = conn.transaction()?;
 
         tx.execute(
-            "DELETE FROM rag_chunks WHERE project_hash=?1 AND source_path=?2",
-            rusqlite::params![project_hash, source_path],
+            "DELETE FROM rag_chunks WHERE source_path=?1",
+            rusqlite::params![source_path],
         )?;
 
         {
@@ -484,12 +424,50 @@ fn row_to_chunk(row: &rusqlite::Row<'_>) -> rusqlite::Result<Chunk> {
 
 fn row_to_rag_queue_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<RagQueueItem> {
     Ok(RagQueueItem {
-        project_hash: row.get(0)?,
-        project_name: row.get(1)?,
-        source_path: row.get(2)?,
-        status: row.get(3)?,
-        queued_at: row.get(4)?,
+        source_path: row.get(0)?,
+        status: row.get(1)?,
+        queued_at: row.get(2)?,
     })
+}
+
+/// Process a single directory entry during project file scanning.
+/// Pushes subdirectories onto `queue` and calls `on_file` for indexable files.
+fn process_dir_entry(
+    entry: &std::fs::DirEntry,
+    root: &Path,
+    patterns: &[String],
+    depth: usize,
+    queue: &mut Vec<(std::path::PathBuf, usize)>,
+    mut on_file: impl FnMut(&str),
+) {
+    const MAX_DEPTH: usize = 10;
+    const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024;
+
+    let entry_path = entry.path();
+
+    if crate::rag::ragignore::is_ignored(&entry_path, root, patterns) {
+        return;
+    }
+    let Ok(metadata) = entry.metadata() else {
+        return;
+    };
+
+    if metadata.is_dir() {
+        if depth < MAX_DEPTH {
+            queue.push((entry_path, depth + 1));
+        }
+        return;
+    }
+
+    if metadata.len() > MAX_FILE_SIZE {
+        return;
+    }
+    let Some(path_str) = entry_path.to_str() else {
+        return;
+    };
+    if is_indexable_path(path_str) {
+        on_file(path_str);
+    }
 }
 
 /// Returns true if the file at `path` has an extension the RAG indexer can process.

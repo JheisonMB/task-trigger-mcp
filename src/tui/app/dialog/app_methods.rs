@@ -13,75 +13,16 @@ impl App {
         let Some(agent) = self.agents.get(self.selected) else {
             return;
         };
-        // Get working dir from the agent being edited
         let agent_dir = match agent {
             AgentEntry::Agent(a) => a.working_dir.as_deref(),
             _ => None,
         };
+        let AgentEntry::Agent(a) = agent else {
+            return; // editing not supported for Interactive/Terminal/Group
+        };
         let mut dialog = NewAgentDialog::new(agent_dir);
         dialog.prev_focus = Some(prev_focus);
-
-        match agent {
-            AgentEntry::Agent(a) => {
-                match &a.trigger {
-                    Some(crate::domain::models::Trigger::Cron { schedule_expr }) => {
-                        dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Background;
-                        dialog.background_trigger = BackgroundTrigger::Cron;
-                        dialog.prompt = a.prompt.clone();
-                        dialog.cron_expr = schedule_expr.clone();
-                        dialog.working_dir = a.working_dir.clone().unwrap_or_default();
-                        dialog.model = a.model.clone().unwrap_or_default();
-                        if let Some(idx) = dialog
-                            .available_clis
-                            .iter()
-                            .position(|c| c.as_str() == a.cli.as_str())
-                        {
-                            dialog.cli_index = idx;
-                        }
-                        dialog.field = 2;
-                    }
-                    Some(crate::domain::models::Trigger::Watch { path, events, .. }) => {
-                        dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Background;
-                        dialog.background_trigger = BackgroundTrigger::Watch;
-                        dialog.prompt = a.prompt.clone();
-                        dialog.watch_path = path.clone();
-                        dialog.watch_events = events
-                            .iter()
-                            .map(|e| e.to_string().to_lowercase())
-                            .collect();
-                        dialog.model = a.model.clone().unwrap_or_default();
-                        if let Some(idx) = dialog
-                            .available_clis
-                            .iter()
-                            .position(|c| c.as_str() == a.cli.as_str())
-                        {
-                            dialog.cli_index = idx;
-                        }
-                        dialog.field = 2;
-                    }
-                    None => {
-                        // Manual-only agent — open as background with empty cron
-                        dialog.edit_id = Some(a.id.clone());
-                        dialog.task_type = NewTaskType::Background;
-                        dialog.background_trigger = BackgroundTrigger::Cron;
-                        dialog.prompt = a.prompt.clone();
-                        dialog.model = a.model.clone().unwrap_or_default();
-                        if let Some(idx) = dialog
-                            .available_clis
-                            .iter()
-                            .position(|c| c.as_str() == a.cli.as_str())
-                        {
-                            dialog.cli_index = idx;
-                        }
-                        dialog.field = 2;
-                    }
-                }
-            }
-            AgentEntry::Interactive(_) | AgentEntry::Terminal(_) | AgentEntry::Group(_) => return, // editing not supported
-        }
-
+        populate_dialog_from_agent(&mut dialog, a);
         dialog.refresh_model_suggestions();
         self.new_agent_dialog = Some(dialog);
         self.focus = super::super::types::Focus::NewAgentDialog;
@@ -409,14 +350,7 @@ impl App {
             .get(dialog.cli_index)
             .and_then(|c| c.as_ref())
             .and_then(|c| c.model_flag.clone());
-        let (cols, rows) = if self.last_panel_inner != (0, 0) {
-            self.last_panel_inner
-        } else {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            (tw.saturating_sub(28), th.saturating_sub(4))
-        };
-        // Only consider active agent names for collision avoidance
-        // This allows names to be reused when agents are closed
+        let (cols, rows) = pty_dimensions(self.last_panel_inner);
         let existing_refs: Vec<&str> = self
             .interactive_agents
             .iter()
@@ -456,7 +390,7 @@ impl App {
             return Ok(());
         }
         let cli = dialog.selected_cli();
-        let id = format!("agent-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let id = new_short_id("agent");
         let working_dir = if dialog.working_dir.is_empty() {
             std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
@@ -464,14 +398,7 @@ impl App {
         } else {
             dialog.working_dir.clone()
         };
-        let log_dir = dirs::home_dir()
-            .map(|h| h.join(".canopy/logs"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
-        let log_path = log_dir
-            .join(&id)
-            .with_extension("log")
-            .to_string_lossy()
-            .to_string();
+        let log_path = agent_log_path(&id);
         let agent = crate::domain::models::Agent {
             id,
             prompt: dialog.prompt.clone(),
@@ -504,7 +431,7 @@ impl App {
             return Ok(());
         }
         let cli = dialog.selected_cli();
-        let id = format!("watch-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let id = new_short_id("watch");
         let events: Vec<_> = dialog
             .watch_events
             .iter()
@@ -513,14 +440,7 @@ impl App {
         if events.is_empty() {
             return Ok(());
         }
-        let log_dir = dirs::home_dir()
-            .map(|h| h.join(".canopy/logs"))
-            .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"));
-        let log_path = log_dir
-            .join(&id)
-            .with_extension("log")
-            .to_string_lossy()
-            .to_string();
+        let log_path = agent_log_path(&id);
         let agent = crate::domain::models::Agent {
             id,
             prompt: dialog.prompt.clone(),
@@ -552,12 +472,7 @@ impl App {
 
         let shell = dialog.selected_shell();
         let dir = dialog.working_dir.clone();
-        let (cols, rows) = if self.last_panel_inner != (0, 0) {
-            self.last_panel_inner
-        } else {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            (tw.saturating_sub(28), th.saturating_sub(4))
-        };
+        let (cols, rows) = pty_dimensions(self.last_panel_inner);
         let existing_refs: Vec<&str> = self
             .terminal_agents
             .iter()
@@ -584,4 +499,65 @@ impl App {
             .notify_event(crate::tui::whimsg::WhimContext::AgentSpawned);
         Ok(())
     }
+}
+
+// ── Free helpers ──────────────────────────────────────────────────
+
+fn new_short_id(prefix: &str) -> String {
+    format!("{}-{}", prefix, &uuid::Uuid::new_v4().to_string()[..8])
+}
+
+fn agent_log_path(id: &str) -> String {
+    dirs::home_dir()
+        .map(|h| h.join(".canopy/logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp/canopy/logs"))
+        .join(id)
+        .with_extension("log")
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Populate a `NewAgentDialog` from an existing agent's fields.
+fn populate_dialog_from_agent(dialog: &mut NewAgentDialog, a: &crate::domain::models::Agent) {
+    dialog.edit_id = Some(a.id.clone());
+    dialog.task_type = NewTaskType::Background;
+    dialog.prompt = a.prompt.clone();
+    dialog.model = a.model.clone().unwrap_or_default();
+    dialog.working_dir = a.working_dir.clone().unwrap_or_default();
+    dialog.field = 2;
+
+    if let Some(idx) = dialog
+        .available_clis
+        .iter()
+        .position(|c| c.as_str() == a.cli.as_str())
+    {
+        dialog.cli_index = idx;
+    }
+
+    match &a.trigger {
+        Some(crate::domain::models::Trigger::Cron { schedule_expr }) => {
+            dialog.background_trigger = BackgroundTrigger::Cron;
+            dialog.cron_expr = schedule_expr.clone();
+        }
+        Some(crate::domain::models::Trigger::Watch { path, events, .. }) => {
+            dialog.background_trigger = BackgroundTrigger::Watch;
+            dialog.watch_path = path.clone();
+            dialog.watch_events = events
+                .iter()
+                .map(|e| e.to_string().to_lowercase())
+                .collect();
+        }
+        None => {
+            dialog.background_trigger = BackgroundTrigger::Cron;
+        }
+    }
+}
+
+/// Resolve PTY dimensions from the last known panel size, falling back to terminal size.
+fn pty_dimensions(last_panel_inner: (u16, u16)) -> (u16, u16) {
+    if last_panel_inner != (0, 0) {
+        return last_panel_inner;
+    }
+    let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+    (tw.saturating_sub(28), th.saturating_sub(4))
 }

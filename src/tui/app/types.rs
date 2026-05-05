@@ -182,6 +182,11 @@ pub struct App {
     /// CLI launch usage counters (persisted to disk).
     pub(crate) cli_usage: crate::domain::usage_stats::CliUsage,
 
+    // Sync panel scroll
+    pub(crate) sync_scroll_offset: u16,
+    /// Last rendered area of the sync panel (used for mouse hit-testing).
+    pub(crate) last_sync_area: Option<ratatui::layout::Rect>,
+
     // RAG pause state (synced from daemon_state table)
     pub(crate) rag_paused: bool,
     /// Whether the RagInfo panel has focus in Agents sidebar mode.

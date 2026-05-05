@@ -30,7 +30,7 @@ pub(crate) async fn run_http_server(port_override: Option<u16>) -> Result<()> {
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
     let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
-    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
+    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db), data_dir.clone()));
     let _ingestion_cancel = Arc::clone(&ingestion).start();
 
     tracing::info!(
@@ -137,7 +137,7 @@ pub(crate) async fn run_stdio_server() -> Result<()> {
     let watcher_engine = Arc::new(WatcherEngine::new(Arc::clone(&db), Arc::clone(&executor)));
     let sync_manager = Arc::new(SyncManager::new(Arc::clone(&db)));
 
-    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db)));
+    let ingestion = Arc::new(IngestionManager::new(Arc::clone(&db), data_dir.clone()));
     let _ingestion_cancel = Arc::clone(&ingestion).start();
 
     startup_enqueue_unindexed(Arc::clone(&ingestion), Arc::clone(&db)).await;
@@ -182,11 +182,9 @@ async fn startup_enqueue_unindexed(ingestion: Arc<IngestionManager>, db: Arc<Dat
     // in a previous session or via the sync path that writes directly to the DB).
     // This is the primary fix for "indexed stays at 1" — items written to rag_queue
     // by queue_project_files never reached the in-memory worker queue.
-    if let Ok(pending) = db.list_rag_queue(None, 10_000) {
+    if let Ok(pending) = db.list_rag_queue(10_000) {
         for item in &pending {
-            ingestion
-                .enqueue(&item.project_hash, &item.source_path)
-                .await;
+            ingestion.enqueue(&item.source_path).await;
         }
         if !pending.is_empty() {
             tracing::info!(

@@ -194,77 +194,8 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
         // Directory browser for terminal
         if !dialog.dir_entries.is_empty() {
-            let filtered = dialog.filtered_dir_entries();
-            let filter_display = if dialog.dir_filter.is_empty() {
-                "type to filter".to_string()
-            } else {
-                dialog.dir_filter.clone()
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  🔍 ",
-                    if dialog.field == term_dir_field {
-                        Style::default().fg(accent)
-                    } else {
-                        Style::default().fg(DIM)
-                    },
-                ),
-                Span::styled(
-                    filter_display,
-                    if dialog.dir_filter.is_empty() {
-                        Style::default().fg(DIM)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-            ]));
-
-            let visible_rows = 10;
-            let scroll = if dialog.dir_selected >= visible_rows {
-                dialog.dir_selected - visible_rows + 1
-            } else {
-                0
-            };
-            let has_above = scroll > 0;
-            let has_below = !filtered.is_empty() && scroll + visible_rows < filtered.len();
-
-            if filtered.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "    (no matches)",
-                    Style::default().fg(DIM),
-                )));
-            } else {
-                for (i, entry) in filtered.iter().enumerate().skip(scroll).take(visible_rows) {
-                    let is_selected = i == dialog.dir_selected;
-                    let entry_style = if is_selected {
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("    {entry}"),
-                        entry_style,
-                    )));
-                }
-            }
-
-            let up = if has_above { "↑ " } else { "  " };
-            let dn = if has_below { " ↓" } else { "  " };
-            if filtered.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    "    0 items",
-                    Style::default().fg(DIM),
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    format!("    {up}{}/{}{dn}", dialog.dir_selected + 1, filtered.len()),
-                    Style::default().fg(DIM),
-                )));
-            }
-            lines.push(Line::from(""));
+            let focused = dialog.field == term_dir_field;
+            lines.extend(dir_browser_lines(dialog, accent, focused));
         }
 
         let selected_shell = dialog.selected_shell();
@@ -616,82 +547,11 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
 
     // Directory / file browser
     if !dialog.dir_entries.is_empty() {
-        let filtered = dialog.filtered_dir_entries();
         let is_watch =
             is_background && dialog.background_trigger == crate::tui::app::BackgroundTrigger::Watch;
         let browser_field_idx = if is_watch { extra_field } else { dir_field };
-
-        let filter_display = if dialog.dir_filter.is_empty() {
-            "type to filter".to_string()
-        } else {
-            dialog.dir_filter.clone()
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                "  🔍 ",
-                if is_focused(browser_field_idx) {
-                    Style::default().fg(accent)
-                } else {
-                    Style::default().fg(DIM)
-                },
-            ),
-            Span::styled(
-                filter_display,
-                if dialog.dir_filter.is_empty() {
-                    Style::default().fg(DIM)
-                } else {
-                    Style::default().fg(Color::White)
-                },
-            ),
-        ]));
-
-        let visible_rows = 10;
-        let scroll = if dialog.dir_selected >= visible_rows {
-            dialog.dir_selected - visible_rows + 1
-        } else {
-            0
-        };
-        let has_above = scroll > 0;
-        let has_below = !filtered.is_empty() && scroll + visible_rows < filtered.len();
-
-        if filtered.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "    (no matches)",
-                Style::default().fg(DIM),
-            )));
-        } else {
-            for (i, entry) in filtered.iter().enumerate().skip(scroll).take(visible_rows) {
-                let is_selected = i == dialog.dir_selected;
-                let entry_style = if is_selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                };
-
-                lines.push(Line::from(Span::styled(
-                    format!("    {entry}"),
-                    entry_style,
-                )));
-            }
-        }
-
-        let up = if has_above { "↑ " } else { "  " };
-        let dn = if has_below { " ↓" } else { "  " };
-        if filtered.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "    0 items",
-                Style::default().fg(DIM),
-            )));
-        } else {
-            lines.push(Line::from(Span::styled(
-                format!("    {up}{}/{}{dn}", dialog.dir_selected + 1, filtered.len()),
-                Style::default().fg(DIM),
-            )));
-        }
-        lines.push(Line::from(""));
+        let focused = is_focused(browser_field_idx);
+        lines.extend(dir_browser_lines(dialog, accent, focused));
     }
 
     let help_text = if is_interactive {
@@ -708,4 +568,78 @@ pub fn draw_new_agent_dialog(frame: &mut Frame, app: &App) {
     )));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn dir_browser_lines(
+    dialog: &crate::tui::app::dialog::new_agent::NewAgentDialog,
+    accent: ratatui::style::Color,
+    focused: bool,
+) -> Vec<Line<'static>> {
+    let filtered = dialog.filtered_dir_entries();
+    let filter_display = if dialog.dir_filter.is_empty() {
+        "type to filter".to_string()
+    } else {
+        dialog.dir_filter.clone()
+    };
+
+    let mut lines: Vec<Line<'static>> = vec![Line::from(vec![
+        Span::styled(
+            "  🔍 ",
+            if focused {
+                Style::default().fg(accent)
+            } else {
+                Style::default().fg(DIM)
+            },
+        ),
+        Span::styled(
+            filter_display,
+            if dialog.dir_filter.is_empty() {
+                Style::default().fg(DIM)
+            } else {
+                Style::default().fg(Color::White)
+            },
+        ),
+    ])];
+
+    const VISIBLE: usize = 10;
+    let scroll = dialog
+        .dir_selected
+        .saturating_sub(VISIBLE.saturating_sub(1));
+    let has_above = scroll > 0;
+    let has_below = !filtered.is_empty() && scroll + VISIBLE < filtered.len();
+
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    (no matches)",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        for (i, entry) in filtered.iter().enumerate().skip(scroll).take(VISIBLE) {
+            let style = if i == dialog.dir_selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(format!("    {entry}"), style)));
+        }
+    }
+
+    let up = if has_above { "↑ " } else { "  " };
+    let dn = if has_below { " ↓" } else { "  " };
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    0 items",
+            Style::default().fg(DIM),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!("    {up}{}/{}{dn}", dialog.dir_selected + 1, filtered.len()),
+            Style::default().fg(DIM),
+        )));
+    }
+    lines.push(Line::from(""));
+    lines
 }

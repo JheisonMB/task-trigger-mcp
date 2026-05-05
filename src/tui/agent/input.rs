@@ -52,38 +52,24 @@ impl InteractiveAgent {
     /// 2. Cursor is on the last non-empty row of the visible screen.
     ///
     /// Text patterns were removed because box-drawing characters appear in all
-    /// TUI agents' normal output and caused constant false positives.
     pub fn is_waiting_for_input(&self) -> bool {
         if self.status != AgentStatus::Running {
             return false;
         }
 
-        let idle_threshold = std::time::Duration::from_millis(2000);
-        let (is_idle, new_output_since_viewed) =
-            if let (Ok(out), Ok(view)) = (self.last_output_at.lock(), self.last_viewed_at.lock()) {
-                let elapsed = Utc::now().signed_duration_since(*out);
-                (
-                    elapsed.num_milliseconds() >= idle_threshold.as_millis() as i64,
-                    *out > *view,
-                )
-            } else {
-                (false, false)
-            };
-
-        if !is_idle || !new_output_since_viewed {
+        let (is_idle, new_output) = self.check_idle_state();
+        if !is_idle || !new_output {
             return false;
         }
 
         let Some(screen) = self.screen_snapshot() else {
             return true;
         };
-
         let rows = screen.cells.len();
         if rows == 0 {
             return true;
         }
 
-        // Find the last row that has any visible (non-space) content.
         let last_nonempty = (0..rows).rev().find(|&r| {
             screen.cells.get(r).is_some_and(|row| {
                 row.iter()
@@ -91,16 +77,20 @@ impl InteractiveAgent {
             })
         });
 
-        let Some(_last_content_row) = last_nonempty else {
-            // Screen is blank but process is idle — assume waiting.
-            return true;
-        };
+        let Some(_) = last_nonempty else { return true };
+        is_idle && (screen.cursor_row as usize) > rows / 2
+    }
 
-        // Cursor should be in the lower half of the screen (common for prompts/input fields).
-        // This is more permissive than checking exact row position, reducing false negatives
-        // while still being selective enough to avoid constant false positives.
-        let cursor_in_lower_half = (screen.cursor_row as usize) > rows / 2;
-        is_idle && cursor_in_lower_half
+    fn check_idle_state(&self) -> (bool, bool) {
+        const IDLE_MS: i64 = 2000;
+        let Ok(out) = self.last_output_at.lock() else {
+            return (false, false);
+        };
+        let Ok(view) = self.last_viewed_at.lock() else {
+            return (false, false);
+        };
+        let elapsed = Utc::now().signed_duration_since(*out).num_milliseconds();
+        (elapsed >= IDLE_MS, *out > *view)
     }
 
     pub fn is_sensitive_input_active(&self) -> bool {

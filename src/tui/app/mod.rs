@@ -140,6 +140,8 @@ impl App {
             playground_project_hash: None,
             rag_paused: false,
             agents_rag_focused: false,
+            sync_scroll_offset: 0,
+            last_sync_area: None,
         };
         app.refresh()?;
         Ok(app)
@@ -155,7 +157,7 @@ impl App {
         self.refresh_active_runs()?;
         self.poll_interactive_agents();
         self.poll_terminal_agents();
-        self.tick_banner_glitch();
+        self.tick_banner_animation();
         self.ensure_sidebar_brain();
         self.refresh_log();
         self.auto_hide_sidebar();
@@ -305,7 +307,7 @@ impl App {
     }
 
     fn refresh_rag_state(&mut self) -> Result<()> {
-        self.global_rag_queue = self.db.list_rag_queue(None, 50)?;
+        self.global_rag_queue = self.db.list_rag_queue(50)?;
         self.rag_info = self.db.rag_info_summary()?;
         self.rag_paused = self
             .db
@@ -509,124 +511,89 @@ impl App {
 
     fn update_whimsg_context(&mut self) {
         use crate::tui::whimsg::WhimContext;
-        use std::time::Duration;
 
-        // CRITICAL: If daemon is down, everything is an error state
         if !self.daemon_running {
             self.whimsg.set_ambient(WhimContext::AgentFailed);
             self.whimsg.notify_event(WhimContext::AgentFailed);
             return;
         }
 
-        // Check global health: recent background agent failures
-        let now = Utc::now();
-        for run in &self.recent_runs {
-            if let Some(finished) = run.finished_at {
-                let seconds_since = (now - finished).num_seconds();
-                if seconds_since < 60 {
-                    match run.status {
-                        crate::domain::models::RunStatus::Error
-                        | crate::domain::models::RunStatus::Timeout => {
-                            self.whimsg.notify_event(WhimContext::AgentFailed);
-                        }
-                        crate::domain::models::RunStatus::Success => {
-                            self.whimsg.notify_event(WhimContext::AgentDone);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
+        self.check_recent_run_events();
 
-        // Check if user scrolled recently
-        if self.last_scroll_at.elapsed() < Duration::from_secs(5) {
+        if self.last_scroll_at.elapsed() < std::time::Duration::from_secs(5) {
             self.whimsg.set_ambient(WhimContext::Scrolling);
             return;
         }
 
-        // Scan logs of selected agent for contextual triggers.
-        // Only re-evaluate when the log content actually changes.
-        if let Some(agent) = self.agents.get(self.selected) {
-            let raw_log = match agent {
-                AgentEntry::Interactive(idx) => {
-                    if let Some(ia) = self.interactive_agents.get(*idx) {
-                        ia.last_lines(50)
-                    } else {
-                        String::new()
-                    }
-                }
-                AgentEntry::Terminal(idx) => {
-                    if let Some(ia) = self.terminal_agents.get(*idx) {
-                        ia.last_lines(50)
-                    } else {
-                        String::new()
-                    }
-                }
-                _ => self.log_content.clone(),
+        self.check_log_context();
+        self.update_ambient_context();
+    }
+
+    fn check_recent_run_events(&mut self) {
+        use crate::tui::whimsg::WhimContext;
+        let now = Utc::now();
+        for run in &self.recent_runs {
+            let Some(finished) = run.finished_at else {
+                continue;
             };
-
-            if !raw_log.is_empty() {
-                // Simple hash to detect changes — avoid re-firing on the same content
-                let log_hash: u64 = raw_log.bytes().enumerate().fold(0u64, |acc, (i, b)| {
-                    acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
-                });
-
-                if log_hash != self.whimsg_last_log_hash {
-                    self.whimsg_last_log_hash = log_hash;
-
-                    let log_up = raw_log.to_uppercase();
-
-                    // Error keywords — specific phrases to reduce false positives.
-                    // Avoid single "ERROR" or "FAILED" which appear in normal agent output
-                    // (e.g. "no errors found", "error handling", "failed test cases: 0").
-                    let is_error = log_up.contains("ERROR")
-                        || log_up.contains("FAILED")
-                        || log_up.contains("EXCEPTION")
-                        || log_up.contains("PANIC")
-                        || log_up.contains("SEGFAULT")
-                        || log_up.contains("TIMED OUT")
-                        || log_up.contains("CONNECTION REFUSED")
-                        || log_up.contains("PERMISSION DENIED")
-                        || log_up.contains("HALTED")
-                        // Spanish
-                        || log_up.contains("PROBLEMA")
-                        || log_up.contains("FALLO")
-                        || log_up.contains("FALLANDO");
-
-                    let is_success = log_up.contains("SUCCESS")
-                        || log_up.contains("ALL TESTS PASSED")
-                        || log_up.contains("BUILD SUCCEEDED")
-                        || log_up.contains("FINISHED")
-                        || log_up.contains("COMPLETED")
-                        || log_up.contains("DONE.")
-                        || log_up.contains("STABILIZED")
-                        || log_up.contains("READY")
-                        || log_up.contains("CONVERGED")
-                        || log_up.contains("DEPLOYED")
-                        // Spanish
-                        || log_up.contains("EXCELENTE")
-                        || log_up.contains("COMPLETADO")
-                        || log_up.contains("HECHO")
-                        || log_up.contains("LISTO")
-                        || log_up.contains("TERMINADO");
-
-                    let is_spawn = log_up.contains("SPAWNING")
-                        || log_up.contains("STARTING UP")
-                        || log_up.contains("BOOTSTRAPPING")
-                        || log_up.contains("INITIALIZING");
-
-                    if is_error {
-                        self.whimsg.notify_event(WhimContext::AgentFailed);
-                    } else if is_success {
-                        self.whimsg.notify_event(WhimContext::AgentDone);
-                    } else if is_spawn {
-                        self.whimsg.notify_event(WhimContext::AgentSpawned);
-                    }
+            if (now - finished).num_seconds() >= 60 {
+                continue;
+            }
+            match run.status {
+                crate::domain::models::RunStatus::Error
+                | crate::domain::models::RunStatus::Timeout => {
+                    self.whimsg.notify_event(WhimContext::AgentFailed);
                 }
+                crate::domain::models::RunStatus::Success => {
+                    self.whimsg.notify_event(WhimContext::AgentDone);
+                }
+                _ => {}
             }
         }
+    }
 
-        // Check how many interactive agents are running
+    fn check_log_context(&mut self) {
+        use crate::tui::whimsg::WhimContext;
+
+        let raw_log = match self.agents.get(self.selected) {
+            Some(AgentEntry::Interactive(idx)) => self
+                .interactive_agents
+                .get(*idx)
+                .map(|a| a.last_lines(50))
+                .unwrap_or_default(),
+            Some(AgentEntry::Terminal(idx)) => self
+                .terminal_agents
+                .get(*idx)
+                .map(|a| a.last_lines(50))
+                .unwrap_or_default(),
+            _ => self.log_content.clone(),
+        };
+
+        if raw_log.is_empty() {
+            return;
+        }
+
+        let log_hash: u64 = raw_log.bytes().enumerate().fold(0u64, |acc, (i, b)| {
+            acc.wrapping_add((b as u64).wrapping_mul(i as u64 + 1))
+        });
+
+        if log_hash == self.whimsg_last_log_hash {
+            return;
+        }
+        self.whimsg_last_log_hash = log_hash;
+
+        let log_up = raw_log.to_uppercase();
+        if log_contains_error(&log_up) {
+            self.whimsg.notify_event(WhimContext::AgentFailed);
+        } else if log_contains_success(&log_up) {
+            self.whimsg.notify_event(WhimContext::AgentDone);
+        } else if log_contains_spawn(&log_up) {
+            self.whimsg.notify_event(WhimContext::AgentSpawned);
+        }
+    }
+
+    fn update_ambient_context(&mut self) {
+        use crate::tui::whimsg::WhimContext;
         let running = self
             .interactive_agents
             .iter()
@@ -634,13 +601,14 @@ impl App {
             .count();
         let has_active_runs = !self.active_runs.is_empty();
 
-        if running >= 3 || (running >= 1 && has_active_runs) {
-            self.whimsg.set_ambient(WhimContext::Busy);
+        let ctx = if running >= 3 || (running >= 1 && has_active_runs) {
+            WhimContext::Busy
         } else if has_active_runs {
-            self.whimsg.set_ambient(WhimContext::TaskRunning);
+            WhimContext::TaskRunning
         } else {
-            self.whimsg.set_ambient(WhimContext::Idle);
-        }
+            WhimContext::Idle
+        };
+        self.whimsg.set_ambient(ctx);
     }
 
     // ── Split Groups ────────────────────────────────────────────
@@ -968,13 +936,8 @@ impl App {
 
         let query = self.playground_query.trim().to_string();
         let context_payload = format!(
-            "kind: rag_chunk\nquery: {}\nproject_hash: {}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
-            query,
-            chunk.project_hash,
-            chunk.source_path,
-            chunk.chunk_index,
-            chunk.lang,
-            chunk.content
+            "kind: rag_chunk\nquery: {}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
+            query, chunk.source_path, chunk.chunk_index, chunk.lang, chunk.content
         );
 
         self.rag_transfer_modal = Some(RagTransferModal {
@@ -1020,30 +983,19 @@ impl App {
         self.open_simple_prompt_dialog(Some(initial_content));
     }
 
-    /// Auto-resume previously active interactive sessions from the registry.
-    ///
-    /// On startup, any sessions marked 'active' are from a previous canopy run
-    /// where the PTY processes have since died. For CLIs that support resume
-    /// (e.g. `--continue`), we re-launch in resume mode in the same directory.
     pub fn auto_resume_sessions(&mut self) {
         let Ok(sessions) = self.db.get_active_sessions() else {
             return;
         };
-
         if sessions.is_empty() {
             tracing::info!("No active sessions to resume");
             return;
         }
-
         tracing::info!("Resuming {} active session(s)", sessions.len());
-
-        // Mark all old active sessions as orphaned first
         let _ = self.db.mark_orphaned_sessions();
 
         let home = dirs::home_dir().unwrap_or_default();
-        let canopy_dir = home.join(".canopy");
-        let canopy_config = crate::domain::canopy_config::CanopyConfig::load(&canopy_dir);
-
+        let canopy_config = crate::domain::canopy_config::CanopyConfig::load(&home.join(".canopy"));
         let (cols, rows) = {
             let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
             (tw.saturating_sub(28), th.saturating_sub(4))
@@ -1051,29 +1003,23 @@ impl App {
 
         for session in &sessions {
             let cli = crate::domain::models::Cli::from_str(&session.cli);
-
-            // Get CLI config for interactive args and accent color
             let cli_config = canopy_config.get_cli(cli.as_str());
-            let interactive_args = cli_config.and_then(|c| c.interactive_args.as_deref());
-            let resume_args = cli_config.and_then(|c| c.resume_args.as_deref());
-            let session_resume_cmd = cli_config.and_then(|c| c.session_resume_cmd.as_deref());
-            let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
+
             let accent = cli_config
                 .and_then(|c| c.accent_color)
                 .map(|[r, g, b]| ratatui::style::Color::Rgb(r, g, b))
                 .unwrap_or(ratatui::style::Color::Rgb(102, 187, 106));
 
-            let yolo_flag = cli_config.and_then(|c| c.yolo_flag.as_deref());
             let args_str = build_resumed_session_args(
                 session,
-                interactive_args,
-                resume_args,
-                session_resume_cmd,
-                yolo_flag,
+                cli_config.and_then(|c| c.interactive_args.as_deref()),
+                cli_config.and_then(|c| c.resume_args.as_deref()),
+                cli_config.and_then(|c| c.session_resume_cmd.as_deref()),
+                cli_config.and_then(|c| c.yolo_flag.as_deref()),
             );
             let args = args_str.as_deref();
-            let model: Option<String> = None; // No model info in session registry
             let model_flag = cli_config.and_then(|c| c.model_flag.clone());
+            let fallback = cli_config.and_then(|c| c.fallback_interactive_args.as_deref());
 
             let existing_ids: Vec<&str> = self
                 .interactive_agents
@@ -1091,7 +1037,7 @@ impl App {
                 accent,
                 Some(&session.name),
                 &existing_ids,
-                model.as_deref(),
+                None,
                 model_flag.as_deref(),
             ) {
                 Ok(agent) => {
@@ -1104,9 +1050,7 @@ impl App {
                     );
                     self.interactive_agents.push(agent);
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to auto-resume session '{}': {e}", session.name);
-                }
+                Err(e) => tracing::warn!("Failed to auto-resume session '{}': {e}", session.name),
             }
         }
 
@@ -1115,20 +1059,14 @@ impl App {
         }
     }
 
-    /// Auto-resume previously active terminal sessions.
-    ///
-    /// Terminal sessions are simpler than interactive — no CLI resume args needed,
-    /// just re-spawn a shell in the same working directory with the same name.
     pub fn auto_resume_terminal_sessions(&mut self) {
         let Ok(sessions) = self.db.get_active_terminal_sessions() else {
             return;
         };
-
         if sessions.is_empty() {
             tracing::info!("No active terminal sessions to resume");
             return;
         }
-
         tracing::info!("Resuming {} terminal session(s)", sessions.len());
         let _ = self.db.mark_orphaned_terminal_sessions();
 
@@ -1160,17 +1098,14 @@ impl App {
                         &session.shell,
                         &session.working_dir,
                     );
-                    // Load command history into cache
                     let hist = super::terminal_history::load_history(&self.data_dir, &agent.name);
                     self.terminal_histories.insert(agent.name.clone(), hist);
                     self.terminal_agents.push(agent);
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to auto-resume terminal session '{}': {e}",
-                        session.name
-                    );
-                }
+                Err(e) => tracing::warn!(
+                    "Failed to auto-resume terminal session '{}': {e}",
+                    session.name
+                ),
             }
         }
 
@@ -1287,4 +1222,51 @@ mod tests {
         assert!(args.contains("--resume-picker"));
         assert_eq!(args.matches("--trust-all-tools").count(), 1);
     }
+}
+
+fn log_contains_error(log_up: &str) -> bool {
+    [
+        "ERROR",
+        "FAILED",
+        "EXCEPTION",
+        "PANIC",
+        "SEGFAULT",
+        "TIMED OUT",
+        "CONNECTION REFUSED",
+        "PERMISSION DENIED",
+        "HALTED",
+        "PROBLEMA",
+        "FALLO",
+        "FALLANDO",
+    ]
+    .iter()
+    .any(|kw| log_up.contains(kw))
+}
+
+fn log_contains_success(log_up: &str) -> bool {
+    [
+        "SUCCESS",
+        "ALL TESTS PASSED",
+        "BUILD SUCCEEDED",
+        "FINISHED",
+        "COMPLETED",
+        "DONE.",
+        "STABILIZED",
+        "READY",
+        "CONVERGED",
+        "DEPLOYED",
+        "EXCELENTE",
+        "COMPLETADO",
+        "HECHO",
+        "LISTO",
+        "TERMINADO",
+    ]
+    .iter()
+    .any(|kw| log_up.contains(kw))
+}
+
+fn log_contains_spawn(log_up: &str) -> bool {
+    ["SPAWNING", "STARTING UP", "BOOTSTRAPPING", "INITIALIZING"]
+        .iter()
+        .any(|kw| log_up.contains(kw))
 }

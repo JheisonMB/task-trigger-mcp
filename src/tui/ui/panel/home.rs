@@ -5,7 +5,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::Frame;
 
-pub(super) fn draw_canopy_banner_glitch(frame: &mut Frame, area: Rect, app: &App) {
+pub(super) fn draw_canopy_banner_animation(frame: &mut Frame, area: Rect, app: &App) {
     let banner = crate::shared::banner::BANNER.trim_matches('\n');
     let banner_lines: Vec<&str> = banner.lines().collect();
     let total = banner_lines.len() as u16;

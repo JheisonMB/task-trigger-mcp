@@ -126,20 +126,12 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
         return Ok(());
     }
 
-    // Ctrl+F: search in scrollback (interactive or terminal agents)
+    // Ctrl+F: search in scrollback
     if code == KeyCode::Char('f')
         && modifiers.contains(KeyModifiers::CONTROL)
         && matches!(app.focus, Focus::Agent)
     {
-        match app.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => {
-                app.terminal_search = Some(crate::tui::app::TerminalSearch::new_interactive(*idx));
-            }
-            Some(AgentEntry::Terminal(idx)) => {
-                app.terminal_search = Some(crate::tui::app::TerminalSearch::new(*idx));
-            }
-            _ => {}
-        }
+        open_terminal_search(app);
         return Ok(());
     }
 
@@ -164,129 +156,17 @@ pub fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> Resu
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
     let kind = mouse.kind;
     let modifiers = mouse.modifiers;
-    let col = mouse.column;
-    let row = mouse.row;
 
-    // Try to forward mouse events to PTY when mouse protocol is active.
-    // This enables TUI apps (opencode, vim, htop, etc.) to receive mouse events.
-    let forwarded = if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-        let idx = *idx;
-        if let Some(agent) = app.interactive_agents.get(idx) {
-            let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-            let header_height = 1;
-            let clicked_in_pty = col >= sidebar_width
-                && col < sidebar_width + app.last_panel_inner.0
-                && row >= header_height
-                && row < header_height + app.last_panel_inner.1;
-
-            if clicked_in_pty {
-                let pty_col = col.saturating_sub(sidebar_width);
-                let pty_row = row.saturating_sub(header_height);
-                agent
-                    .forward_mouse(kind, MouseButton::Left, pty_col, pty_row)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
-        let idx = *idx;
-        if let Some(agent) = app.terminal_agents.get(idx) {
-            let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-            let header_height = 1;
-            let clicked_in_pty = col >= sidebar_width
-                && col < sidebar_width + app.last_panel_inner.0
-                && row >= header_height
-                && row < header_height + app.last_panel_inner.1;
-
-            if clicked_in_pty {
-                let pty_col = col.saturating_sub(sidebar_width);
-                let pty_row = row.saturating_sub(header_height);
-                agent
-                    .forward_mouse(kind, MouseButton::Left, pty_col, pty_row)
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    if forwarded {
+    if try_forward_mouse_to_pty(app, &mouse) {
         return Ok(());
     }
 
-    // Normal Left click (no Shift) — copy line from PTY at click position
-    if matches!(kind, MouseEventKind::Up(MouseButton::Left))
-        && !modifiers.contains(KeyModifiers::SHIFT)
-    {
-        let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
-        let header_height = 1;
-        let clicked_in_sidebar = mouse.column < sidebar_width;
-        let clicked_in_header = mouse.row < header_height;
-        let clicked_outside_pty = mouse.column >= sidebar_width + app.last_panel_inner.0
-            || mouse.row >= header_height + app.last_panel_inner.1;
-
-        if clicked_in_sidebar || clicked_in_header || clicked_outside_pty {
-            return Ok(());
+    if matches!(kind, MouseEventKind::Up(MouseButton::Left)) {
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            handle_shift_click_copy(app);
+        } else {
+            handle_left_click_copy(app, &mouse);
         }
-
-        let pty_col = mouse.column.saturating_sub(sidebar_width);
-        let pty_row = mouse.row.saturating_sub(header_height);
-
-        let line_text = match app.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => app
-                .interactive_agents
-                .get(*idx)
-                .and_then(|agent| agent.get_clean_pty_line_at_position(pty_col, pty_row)),
-            Some(AgentEntry::Terminal(idx)) => app
-                .terminal_agents
-                .get(*idx)
-                .and_then(|agent| agent.get_clean_pty_line_at_position(pty_col, pty_row)),
-            _ => None,
-        };
-
-        if let Some(line_text) = line_text {
-            std::thread::spawn(move || {
-                let _ = arboard::Clipboard::new()
-                    .and_then(|mut clipboard| clipboard.set_text(&line_text));
-            });
-            app.show_copied = true;
-            app.copied_at = std::time::Instant::now();
-        }
-        return Ok(());
-    }
-
-    // Shift+Left release — copy both formatted and plain text
-    if matches!(kind, MouseEventKind::Up(MouseButton::Left))
-        && modifiers.contains(KeyModifiers::SHIFT)
-    {
-        app.show_copied = true;
-        app.copied_at = std::time::Instant::now();
-
-        // Also copy plain text to clipboard for better external paste
-        let plain_text = match app.selected_agent() {
-            Some(AgentEntry::Interactive(idx)) => app
-                .interactive_agents
-                .get(*idx)
-                .and_then(|agent| agent.get_plain_text_from_screen()),
-            Some(AgentEntry::Terminal(idx)) => app
-                .terminal_agents
-                .get(*idx)
-                .and_then(|agent| agent.get_plain_text_from_screen()),
-            _ => None,
-        };
-
-        if let Some(plain_text) = plain_text {
-            let _ =
-                arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(&plain_text));
-        }
-
         return Ok(());
     }
 
@@ -296,74 +176,156 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
         _ => return Ok(()),
     };
 
-    match app.focus {
-        Focus::Agent => {
-            app.last_scroll_at = std::time::Instant::now();
-            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                let idx = *idx;
-                let agent = &mut app.interactive_agents[idx];
-                if agent.in_alternate_screen() {
-                    let _ = agent.forward_scroll(dir > 0);
-                } else {
-                    if dir > 0 {
-                        let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
-                    } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
-                    }
-                }
-            } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
-                let idx = *idx;
-                if idx < app.terminal_agents.len() {
-                    let agent = &mut app.terminal_agents[idx];
-                    if agent.in_alternate_screen() {
-                        let _ = agent.forward_scroll(dir > 0);
-                    } else if dir > 0 {
-                        let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
-                    } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
-                    }
-                }
-            } else if dir > 0 {
-                app.scroll_log_up();
+    // If the cursor is over the sync panel, scroll it independently
+    if let Some(sync_area) = app.last_sync_area {
+        if mouse.column >= sync_area.x
+            && mouse.column < sync_area.x + sync_area.width
+            && mouse.row >= sync_area.y
+            && mouse.row < sync_area.y + sync_area.height
+        {
+            if dir > 0 {
+                app.sync_scroll_offset = app.sync_scroll_offset.saturating_sub(3);
             } else {
-                app.scroll_log_down();
+                app.sync_scroll_offset = app.sync_scroll_offset.saturating_add(3);
             }
+            return Ok(());
         }
-        Focus::Preview => {
+    }
+
+    handle_scroll(app, dir);
+    Ok(())
+}
+
+/// Try to forward the mouse event to the focused PTY agent.
+/// Returns `true` if the event was consumed.
+fn try_forward_mouse_to_pty(app: &mut App, mouse: &MouseEvent) -> bool {
+    let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
+    let header_height = 1u16;
+    let col = mouse.column;
+    let row = mouse.row;
+
+    let clicked_in_pty = col >= sidebar_width
+        && col < sidebar_width + app.last_panel_inner.0
+        && row >= header_height
+        && row < header_height + app.last_panel_inner.1;
+
+    if !clicked_in_pty {
+        return false;
+    }
+
+    let pty_col = col.saturating_sub(sidebar_width);
+    let pty_row = row.saturating_sub(header_height);
+
+    match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => {
+            let idx = *idx;
+            app.interactive_agents
+                .get(idx)
+                .and_then(|a| {
+                    a.forward_mouse(mouse.kind, MouseButton::Left, pty_col, pty_row)
+                        .ok()
+                })
+                .unwrap_or(false)
+        }
+        Some(AgentEntry::Terminal(idx)) => {
+            let idx = *idx;
+            app.terminal_agents
+                .get(idx)
+                .and_then(|a| {
+                    a.forward_mouse(mouse.kind, MouseButton::Left, pty_col, pty_row)
+                        .ok()
+                })
+                .unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn handle_left_click_copy(app: &mut App, mouse: &MouseEvent) {
+    let sidebar_width = if app.sidebar_visible { 30 } else { 0 };
+    let header_height = 1u16;
+
+    if mouse.column < sidebar_width
+        || mouse.row < header_height
+        || mouse.column >= sidebar_width + app.last_panel_inner.0
+        || mouse.row >= header_height + app.last_panel_inner.1
+    {
+        return;
+    }
+
+    let pty_col = mouse.column.saturating_sub(sidebar_width);
+    let pty_row = mouse.row.saturating_sub(header_height);
+
+    let line_text = match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => app
+            .interactive_agents
+            .get(*idx)
+            .and_then(|a| a.get_clean_pty_line_at_position(pty_col, pty_row)),
+        Some(AgentEntry::Terminal(idx)) => app
+            .terminal_agents
+            .get(*idx)
+            .and_then(|a| a.get_clean_pty_line_at_position(pty_col, pty_row)),
+        _ => None,
+    };
+
+    if let Some(text) = line_text {
+        std::thread::spawn(move || {
+            let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(&text));
+        });
+        app.show_copied = true;
+        app.copied_at = std::time::Instant::now();
+    }
+}
+
+fn handle_shift_click_copy(app: &mut App) {
+    app.show_copied = true;
+    app.copied_at = std::time::Instant::now();
+
+    let plain_text = match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => app
+            .interactive_agents
+            .get(*idx)
+            .and_then(|a| a.get_plain_text_from_screen()),
+        Some(AgentEntry::Terminal(idx)) => app
+            .terminal_agents
+            .get(*idx)
+            .and_then(|a| a.get_plain_text_from_screen()),
+        _ => None,
+    };
+
+    if let Some(text) = plain_text {
+        let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(&text));
+    }
+}
+
+fn scroll_speed(app: &App) -> usize {
+    let elapsed_ms = app.last_scroll_at.elapsed().as_millis();
+    match elapsed_ms {
+        0..=60 => 8,
+        61..=120 => 4,
+        121..=200 => 2,
+        _ => 1,
+    }
+}
+
+fn open_terminal_search(app: &mut App) {
+    match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => {
+            app.terminal_search = Some(crate::tui::app::TerminalSearch::new_interactive(*idx));
+        }
+        Some(AgentEntry::Terminal(idx)) => {
+            app.terminal_search = Some(crate::tui::app::TerminalSearch::new(*idx));
+        }
+        _ => {}
+    }
+}
+
+fn handle_scroll(app: &mut App, dir: i32) {
+    match app.focus {
+        Focus::Agent | Focus::Preview => {
+            let speed = scroll_speed(app);
             app.last_scroll_at = std::time::Instant::now();
-            if let Some(AgentEntry::Interactive(idx)) = app.selected_agent() {
-                let idx = *idx;
-                if idx < app.interactive_agents.len() {
-                    let agent = &mut app.interactive_agents[idx];
-                    if agent.in_alternate_screen() {
-                        let _ = agent.forward_scroll(dir > 0);
-                    } else if dir > 0 {
-                        let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
-                    } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
-                    }
-                }
-            } else if let Some(AgentEntry::Terminal(idx)) = app.selected_agent() {
-                let idx = *idx;
-                if idx < app.terminal_agents.len() {
-                    let agent = &mut app.terminal_agents[idx];
-                    if agent.in_alternate_screen() {
-                        let _ = agent.forward_scroll(dir > 0);
-                    } else if dir > 0 {
-                        let max = agent.max_scroll();
-                        agent.scroll_offset = (agent.scroll_offset + 1).min(max);
-                    } else {
-                        agent.scroll_offset = agent.scroll_offset.saturating_sub(1);
-                    }
-                }
-            } else if dir > 0 {
-                app.scroll_log_up();
-            } else {
-                app.scroll_log_down();
-            }
+            scroll_focused_agent(app, dir * speed as i32);
         }
         Focus::Home => {
             if dir > 0 {
@@ -374,19 +336,59 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Result<()> {
         }
         Focus::NewAgentDialog => {
             if let Some(dialog) = &mut app.new_agent_dialog {
-                let filtered_len = dialog.filtered_dir_entries().len();
+                let len = dialog.filtered_dir_entries().len();
                 if dir > 0 && dialog.dir_selected > 0 {
                     dialog.dir_selected -= 1;
-                } else if dir < 0 && dialog.dir_selected + 1 < filtered_len {
+                } else if dir < 0 && dialog.dir_selected + 1 < len {
                     dialog.dir_selected += 1;
                 }
             }
         }
-        Focus::ContextTransfer => {}
-        Focus::RagTransfer => {}
-        Focus::PromptTemplateDialog => {}
+        Focus::ContextTransfer | Focus::RagTransfer | Focus::PromptTemplateDialog => {}
     }
-    Ok(())
+}
+
+fn scroll_focused_agent(app: &mut App, dir: i32) {
+    let step = dir.unsigned_abs() as usize;
+    match app.selected_agent() {
+        Some(AgentEntry::Interactive(idx)) => {
+            let idx = *idx;
+            if idx < app.interactive_agents.len() {
+                let agent = &mut app.interactive_agents[idx];
+                if agent.in_alternate_screen() {
+                    let _ = agent.forward_scroll(dir > 0);
+                } else if dir > 0 {
+                    let max = agent.max_scroll();
+                    agent.scroll_offset = (agent.scroll_offset + step).min(max);
+                } else {
+                    agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
+                }
+            }
+        }
+        Some(AgentEntry::Terminal(idx)) => {
+            let idx = *idx;
+            if idx < app.terminal_agents.len() {
+                let agent = &mut app.terminal_agents[idx];
+                if agent.in_alternate_screen() {
+                    let _ = agent.forward_scroll(dir > 0);
+                } else if dir > 0 {
+                    let max = agent.max_scroll();
+                    agent.scroll_offset = (agent.scroll_offset + step).min(max);
+                } else {
+                    agent.scroll_offset = agent.scroll_offset.saturating_sub(step);
+                }
+            }
+        }
+        _ => {
+            for _ in 0..step {
+                if dir > 0 {
+                    app.scroll_log_up();
+                } else {
+                    app.scroll_log_down();
+                }
+            }
+        }
+    }
 }
 
 // ── Terminal scrollback search (Ctrl+F) ─────────────────────────────
@@ -401,78 +403,68 @@ fn handle_terminal_search_key(app: &mut App, code: KeyCode) -> Result<()> {
             app.terminal_search = None;
         }
         KeyCode::Enter => {
-            // Jump to current match and cycle to next
-            let is_terminal = search.is_terminal;
-            let idx = search.agent_idx;
+            let (is_terminal, idx) = (search.is_terminal, search.agent_idx);
             let agent = if is_terminal {
                 &mut app.terminal_agents[idx]
             } else {
                 &mut app.interactive_agents[idx]
             };
-            search.jump_to_match(agent);
-            search.next_match();
+            let s = app.terminal_search.as_mut().unwrap();
+            s.jump_to_match(agent);
+            s.next_match();
         }
         KeyCode::Up => {
-            if let Some(s) = &mut app.terminal_search {
-                s.prev_match();
-                let is_terminal = s.is_terminal;
-                let idx = s.agent_idx;
-                let agent = if is_terminal {
-                    &mut app.terminal_agents[idx]
-                } else {
-                    &mut app.interactive_agents[idx]
-                };
-                s.jump_to_match(agent);
-            }
+            let s = app.terminal_search.as_mut().unwrap();
+            s.prev_match();
+            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
+            let agent = if is_terminal {
+                &mut app.terminal_agents[idx]
+            } else {
+                &mut app.interactive_agents[idx]
+            };
+            app.terminal_search.as_mut().unwrap().jump_to_match(agent);
         }
         KeyCode::Down => {
-            if let Some(s) = &mut app.terminal_search {
-                s.next_match();
-                let is_terminal = s.is_terminal;
-                let idx = s.agent_idx;
+            let s = app.terminal_search.as_mut().unwrap();
+            s.next_match();
+            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
+            let agent = if is_terminal {
+                &mut app.terminal_agents[idx]
+            } else {
+                &mut app.interactive_agents[idx]
+            };
+            app.terminal_search.as_mut().unwrap().jump_to_match(agent);
+        }
+        KeyCode::Char(c) => {
+            let s = app.terminal_search.as_mut().unwrap();
+            s.query.push(c);
+            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
+            let agent = if is_terminal {
+                &app.terminal_agents[idx]
+            } else {
+                &app.interactive_agents[idx]
+            };
+            app.terminal_search.as_mut().unwrap().search(agent);
+            if !app.terminal_search.as_ref().unwrap().match_rows.is_empty() {
+                app.terminal_search.as_mut().unwrap().current_match = 0;
                 let agent = if is_terminal {
                     &mut app.terminal_agents[idx]
                 } else {
                     &mut app.interactive_agents[idx]
                 };
-                s.jump_to_match(agent);
-            }
-        }
-        KeyCode::Char(c) => {
-            if let Some(s) = &mut app.terminal_search {
-                s.query.push(c);
-                let is_terminal = s.is_terminal;
-                let idx = s.agent_idx;
-                let agent = if is_terminal {
-                    &app.terminal_agents[idx]
-                } else {
-                    &app.interactive_agents[idx]
-                };
-                s.search(agent);
-                // Auto-jump to first match
-                if !s.match_rows.is_empty() {
-                    s.current_match = 0;
-                    let agent = if is_terminal {
-                        &mut app.terminal_agents[idx]
-                    } else {
-                        &mut app.interactive_agents[idx]
-                    };
-                    s.jump_to_match(agent);
-                }
+                app.terminal_search.as_mut().unwrap().jump_to_match(agent);
             }
         }
         KeyCode::Backspace => {
-            if let Some(s) = &mut app.terminal_search {
-                s.query.pop();
-                let is_terminal = s.is_terminal;
-                let idx = s.agent_idx;
-                let agent = if is_terminal {
-                    &app.terminal_agents[idx]
-                } else {
-                    &app.interactive_agents[idx]
-                };
-                s.search(agent);
-            }
+            let s = app.terminal_search.as_mut().unwrap();
+            s.query.pop();
+            let (is_terminal, idx) = (s.is_terminal, s.agent_idx);
+            let agent = if is_terminal {
+                &app.terminal_agents[idx]
+            } else {
+                &app.interactive_agents[idx]
+            };
+            app.terminal_search.as_mut().unwrap().search(agent);
         }
         _ => {}
     }

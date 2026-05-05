@@ -111,13 +111,16 @@ fn clean_context_output(raw: &str) -> String {
 
 /// Lines that are TUI chrome / sidebar noise in CLI agents.
 fn is_status_noise(line: &str) -> bool {
-    // Token/cost counters
-    if line.ends_with("tokens") || line.ends_with("used") || line.ends_with("spent") {
-        return line.chars().any(|c| c.is_ascii_digit());
-    }
-    // OpenCode/Claude/Copilot status bar fragments
     let trimmed = line.trim();
-    let exact_noise = [
+
+    // Token/cost counters: "123 tokens", "45 used", "0.12 spent"
+    if (trimmed.ends_with("tokens") || trimmed.ends_with("used") || trimmed.ends_with("spent"))
+        && trimmed.chars().any(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+
+    const EXACT: &[&str] = &[
         "Context",
         "LSP",
         "MCP",
@@ -129,31 +132,32 @@ fn is_status_noise(line: &str) -> bool {
         "MCP issues",
         "MCP servers",
     ];
-    if exact_noise.contains(&trimmed) {
+    if EXACT.contains(&trimmed) {
         return true;
     }
-    let prefix_noise = ["ctrl+p commands", "workspace ("];
-    if prefix_noise.iter().any(|n| trimmed.starts_with(n)) {
+
+    if trimmed.starts_with("ctrl+p commands") || trimmed.starts_with("workspace (") {
         return true;
     }
+
     if trimmed.contains("LSPs will activate") {
         return true;
     }
-    // File stat lines like "prompt.txt  -46" or "src/foo.rs  +150 -58"
-    if trimmed.contains('+')
-        && trimmed.contains('-')
-        && trimmed.chars().filter(|c| *c == ' ').count() >= 2
-    {
-        let parts: Vec<&str> = trimmed.split_whitespace().collect();
-        if parts.len() >= 2
-            && parts
-                .last()
-                .is_some_and(|p| p.starts_with('-') || p.starts_with('+'))
-        {
-            return true;
-        }
+
+    // File stat lines like "prompt.txt  +150 -58"
+    is_file_stat_line(trimmed)
+}
+
+fn is_file_stat_line(trimmed: &str) -> bool {
+    if !(trimmed.contains('+') && trimmed.contains('-')) {
+        return false;
     }
-    false
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    parts.len() >= 2
+        && parts
+            .last()
+            .is_some_and(|p| p.starts_with('-') || p.starts_with('+'))
+        && trimmed.chars().filter(|c| *c == ' ').count() >= 2
 }
 
 fn collect_last_prompts(history: &VecDeque<PromptEntry>, n: usize) -> Vec<PromptEntry> {

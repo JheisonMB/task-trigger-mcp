@@ -49,88 +49,38 @@ impl App {
         }
     }
 
-    pub fn tick_banner_glitch(&mut self) {
-        // Always step the brain if it exists so animation continues
-        // across focus changes (e.g. closing all sessions → Preview).
+    pub fn tick_banner_animation(&mut self) {
         if let Some(ref mut brain) = self.home_brain {
             brain.step();
         }
 
-        // Only resize/reinitialize when on Home focus
         if self.focus != Focus::Home {
             return;
         }
 
-        let (pw, ph) = self.last_panel_inner;
-        let panel_cols = pw as usize;
-        let panel_rows = ph as usize;
+        let (cols, rows) = effective_brain_dims(self.last_panel_inner);
+        if cols < 6 || rows < 3 {
+            return;
+        }
 
-        if panel_cols < 6 || panel_rows < 3 {
-            let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-            let fallback_cols = (tw / 2).saturating_sub(2) as usize;
-            let fallback_rows = th.saturating_sub(3) as usize;
-            if fallback_cols < 6 || fallback_rows < 3 {
-                return;
-            }
-            let needs_reinit = match &self.home_brain {
-                None => true,
-                Some(b) => b.rows != fallback_rows || b.cols != fallback_cols,
-            };
-            if needs_reinit {
-                let mut brain =
-                    super::super::brians_brain::BriansBrain::new(fallback_rows, fallback_cols, 80);
-                brain.last_step = std::time::Instant::now()
-                    - std::time::Duration::from_millis(brain.step_interval_ms);
-                self.home_brain = Some(brain);
-            }
-        } else {
-            let needs_reinit = match &self.home_brain {
-                None => true,
-                Some(b) => b.rows != panel_rows || b.cols != panel_cols,
-            };
-            if needs_reinit {
-                let mut brain =
-                    super::super::brians_brain::BriansBrain::new(panel_rows, panel_cols, 80);
-                brain.last_step = std::time::Instant::now()
-                    - std::time::Duration::from_millis(brain.step_interval_ms);
-                self.home_brain = Some(brain);
-            }
+        if brain_needs_reinit(&self.home_brain, rows, cols) {
+            self.home_brain = Some(make_brain(rows, cols, 80));
         }
     }
 
     pub fn ensure_sidebar_brain(&mut self) {
-        // The exact sidebar brain dimensions depend on layout (agent card count, etc.)
-        // so we compute them the same way sidebar.rs does.
         let (_tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
-        let sidebar_w = 30u16;
-        let sidebar_h = th.saturating_sub(2); // minus header + footer
-
-        // Approximate: inner width = sidebar - 2 borders
-        let inner_w = sidebar_w.saturating_sub(2) as usize;
-        // Dashboard takes 6 rows if sidebar is tall enough
+        let sidebar_h = th.saturating_sub(2);
+        let cols = (30u16.saturating_sub(2)) as usize;
         let dashboard_h = if sidebar_h >= 6 { 6 } else { 0 };
-        let content_h = sidebar_h.saturating_sub(dashboard_h) as usize;
-
-        // The brain gets whatever space is left after agent cards.
-        // We can't know the exact amount without rendering, so use the full
-        // content height as a max bound. The sidebar clips to brain_area anyway.
-        let rows = content_h;
-        let cols = inner_w;
+        let rows = sidebar_h.saturating_sub(dashboard_h) as usize;
 
         if cols < 6 || rows < 3 {
             return;
         }
 
-        let needs_reinit = match &self.sidebar_brain {
-            None => true,
-            Some(b) => b.rows != rows || b.cols != cols,
-        };
-        if needs_reinit {
-            let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, 60);
-            // Allow immediate first step
-            brain.last_step = std::time::Instant::now()
-                - std::time::Duration::from_millis(brain.step_interval_ms);
-            self.sidebar_brain = Some(brain);
+        if brain_needs_reinit(&self.sidebar_brain, rows, cols) {
+            self.sidebar_brain = Some(make_brain(rows, cols, 60));
         }
 
         if let Some(ref mut brain) = self.sidebar_brain {
@@ -623,4 +573,35 @@ impl App {
         self.dissolve_groups_for_session(&agent_name);
         true
     }
+}
+
+// ── Brain helpers ─────────────────────────────────────────────────
+
+fn make_brain(rows: usize, cols: usize, density: u64) -> super::super::brians_brain::BriansBrain {
+    let mut brain = super::super::brians_brain::BriansBrain::new(rows, cols, density);
+    brain.last_step =
+        std::time::Instant::now() - std::time::Duration::from_millis(brain.step_interval_ms);
+    brain
+}
+
+fn brain_needs_reinit(
+    brain: &Option<super::super::brians_brain::BriansBrain>,
+    rows: usize,
+    cols: usize,
+) -> bool {
+    brain
+        .as_ref()
+        .map_or(true, |b| b.rows != rows || b.cols != cols)
+}
+
+/// Resolve effective brain dimensions from panel size, falling back to terminal size.
+fn effective_brain_dims(panel: (u16, u16)) -> (usize, usize) {
+    let (pw, ph) = panel;
+    if pw >= 6 && ph >= 3 {
+        return (pw as usize, ph as usize);
+    }
+    let (tw, th) = ratatui::crossterm::terminal::size().unwrap_or((120, 40));
+    let cols = (tw / 2).saturating_sub(2) as usize;
+    let rows = th.saturating_sub(3) as usize;
+    (cols, rows)
 }

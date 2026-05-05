@@ -25,6 +25,41 @@ pub struct WhimFrame {
     pub text_visible: usize,
 }
 
+impl WhimFrame {
+    fn full_title() -> Self {
+        Self {
+            title_visible: TITLE.len(),
+            kaomoji: String::new(),
+            text: String::new(),
+            text_visible: 0,
+        }
+    }
+    fn empty_title() -> Self {
+        Self {
+            title_visible: 0,
+            kaomoji: String::new(),
+            text: String::new(),
+            text_visible: 0,
+        }
+    }
+}
+
+fn tick_erasing_title(elapsed: u64) -> (WhimFrame, Option<Phase>) {
+    let erased = (elapsed / ERASE_MS) as usize;
+    if erased >= TITLE.len() {
+        return (WhimFrame::empty_title(), Some(Phase::KaomojiFlash));
+    }
+    (
+        WhimFrame {
+            title_visible: TITLE.len() - erased,
+            kaomoji: String::new(),
+            text: String::new(),
+            text_visible: 0,
+        },
+        None,
+    )
+}
+
 #[derive(Clone, Copy)]
 enum Intent {
     Loading,
@@ -108,106 +143,103 @@ impl Whimsg {
     pub fn tick(&mut self) -> WhimFrame {
         loop {
             let elapsed = self.phase_start.elapsed().as_millis() as u64;
-            match self.phase {
-                Phase::Idle => {
-                    if Instant::now() >= self.next_trigger {
-                        self.generate();
-                        self.advance(Phase::ErasingTitle);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: TITLE.len(),
-                        kaomoji: String::new(),
-                        text: String::new(),
-                        text_visible: 0,
-                    };
-                }
-                Phase::ErasingTitle => {
-                    let erased = (elapsed / ERASE_MS) as usize;
-                    if erased >= TITLE.len() {
-                        self.advance(Phase::KaomojiFlash);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: TITLE.len() - erased,
-                        kaomoji: String::new(),
-                        text: String::new(),
-                        text_visible: 0,
-                    };
-                }
-                Phase::KaomojiFlash => {
-                    if elapsed >= KAOMOJI_MS {
-                        self.advance(Phase::TypingMsg);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: 0,
-                        kaomoji: self.active_kaomoji.clone(),
-                        text: String::new(),
-                        text_visible: 0,
-                    };
-                }
-                Phase::TypingMsg => {
-                    let total = self.active_text.chars().count();
-                    let typed = (elapsed / TYPE_MS) as usize;
-                    if typed >= total {
-                        self.advance(Phase::Holding);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: 0,
-                        kaomoji: self.active_kaomoji.clone(),
-                        text: self.active_text.clone(),
-                        text_visible: typed,
-                    };
-                }
-                Phase::Holding => {
-                    if elapsed >= self.active_hold_ms {
-                        self.advance(Phase::ErasingMsg);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: 0,
-                        kaomoji: self.active_kaomoji.clone(),
-                        text: self.active_text.clone(),
-                        text_visible: self.active_text.chars().count(),
-                    };
-                }
-                Phase::ErasingMsg => {
-                    let total = self.active_text.chars().count();
-                    let erased = (elapsed / ERASE_MS) as usize;
-                    if erased >= total {
-                        self.advance(Phase::Blank);
-                        continue;
-                    }
-                    return WhimFrame {
-                        title_visible: 0,
-                        kaomoji: self.active_kaomoji.clone(),
-                        text: self.active_text.clone(),
-                        text_visible: total - erased,
-                    };
-                }
-                Phase::Blank => {
-                    if elapsed >= BLANK_MS {
-                        let delay = self.rng.between(INTERVAL_MIN, INTERVAL_MAX);
-                        self.next_trigger = Instant::now() + Duration::from_secs(delay);
-                        self.advance(Phase::Idle);
-                        return WhimFrame {
-                            title_visible: TITLE.len(),
-                            kaomoji: String::new(),
-                            text: String::new(),
-                            text_visible: 0,
-                        };
-                    }
-                    return WhimFrame {
-                        title_visible: 0,
-                        kaomoji: String::new(),
-                        text: String::new(),
-                        text_visible: 0,
-                    };
-                }
+            let (frame, next_phase) = match self.phase {
+                Phase::Idle => self.tick_idle(),
+                Phase::ErasingTitle => tick_erasing_title(elapsed),
+                Phase::KaomojiFlash => self.tick_kaomoji_flash(elapsed),
+                Phase::TypingMsg => self.tick_typing_msg(elapsed),
+                Phase::Holding => self.tick_holding(elapsed),
+                Phase::ErasingMsg => self.tick_erasing_msg(elapsed),
+                Phase::Blank => self.tick_blank(elapsed),
+            };
+            if let Some(next) = next_phase {
+                self.advance(next);
+                continue;
             }
+            return frame;
         }
+    }
+
+    fn tick_idle(&mut self) -> (WhimFrame, Option<Phase>) {
+        if Instant::now() >= self.next_trigger {
+            self.generate();
+            return (WhimFrame::empty_title(), Some(Phase::ErasingTitle));
+        }
+        (WhimFrame::full_title(), None)
+    }
+
+    fn tick_kaomoji_flash(&self, elapsed: u64) -> (WhimFrame, Option<Phase>) {
+        if elapsed >= KAOMOJI_MS {
+            return (WhimFrame::empty_title(), Some(Phase::TypingMsg));
+        }
+        (
+            WhimFrame {
+                title_visible: 0,
+                kaomoji: self.active_kaomoji.clone(),
+                text: String::new(),
+                text_visible: 0,
+            },
+            None,
+        )
+    }
+
+    fn tick_typing_msg(&self, elapsed: u64) -> (WhimFrame, Option<Phase>) {
+        let total = self.active_text.chars().count();
+        let typed = (elapsed / TYPE_MS) as usize;
+        if typed >= total {
+            return (WhimFrame::empty_title(), Some(Phase::Holding));
+        }
+        (
+            WhimFrame {
+                title_visible: 0,
+                kaomoji: self.active_kaomoji.clone(),
+                text: self.active_text.clone(),
+                text_visible: typed,
+            },
+            None,
+        )
+    }
+
+    fn tick_holding(&self, elapsed: u64) -> (WhimFrame, Option<Phase>) {
+        if elapsed >= self.active_hold_ms {
+            return (WhimFrame::empty_title(), Some(Phase::ErasingMsg));
+        }
+        (
+            WhimFrame {
+                title_visible: 0,
+                kaomoji: self.active_kaomoji.clone(),
+                text: self.active_text.clone(),
+                text_visible: self.active_text.chars().count(),
+            },
+            None,
+        )
+    }
+
+    fn tick_erasing_msg(&self, elapsed: u64) -> (WhimFrame, Option<Phase>) {
+        let total = self.active_text.chars().count();
+        let erased = (elapsed / ERASE_MS) as usize;
+        if erased >= total {
+            return (WhimFrame::empty_title(), Some(Phase::Blank));
+        }
+        (
+            WhimFrame {
+                title_visible: 0,
+                kaomoji: self.active_kaomoji.clone(),
+                text: self.active_text.clone(),
+                text_visible: total - erased,
+            },
+            None,
+        )
+    }
+
+    fn tick_blank(&mut self, elapsed: u64) -> (WhimFrame, Option<Phase>) {
+        if elapsed >= BLANK_MS {
+            let delay = self.rng.between(INTERVAL_MIN, INTERVAL_MAX);
+            self.next_trigger = Instant::now() + Duration::from_secs(delay);
+            self.advance(Phase::Idle);
+            return (WhimFrame::full_title(), None);
+        }
+        (WhimFrame::empty_title(), None)
     }
 
     fn advance(&mut self, next: Phase) {

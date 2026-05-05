@@ -135,16 +135,34 @@ fn run_sync(home: &Path, detected: &[&Platform]) -> Result<()> {
     }
 
     let missing_count = missing.len();
-    println!("  \x1b[33m{missing_count}\x1b[0m server(s) to replicate. Proceed? [Y/n] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim().to_lowercase() == "n" {
+    if !confirm(&format!(
+        "\x1b[33m{missing_count}\x1b[0m server(s) to replicate. Proceed?"
+    ))? {
         println!("  Cancelled.");
         return Ok(());
     }
 
     // Apply
+    let (applied, errors) = apply_sync_to_platforms(home, detected, &all_configs, &unified);
+
+    println!();
+    if errors == 0 {
+        println!("  \x1b[32m✓\x1b[0m Sync complete — {applied} server(s) replicated.");
+    } else {
+        println!("  \x1b[33m⚠\x1b[0m Sync partial — {applied} synced, {errors} failed.");
+    }
+
+    println!();
+    show_updated_table(home, detected);
+    Ok(())
+}
+
+fn apply_sync_to_platforms(
+    home: &Path,
+    detected: &[&Platform],
+    all_configs: &BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    unified: &BTreeMap<String, (serde_json::Value, &str)>,
+) -> (usize, usize) {
     let mut applied = 0usize;
     let mut errors = 0usize;
     for p in detected {
@@ -153,11 +171,10 @@ fn run_sync(home: &Path, detected: &[&Platform]) -> Result<()> {
             .get(&p.name)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
-        for (server_name, (config, _source)) in &unified {
+        for (server_name, (config, _)) in unified {
             if existing.contains(server_name) {
                 continue;
             }
-            // Adapt config to the target platform's field names
             let adapted = setup::adapt_config(config, p, server_name);
             match apply_server_to_platform(p, &config_path, server_name, &adapted) {
                 Ok(_) => applied += 1,
@@ -168,20 +185,7 @@ fn run_sync(home: &Path, detected: &[&Platform]) -> Result<()> {
             }
         }
     }
-
-    println!();
-    if errors == 0 {
-        println!("  \x1b[32m✓\x1b[0m Sync complete — {applied} server(s) replicated.");
-    } else {
-        println!("  \x1b[33m⚠\x1b[0m Sync partial — {applied} synced, {errors} failed.");
-    }
-
-    // Show updated matrix
-    println!();
-    let post_configs = collect_all_platform_configs(home, detected);
-    print_mcp_table(detected, &post_configs);
-
-    Ok(())
+    (applied, errors)
 }
 
 // ── Add ────────────────────────────────────────────────────────────────────
@@ -243,11 +247,8 @@ fn run_add(home: &Path, detected: &[&Platform]) -> Result<()> {
         println!("  \x1b[33m⚠\x1b[0m '{name}' added to {ok}, failed on {fail} platform(s).");
     }
 
-    // Show updated matrix
     println!();
-    let post_configs = collect_all_platform_configs(home, detected);
-    print_mcp_table(detected, &post_configs);
-
+    show_updated_table(home, detected);
     Ok(())
 }
 
@@ -289,20 +290,14 @@ fn run_remove(home: &Path, detected: &[&Platform]) -> Result<()> {
         })
         .collect();
 
-    println!();
-    println!(
-        "  Will remove \x1b[1m{selected}\x1b[0m from: {}",
+    if !confirm(&format!(
+        "Will remove \x1b[1m{selected}\x1b[0m from: {}. Proceed?",
         target_platforms
             .iter()
             .map(|p| p.name.as_str())
             .collect::<Vec<_>>()
             .join(", ")
-    );
-    print!("  Proceed? [Y/n] ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    if input.trim().to_lowercase() == "n" {
+    ))? {
         println!("  Cancelled.");
         return Ok(());
     }
@@ -333,17 +328,27 @@ fn run_remove(home: &Path, detected: &[&Platform]) -> Result<()> {
         println!("  \x1b[33m⚠\x1b[0m Removed from {ok}, failed on {fail}.");
     }
 
-    // Show updated matrix
     println!();
-    let post_configs = collect_all_platform_configs(home, detected);
-    print_mcp_table(detected, &post_configs);
-
+    show_updated_table(home, detected);
     Ok(())
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-/// Collect servers from each platform: platform_name → {server_name → config}.
+/// Ask the user to confirm with [Y/n]. Returns `false` if the user typed "n".
+fn confirm(prompt: &str) -> Result<bool> {
+    print!("  {prompt} [Y/n] ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_lowercase() != "n")
+}
+
+/// Show the updated MCP matrix after an operation.
+fn show_updated_table(home: &Path, detected: &[&Platform]) {
+    let post_configs = collect_all_platform_configs(home, detected);
+    print_mcp_table(detected, &post_configs);
+}
 fn collect_all_platform_configs(
     home: &Path,
     detected: &[&Platform],

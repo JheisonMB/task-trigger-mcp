@@ -170,14 +170,12 @@ pub fn download_essential_pack() -> Result<usize> {
         .user_agent("canopy")
         .build()?;
 
-    // List root-level contents of the repo
     let resp = client
         .get(ESSENTIAL_PACK_API)
         .send()
         .context("Failed to connect to GitHub API")?;
 
     if !resp.status().is_success() {
-        // Graceful degradation — not a fatal error
         tracing::warn!(
             "GitHub API returned {} for {}; skipping essential skills download.",
             resp.status(),
@@ -189,63 +187,61 @@ pub fn download_essential_pack() -> Result<usize> {
     let entries: Vec<GhEntry> = resp.json().context("Failed to parse GitHub API response")?;
 
     let mut downloaded = 0usize;
-    for entry in &entries {
-        if entry.entry_type != "dir" {
-            continue;
-        }
-
+    for entry in entries.iter().filter(|e| e.entry_type == "dir") {
         let skill_dir = global.join(&entry.name);
         if skill_dir.exists() {
-            // Already installed — do not overwrite user customizations
             continue;
         }
-
-        // List the directory contents
-        let dir_url = format!("{}/{}", ESSENTIAL_PACK_API, entry.name);
-        let Ok(dir_resp) = client.get(&dir_url).send() else {
-            continue;
-        };
-        if !dir_resp.status().is_success() {
-            continue;
+        if download_skill_dir(&client, &entry.name, &skill_dir)? {
+            downloaded += 1;
         }
-        let Ok(dir_entries) = dir_resp.json::<Vec<GhEntry>>() else {
-            continue;
-        };
-
-        // Only download if there's a SKILL.md or INSTRUCTIONS.md
-        let has_instructions = dir_entries
-            .iter()
-            .any(|e| e.name == "SKILL.md" || e.name == "INSTRUCTIONS.md");
-        if !has_instructions {
-            continue;
-        }
-
-        std::fs::create_dir_all(&skill_dir)?;
-
-        for file in &dir_entries {
-            if file.entry_type != "file" {
-                continue;
-            }
-            let Some(ref raw_url) = file.download_url else {
-                continue;
-            };
-            let Ok(file_resp) = client.get(raw_url).send() else {
-                continue;
-            };
-            if !file_resp.status().is_success() {
-                continue;
-            }
-            let Ok(content) = file_resp.bytes() else {
-                continue;
-            };
-            let file_path = skill_dir.join(&file.name);
-            let _ = std::fs::write(&file_path, &content);
-        }
-
-        downloaded += 1;
     }
 
     Ok(downloaded)
+}
+
+/// Download a single skill directory from GitHub. Returns `true` if downloaded.
+fn download_skill_dir(
+    client: &reqwest::blocking::Client,
+    skill_name: &str,
+    skill_dir: &std::path::Path,
+) -> Result<bool> {
+    let dir_url = format!("{}/{}", ESSENTIAL_PACK_API, skill_name);
+    let dir_resp = match client.get(&dir_url).send() {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Ok(false),
+    };
+    let dir_entries: Vec<GhEntry> = match dir_resp.json() {
+        Ok(e) => e,
+        Err(_) => return Ok(false),
+    };
+
+    let has_instructions = dir_entries
+        .iter()
+        .any(|e| e.name == "SKILL.md" || e.name == "INSTRUCTIONS.md");
+    if !has_instructions {
+        return Ok(false);
+    }
+
+    std::fs::create_dir_all(skill_dir)?;
+
+    for file in dir_entries.iter().filter(|e| e.entry_type == "file") {
+        let Some(ref raw_url) = file.download_url else {
+            continue;
+        };
+        let Ok(file_resp) = client.get(raw_url).send() else {
+            continue;
+        };
+        if !file_resp.status().is_success() {
+            continue;
+        }
+        let Ok(content) = file_resp.bytes() else {
+            continue;
+        };
+        let _ = std::fs::write(skill_dir.join(&file.name), &content);
+    }
+
+    Ok(true)
 }
 
 #[derive(serde::Deserialize)]

@@ -202,36 +202,11 @@ impl SimplePromptDialog {
     /// Returns `Vec<(display_label, raw_name, prefix)>`.
     pub fn collect_skills_for_picker(workdir: &std::path::Path) -> Vec<(String, String, String)> {
         let mut entries: Vec<(String, String, String)> = Vec::new();
-        let add_from =
-            |dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String, String)>| {
-                let Ok(rd) = std::fs::read_dir(dir) else {
-                    return;
-                };
-                for entry in rd.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let Some(raw_name) = path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_string())
-                    else {
-                        continue;
-                    };
-                    if crate::skills_module::find_skill_instructions(&path).is_none() {
-                        continue;
-                    }
-                    // Label uses skill:name format (what the agent sees)
-                    let label = format!("skill:{raw_name}");
-                    out.push((label, raw_name, prefix.to_string()));
-                }
-            };
         let project = workdir.join(".agents").join("skills");
-        add_from(&project, "skill", &mut entries);
+        add_skills_from_dir(&project, "skill", &mut entries);
         if let Some(global) = dirs::home_dir().map(|h| h.join(".agents").join("skills")) {
             if global != project {
-                add_from(&global, "global", &mut entries);
+                add_skills_from_dir(&global, "global", &mut entries);
             }
         }
         entries
@@ -359,8 +334,8 @@ impl SimplePromptDialog {
 
     fn format_rag_chunk(query: &str, chunk: &crate::db::project::Chunk) -> String {
         format!(
-            "kind: rag_chunk\nquery: {query}\nproject_hash: {}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
-            chunk.project_hash, chunk.source_path, chunk.chunk_index, chunk.lang, chunk.content
+            "kind: rag_chunk\nquery: {query}\npath: {}\nchunk_index: {}\nlanguage: {}\ncontent:\n{}",
+            chunk.source_path, chunk.chunk_index, chunk.lang, chunk.content
         )
     }
 
@@ -493,132 +468,72 @@ impl SimplePromptDialog {
     pub fn build_prompt(&self) -> Result<String> {
         let mut result = String::new();
 
-        // Context sections
-        let mut ctx_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id.starts_with("context") {
-                if let Some(content) = self.section_content_for_build(section_id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if ctx_count == 0 {
-                            result.push_str("# [CONTEXT]: Project Background\n");
-                            result.push_str("<context>\n");
-                        }
-                        ctx_count += 1;
-                        result.push_str(&format!("  <context_{}>\n", ctx_count));
-                        for line in trimmed.lines() {
-                            result.push_str(&format!("    {}\n", line));
-                        }
-                        result.push_str(&format!("  </context_{}>\n\n", ctx_count));
-                    }
-                }
-            }
-        }
-        if ctx_count > 0 {
-            result.push_str("</context>\n\n");
-        }
+        // Context
+        build_xml_block(
+            &mut result,
+            &self.enabled_sections,
+            |id| id.starts_with("context"),
+            |id| self.section_content_for_build(id),
+            "# [CONTEXT]: Project Background\n",
+            "context",
+            "context",
+        );
 
-        // Instruction sections
+        // Instructions (always present, no outer guard)
         result.push_str("# [INSTRUCTIONS]: Execution Logic\n");
         result.push_str("<instruction_set>\n");
-        let mut instr_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id == "instruction" || section_id.starts_with("instruction_") {
-                if let Some(content) = self.section_content_for_build(section_id) {
+        let mut count = 0;
+        for id in &self.enabled_sections {
+            if id == "instruction" || id.starts_with("instruction_") {
+                if let Some(content) = self.section_content_for_build(id) {
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
-                        instr_count += 1;
-                        result.push_str(&format!("  <instruction_{}>\n", instr_count));
-                        for line in trimmed.lines() {
-                            result.push_str(&format!("    {}\n", line));
-                        }
-                        result.push_str(&format!("  </instruction_{}>\n\n", instr_count));
+                        count += 1;
+                        push_xml_item(&mut result, "instruction", count, trimmed);
                     }
                 }
             }
         }
         result.push_str("</instruction_set>\n\n");
 
-        // Resources sections
-        let mut resources_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id.starts_with("resources") {
-                if let Some(content) = self.section_content_for_build(section_id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if resources_count == 0 {
-                            result.push_str("# [RESOURCES]: Knowledge Base & Data\n");
-                            result.push_str("<resources>\n");
-                        }
-                        resources_count += 1;
-                        result.push_str(&format!("  <resource_{}>\n", resources_count));
-                        for line in trimmed.lines() {
-                            result.push_str(&format!("    {}\n", line));
-                        }
-                        result.push_str(&format!("  </resource_{}>\n\n", resources_count));
-                    }
-                }
-            }
-        }
-        if resources_count > 0 {
-            result.push_str("</resources>\n\n");
-        }
+        // Resources
+        build_xml_block(
+            &mut result,
+            &self.enabled_sections,
+            |id| id.starts_with("resources"),
+            |id| self.section_content_for_build(id),
+            "# [RESOURCES]: Knowledge Base & Data\n",
+            "resources",
+            "resource",
+        );
 
-        // Examples sections
-        let mut examples_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id.starts_with("examples") {
-                if let Some(content) = self.section_content_for_build(section_id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if examples_count == 0 {
-                            result.push_str("# [EXAMPLES]: Multi-Shot Learning\n");
-                            result.push_str("<examples>\n");
-                        }
-                        examples_count += 1;
-                        result.push_str(&format!("  <example_{}>\n", examples_count));
-                        for line in trimmed.lines() {
-                            result.push_str(&format!("    {}\n", line));
-                        }
-                        result.push_str(&format!("  </example_{}>\n\n", examples_count));
-                    }
-                }
-            }
-        }
-        if examples_count > 0 {
-            result.push_str("</examples>\n\n");
-        }
+        // Examples
+        build_xml_block(
+            &mut result,
+            &self.enabled_sections,
+            |id| id.starts_with("examples"),
+            |id| self.section_content_for_build(id),
+            "# [EXAMPLES]: Multi-Shot Learning\n",
+            "examples",
+            "example",
+        );
 
-        // Constraints sections
-        let mut constraints_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id == "constraints" || section_id.starts_with("constraints_") {
-                if let Some(content) = self.section_content_for_build(section_id) {
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        if constraints_count == 0 {
-                            result.push_str("# [CONSTRAINTS]: Behavioral Boundaries\n");
-                            result.push_str("<constraints>\n");
-                        }
-                        constraints_count += 1;
-                        result.push_str(&format!("  <constraint_{}>\n", constraints_count));
-                        for line in trimmed.lines() {
-                            result.push_str(&format!("    {}\n", line));
-                        }
-                        result.push_str(&format!("  </constraint_{}>\n\n", constraints_count));
-                    }
-                }
-            }
-        }
-        if constraints_count > 0 {
-            result.push_str("</constraints>\n\n");
-        }
+        // Constraints
+        build_xml_block(
+            &mut result,
+            &self.enabled_sections,
+            |id| id == "constraints" || id.starts_with("constraints_"),
+            |id| self.section_content_for_build(id),
+            "# [CONSTRAINTS]: Behavioral Boundaries\n",
+            "constraints",
+            "constraint",
+        );
 
-        // Tools sections
+        // Tools (each line is a separate skill entry)
         let mut tools_count = 0;
-        for section_id in &self.enabled_sections {
-            if section_id == "tools" || section_id.starts_with("tools_") {
-                if let Some(content) = self.section_content_for_build(section_id) {
+        for id in &self.enabled_sections {
+            if id == "tools" || id.starts_with("tools_") {
+                if let Some(content) = self.section_content_for_build(id) {
                     for line in content.lines() {
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
@@ -627,9 +542,7 @@ impl SimplePromptDialog {
                                 result.push_str("<tools>\n");
                             }
                             tools_count += 1;
-                            result.push_str(&format!("  <skill_{}>\n", tools_count));
-                            result.push_str(&format!("    {}\n", trimmed));
-                            result.push_str(&format!("  </skill_{}>\n\n", tools_count));
+                            result.push_str(&format!("  <skill_{tools_count}>\n    {trimmed}\n  </skill_{tools_count}>\n\n"));
                         }
                     }
                 }
@@ -959,11 +872,10 @@ mod tests {
         let resource = project_dir.join("guide.txt");
         std::fs::write(&resource, "hello from resource").unwrap();
         db.replace_chunks(
-            &project.hash,
             "src/lib.rs",
             &[Chunk {
                 id: "chunk-1".to_string(),
-                project_hash: project.hash.clone(),
+                project_hash: Some(project.hash.clone()),
                 source_path: "src/lib.rs".to_string(),
                 chunk_index: 0,
                 content: "needle semantic chunk body".to_string(),
@@ -1050,5 +962,76 @@ impl PromptBuilderSession {
         // Reset transient UI state
         dialog.picker_mode = SectionPickerMode::None;
         dialog.at_picker = None;
+    }
+}
+
+// ── Prompt builder helpers ────────────────────────────────────────
+
+fn add_skills_from_dir(
+    dir: &std::path::Path,
+    prefix: &str,
+    out: &mut Vec<(String, String, String)>,
+) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(raw_name) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if crate::skills_module::find_skill_instructions(&path).is_none() {
+            continue;
+        }
+        out.push((format!("skill:{raw_name}"), raw_name, prefix.to_string()));
+    }
+}
+
+fn push_xml_item(result: &mut String, tag: &str, count: usize, content: &str) {
+    result.push_str(&format!("  <{tag}_{count}>\n"));
+    for line in content.lines() {
+        result.push_str(&format!("    {line}\n"));
+    }
+    result.push_str(&format!("  </{tag}_{count}>\n\n"));
+}
+
+/// Build a wrapped XML section (header + outer tag + items) from matching section IDs.
+fn build_xml_block<'a>(
+    result: &mut String,
+    sections: &'a [String],
+    matches: impl Fn(&str) -> bool,
+    content_for: impl Fn(&'a str) -> Option<&'a str>,
+    header: &str,
+    outer_tag: &str,
+    item_tag: &str,
+) {
+    let mut count = 0;
+    for id in sections {
+        if !matches(id) {
+            continue;
+        }
+        let Some(content) = content_for(id) else {
+            continue;
+        };
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if count == 0 {
+            result.push_str(header);
+            result.push_str(&format!("<{outer_tag}>\n"));
+        }
+        count += 1;
+        push_xml_item(result, item_tag, count, trimmed);
+    }
+    if count > 0 {
+        result.push_str(&format!("</{outer_tag}>\n\n"));
     }
 }

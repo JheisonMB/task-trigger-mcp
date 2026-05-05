@@ -48,40 +48,7 @@ pub fn adapt_config(
         return config.clone();
     };
 
-    let mut adapted = serde_json::Map::new();
-
-    // Step 1: handle command_format
-    if platform.command_format == "merged" {
-        // Merge command + args into a single "command" array
-        let has_command = obj.get("command").and_then(|v| v.as_str()).is_some();
-        let has_args = obj.contains_key("args");
-
-        if has_command && has_args {
-            let cmd = obj["command"].as_str().unwrap();
-            let mut merged = vec![serde_json::Value::String(cmd.to_string())];
-            if let Some(args) = obj["args"].as_array() {
-                merged.extend(args.iter().cloned());
-            }
-            adapted.insert("command".to_string(), serde_json::Value::Array(merged));
-
-            // Copy all other fields except command and args
-            for (k, v) in obj {
-                if k != "command" && k != "args" {
-                    adapted.insert(k.clone(), v.clone());
-                }
-            }
-        } else {
-            // No merge needed — copy all fields
-            for (k, v) in obj {
-                adapted.insert(k.clone(), v.clone());
-            }
-        }
-    } else {
-        // "separate" (default) — copy fields as-is
-        for (k, v) in obj {
-            adapted.insert(k.clone(), v.clone());
-        }
-    }
+    let mut adapted = apply_command_format(obj, &platform.command_format);
 
     // Step 2: apply field rename mapping
     let mut renamed = serde_json::Map::new();
@@ -91,25 +58,21 @@ pub fn adapt_config(
     }
     adapted = renamed;
 
-    // Step 3: inject required fields using index convention
-    // required_fields values: [0] = url-based value, [1] = command-based value
+    // Step 3: inject required fields
     let type_idx = infer_server_type_index(&adapted);
     for (field, allowed) in &platform.required_fields {
         if let Some(idx) = type_idx {
             if let Some(value) = allowed.get(idx) {
-                // Always set — overwrite stale values from cross-platform sync
                 adapted.insert(field.clone(), serde_json::Value::String(value.clone()));
             }
-            // Index out of bounds (e.g. Gemini only has [0]) → skip injection
         } else if !adapted.contains_key(field) {
-            // No inference possible — use first value as default
             if let Some(value) = allowed.first() {
                 adapted.insert(field.clone(), serde_json::Value::String(value.clone()));
             }
         }
     }
 
-    // Step 4: merge server_extras for this server
+    // Step 4: merge server_extras
     if let Some(extras) = platform.server_extras.get(server_name) {
         if let Some(extras_obj) = extras.as_object() {
             for (k, v) in extras_obj {
@@ -124,6 +87,44 @@ pub fn adapt_config(
     }
 
     serde_json::Value::Object(adapted)
+}
+
+/// Build the initial field map applying the platform's command_format rule.
+fn apply_command_format(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    command_format: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut adapted = serde_json::Map::new();
+
+    if command_format != "merged" {
+        for (k, v) in obj {
+            adapted.insert(k.clone(), v.clone());
+        }
+        return adapted;
+    }
+
+    let has_command = obj.get("command").and_then(|v| v.as_str()).is_some();
+    let has_args = obj.contains_key("args");
+
+    if has_command && has_args {
+        let cmd = obj["command"].as_str().unwrap();
+        let mut merged = vec![serde_json::Value::String(cmd.to_string())];
+        if let Some(args) = obj["args"].as_array() {
+            merged.extend(args.iter().cloned());
+        }
+        adapted.insert("command".to_string(), serde_json::Value::Array(merged));
+        for (k, v) in obj {
+            if k != "command" && k != "args" {
+                adapted.insert(k.clone(), v.clone());
+            }
+        }
+    } else {
+        for (k, v) in obj {
+            adapted.insert(k.clone(), v.clone());
+        }
+    }
+
+    adapted
 }
 
 /// Infer server type index from canonical fields.
@@ -144,31 +145,8 @@ fn infer_server_type_index(config: &serde_json::Map<String, serde_json::Value>) 
 ///
 /// Keys: ↑↓ navigate  →  enter directory  ←  go up  Enter  confirm  Esc  cancel
 pub(crate) fn browse_directory(start_dir: &str) -> String {
-    use ratatui::crossterm::event::{read, Event, KeyCode, KeyEventKind};
+    use ratatui::crossterm::event::{read, Event, KeyEventKind};
     use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-
-    fn list_subdirs(path: &std::path::Path) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(path) else {
-            return Vec::new();
-        };
-        let mut dirs: Vec<String> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                    || e.file_type().map(|t| t.is_symlink()).unwrap_or(false) && e.path().is_dir()
-            })
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') {
-                    None
-                } else {
-                    Some(name)
-                }
-            })
-            .collect();
-        dirs.sort();
-        dirs
-    }
 
     let mut current = std::path::PathBuf::from(start_dir);
     if !current.is_dir() {
@@ -177,20 +155,15 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
 
     let mut cursor: usize = 0;
     let visible: usize = 10;
-    // Fixed row count: header + hint + visible slots + status line
     let total_rows = 2 + visible + 1;
 
     let _ = enable_raw_mode();
-
-    // Reserve lines for the drawing area
     for _ in 0..total_rows {
         print!("\r\n");
     }
 
     loop {
-        let subdirs = list_subdirs(&current);
-
-        // Clamp cursor
+        let subdirs = browse_list_subdirs(&current);
         if !subdirs.is_empty() && cursor >= subdirs.len() {
             cursor = subdirs.len().saturating_sub(1);
         }
@@ -203,17 +176,12 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
         let has_above = scroll > 0;
         let has_below = !subdirs.is_empty() && scroll + visible < subdirs.len();
 
-        // Move up to start of our drawing area
         print!("\x1b[{total_rows}A");
-
-        // Path header
         print!("\r\x1b[2K  \x1b[36m»\x1b[0m  {}\r\n", current.display());
-        // Hint bar
         print!(
             "\r\x1b[2K  \x1b[90m↑↓ navigate  → enter  ← back  Enter confirm  Esc cancel\x1b[0m\r\n"
         );
 
-        // Directory list (always render exactly `visible` rows)
         if subdirs.is_empty() {
             print!("\r\x1b[2K  \x1b[90m(empty — Enter to confirm, ← to go up)\x1b[0m\r\n");
             for _ in 1..visible {
@@ -229,13 +197,11 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
                 }
                 drawn += 1;
             }
-            // Fill remaining visible slots with blank lines
             for _ in drawn..visible {
                 print!("\r\x1b[2K\r\n");
             }
         }
 
-        // Status line: scroll indicators + item count
         if subdirs.is_empty() {
             print!("\r\x1b[2K  \x1b[90m0 items\x1b[0m\r\n");
         } else {
@@ -247,47 +213,94 @@ pub(crate) fn browse_directory(start_dir: &str) -> String {
                 subdirs.len()
             );
         }
-
         let _ = io::stdout().flush();
 
         match read() {
-            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => match k.code {
-                KeyCode::Enter => {
-                    let _ = disable_raw_mode();
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
-                    return current.to_string_lossy().to_string();
-                }
-                KeyCode::Esc => {
-                    let _ = disable_raw_mode();
-                    print!("\r\n");
-                    let _ = io::stdout().flush();
-                    return start_dir.to_string();
-                }
-                KeyCode::Up => {
-                    cursor = cursor.saturating_sub(1);
-                }
-                KeyCode::Down if !subdirs.is_empty() && cursor + 1 < subdirs.len() => {
-                    cursor += 1;
-                }
-                KeyCode::Down => {}
-                KeyCode::Right | KeyCode::Char('l') => {
-                    if let Some(name) = subdirs.get(cursor) {
-                        current = current.join(name);
-                        cursor = 0;
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                match handle_browse_key(k.code, &subdirs, &mut cursor, &mut current) {
+                    BrowseAction::Confirm => {
+                        let _ = disable_raw_mode();
+                        print!("\r\n");
+                        let _ = io::stdout().flush();
+                        return current.to_string_lossy().to_string();
                     }
-                }
-                KeyCode::Left | KeyCode::Char('h') => {
-                    if let Some(parent) = current.parent() {
-                        current = parent.to_path_buf();
-                        cursor = 0;
+                    BrowseAction::Cancel => {
+                        let _ = disable_raw_mode();
+                        print!("\r\n");
+                        let _ = io::stdout().flush();
+                        return start_dir.to_string();
                     }
+                    BrowseAction::Continue => {}
                 }
-                _ => {}
-            },
+            }
             _ => {}
         }
     }
+}
+
+enum BrowseAction {
+    Confirm,
+    Cancel,
+    Continue,
+}
+
+fn handle_browse_key(
+    code: ratatui::crossterm::event::KeyCode,
+    subdirs: &[String],
+    cursor: &mut usize,
+    current: &mut std::path::PathBuf,
+) -> BrowseAction {
+    use ratatui::crossterm::event::KeyCode;
+    match code {
+        KeyCode::Enter => BrowseAction::Confirm,
+        KeyCode::Esc => BrowseAction::Cancel,
+        KeyCode::Up => {
+            *cursor = cursor.saturating_sub(1);
+            BrowseAction::Continue
+        }
+        KeyCode::Down if !subdirs.is_empty() && *cursor + 1 < subdirs.len() => {
+            *cursor += 1;
+            BrowseAction::Continue
+        }
+        KeyCode::Right | KeyCode::Char('l') => {
+            if let Some(name) = subdirs.get(*cursor) {
+                *current = current.join(name);
+                *cursor = 0;
+            }
+            BrowseAction::Continue
+        }
+        KeyCode::Left | KeyCode::Char('h') => {
+            if let Some(parent) = current.parent() {
+                *current = parent.to_path_buf();
+                *cursor = 0;
+            }
+            BrowseAction::Continue
+        }
+        _ => BrowseAction::Continue,
+    }
+}
+
+fn browse_list_subdirs(path: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                || (e.file_type().map(|t| t.is_symlink()).unwrap_or(false) && e.path().is_dir())
+        })
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect();
+    dirs.sort();
+    dirs
 }
 
 /// Extract all MCP server configs from the selected platforms.

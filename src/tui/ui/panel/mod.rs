@@ -29,7 +29,7 @@ pub use vt100::render_vt_screen;
 pub use warp::compact_cwd;
 pub use warp::{draw_warp_input_box, render_command_chips};
 
-use home::draw_canopy_banner_glitch;
+use home::draw_canopy_banner_animation;
 use vt100::{render_indicators, render_vt_screen_with_mask};
 
 pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -90,7 +90,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(brain) = app.home_brain.as_ref() {
             draw_brians_brain(frame, inner, brain);
         }
-        draw_canopy_banner_glitch(frame, inner, app);
+        draw_canopy_banner_animation(frame, inner, app);
         return;
     }
 
@@ -103,7 +103,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             if let Some(brain) = app.home_brain.as_ref() {
                 draw_brians_brain(frame, inner, brain);
             }
-            draw_canopy_banner_glitch(frame, inner, app);
+            draw_canopy_banner_animation(frame, inner, app);
             return;
         }
 
@@ -212,7 +212,7 @@ pub(super) fn draw_log_panel(frame: &mut Frame, area: Rect, app: &mut App) {
             let prev = app.new_agent_dialog.as_ref().and_then(|d| d.prev_focus);
             match prev {
                 Some(Focus::Home) | None => {
-                    draw_canopy_banner_glitch(frame, inner, app);
+                    draw_canopy_banner_animation(frame, inner, app);
                     return;
                 }
                 _ => {}
@@ -293,12 +293,25 @@ fn draw_rag_queue_overview(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_rag_info_overview(frame: &mut Frame, area: Rect, app: &App) {
-    let status_span = if app.rag_paused {
-        Span::styled(" ⏸ paused", Style::default().fg(Color::Yellow))
+    let (status_text, status_color) = if app.rag_paused {
+        ("⏸ paused", Color::Yellow)
     } else if app.rag_info.processing_items > 0 {
-        Span::styled(" ◉ indexing", Style::default().fg(Color::Yellow))
+        ("◉ indexing", Color::Yellow)
+    } else if app.rag_info.queued_items > 0 {
+        ("⏳ pending", Color::Yellow)
     } else {
-        Span::styled(" ✓ idle", Style::default().fg(ACCENT))
+        ("✓ ready", ACCENT)
+    };
+
+    let queue_text = if app.rag_info.processing_items > 0 {
+        format!(
+            "{} queued · {} indexing",
+            app.rag_info.queued_items, app.rag_info.processing_items
+        )
+    } else if app.rag_info.queued_items > 0 {
+        format!("{} queued", app.rag_info.queued_items)
+    } else {
+        "empty".to_string()
     };
 
     let mut lines = vec![
@@ -309,7 +322,7 @@ fn draw_rag_info_overview(frame: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled("Indexed: ", Style::default().fg(DIM)),
+            Span::styled("Projects: ", Style::default().fg(DIM)),
             Span::styled(
                 app.rag_info.indexed_projects.to_string(),
                 Style::default()
@@ -319,15 +332,11 @@ fn draw_rag_info_overview(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("Queue: ", Style::default().fg(DIM)),
-            Span::styled(
-                format!(
-                    "{} queued · {} processing",
-                    app.rag_info.queued_items, app.rag_info.processing_items
-                ),
-                Style::default().fg(Color::White),
-            ),
-            Span::raw("  "),
-            status_span,
+            Span::styled(queue_text, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Status: ", Style::default().fg(DIM)),
+            Span::styled(status_text, Style::default().fg(status_color)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
@@ -337,43 +346,56 @@ fn draw_rag_info_overview(frame: &mut Frame, area: Rect, app: &App) {
     ];
 
     if !app.global_rag_queue.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Queue items ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("({})", app.global_rag_queue.len()),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        for (idx, item) in app.global_rag_queue.iter().enumerate().take(8) {
-            let selected = idx == app.selected_rag_queue;
-            let status_color = if item.status == "processing" {
-                Color::Yellow
-            } else {
-                ACCENT
-            };
-            let line_style = if selected {
-                Style::default().bg(super::BG_SELECTED)
-            } else {
-                Style::default()
-            };
-            let marker = if selected { "›" } else { " " };
-            lines.push(Line::from(vec![
-                Span::styled(marker, line_style.fg(status_color)),
-                Span::raw(" "),
-                Span::styled(
-                    item.project_name.as_deref().unwrap_or(&item.project_hash),
-                    line_style.fg(Color::White).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("  {}", item.status), line_style.fg(DIM)),
-            ]));
-        }
+        lines.extend(rag_queue_lines(
+            &app.global_rag_queue,
+            app.selected_rag_queue,
+        ));
     }
 
     frame.render_widget(
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         area,
     );
+}
+
+fn rag_queue_lines(
+    queue: &[crate::db::project::RagQueueItem],
+    selected: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Queue items ", Style::default().fg(DIM)),
+            Span::styled(
+                format!("({})", queue.len()),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+    for (idx, item) in queue.iter().enumerate().take(8) {
+        let is_selected = idx == selected;
+        let status_color = if item.status == "processing" {
+            Color::Yellow
+        } else {
+            ACCENT
+        };
+        let line_style = if is_selected {
+            Style::default().bg(super::BG_SELECTED)
+        } else {
+            Style::default()
+        };
+        let marker = if is_selected { "›" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(marker, line_style.fg(status_color)),
+            Span::raw(" "),
+            Span::styled(
+                truncate_str(&item.source_path, 40),
+                line_style.fg(Color::White).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  {}", item.status), line_style.fg(DIM)),
+        ]));
+    }
+    lines
 }
 
 fn draw_playground_panel(frame: &mut Frame, area: Rect, app: &App) {
@@ -385,29 +407,13 @@ fn draw_playground_panel(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_playground_list(frame: &mut Frame, area: Rect, app: &App) {
-    let scope_label = if let Some(hash) = &app.playground_project_hash {
-        let name = app
-            .projects
-            .iter()
-            .find(|p| &p.hash == hash)
-            .map(|p| p.name.as_str())
-            .unwrap_or("Unknown Project");
-        format!("Project: {name}")
-    } else {
-        "Global".to_string()
-    };
+    let scope_label = playground_scope_label(app);
 
     let mut lines = vec![
         Line::from(vec![
             Span::styled("RAG Playground ", Style::default().fg(DIM)),
-            Span::styled(
-                format!("({scope_label}) "),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled(
-                format!("· {}", app.playground_query),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(format!("({scope_label}) "), Style::default().fg(Color::Yellow)),
+            Span::styled(format!("· {}", app.playground_query), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(Span::styled(
             "Type to search · ↑↓ navigate · Tab toggle scope · Enter focus · Ctrl+T transfer · Esc close",
@@ -448,42 +454,20 @@ fn draw_playground_list(frame: &mut Frame, area: Rect, app: &App) {
         .take(max_visible)
     {
         let selected = idx == app.playground_selected;
-        let style = if selected {
-            Style::default().bg(super::BG_SELECTED)
-        } else {
-            Style::default()
-        };
-        let marker = if selected { "›" } else { " " };
         let project_name = app
             .projects
             .iter()
-            .find(|p| p.hash == chunk.project_hash)
+            .find(|p| chunk.project_hash.as_deref() == Some(p.hash.as_str()))
             .map(|p| p.name.as_str())
             .unwrap_or("?");
-
-        let path = format!("{} · {} [{}]", project_name, chunk.source_path, chunk.lang);
-        lines.push(Line::from(vec![
-            Span::styled(marker, style.fg(ACCENT)),
-            Span::raw(" "),
-            Span::styled(
-                truncate_str(&path, area.width.saturating_sub(3) as usize),
-                style.fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-        ]));
-
-        // Show up to 3 content preview lines
-        let content_lines: Vec<&str> = chunk.content.lines().take(3).collect();
-        for line in content_lines {
-            let preview = truncate_str(line, area.width.saturating_sub(6) as usize);
-            lines.push(Line::from(vec![
-                Span::styled("  ", style),
-                Span::styled(preview, style.fg(DIM)),
-            ]));
-        }
-        lines.push(Line::from(""));
+        lines.extend(render_chunk_entry(
+            chunk,
+            project_name,
+            selected,
+            area.width,
+        ));
     }
 
-    // Footer with count
     if total > max_visible {
         lines.push(Line::from(Span::styled(
             format!("  {}/{} results", app.playground_selected + 1, total),
@@ -495,6 +479,48 @@ fn draw_playground_list(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
         area,
     );
+}
+
+fn playground_scope_label(app: &App) -> String {
+    app.playground_project_hash
+        .as_ref()
+        .and_then(|hash| app.projects.iter().find(|p| &p.hash == hash))
+        .map(|p| format!("Project: {}", p.name))
+        .unwrap_or_else(|| "Global".to_string())
+}
+
+fn render_chunk_entry<'a>(
+    chunk: &'a crate::db::project::Chunk,
+    project_name: &'a str,
+    selected: bool,
+    width: u16,
+) -> Vec<Line<'a>> {
+    let style = if selected {
+        Style::default().bg(super::BG_SELECTED)
+    } else {
+        Style::default()
+    };
+    let marker = if selected { "›" } else { " " };
+    let path = format!("{} · {} [{}]", project_name, chunk.source_path, chunk.lang);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(marker, style.fg(ACCENT)),
+        Span::raw(" "),
+        Span::styled(
+            truncate_str(&path, width.saturating_sub(3) as usize),
+            style.fg(Color::White).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    for line in chunk.content.lines().take(3) {
+        lines.push(Line::from(vec![
+            Span::styled("  ", style),
+            Span::styled(
+                truncate_str(line, width.saturating_sub(6) as usize),
+                style.fg(DIM),
+            ),
+        ]));
+    }
+    lines.push(Line::from(""));
+    lines
 }
 
 fn draw_playground_detail(frame: &mut Frame, area: Rect, app: &App) {

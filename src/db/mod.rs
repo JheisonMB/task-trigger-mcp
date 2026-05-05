@@ -132,22 +132,20 @@ impl Database {
 
             CREATE TABLE IF NOT EXISTS rag_chunks (
                 id           TEXT NOT NULL,
-                project_hash TEXT NOT NULL,
+                project_hash TEXT,
                 source_path  TEXT NOT NULL,
                 chunk_index  INTEGER NOT NULL,
                 content      TEXT NOT NULL,
                 lang         TEXT NOT NULL,
                 updated_at   INTEGER NOT NULL,
-                PRIMARY KEY (project_hash, source_path, chunk_index)
+                PRIMARY KEY (source_path, chunk_index)
             );
 
             CREATE TABLE IF NOT EXISTS rag_queue (
-                project_hash TEXT NOT NULL,
-                source_path  TEXT NOT NULL,
+                source_path  TEXT NOT NULL PRIMARY KEY,
                 status       TEXT NOT NULL,
                 queued_at    INTEGER NOT NULL,
-                updated_at   INTEGER NOT NULL,
-                PRIMARY KEY (project_hash, source_path)
+                updated_at   INTEGER NOT NULL
             );",
         )?;
 
@@ -172,6 +170,79 @@ impl Database {
 
              INSERT INTO rag_chunks_fts(rag_chunks_fts) VALUES('rebuild');",
         )?;
+
+        // Migration: rebuild rag_chunks and rag_queue if they still use the old
+        // (project_hash, source_path, ...) composite primary key.
+        Self::migrate_rag_tables(&conn)?;
+
+        Ok(())
+    }
+
+    /// Drop and recreate rag_chunks / rag_queue if they use the old schema
+    /// (project_hash as part of the primary key). Data is discarded — the
+    /// IngestionManager will re-index everything on next startup.
+    ///
+    /// Takes the already-locked connection to avoid a deadlock with `init`.
+    fn migrate_rag_tables(conn: &Connection) -> Result<()> {
+
+        // Check if rag_queue still has project_hash column
+        let old_queue: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('rag_queue') WHERE name='project_hash'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+        if old_queue {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS rag_queue;
+                 DROP TABLE IF EXISTS rag_chunks;
+                 DROP TABLE IF EXISTS rag_chunks_fts;
+                 DROP TRIGGER IF EXISTS rag_chunks_ai;
+                 DROP TRIGGER IF EXISTS rag_chunks_ad;
+                 DROP TRIGGER IF EXISTS rag_chunks_au;
+
+                 CREATE TABLE rag_chunks (
+                     id           TEXT NOT NULL,
+                     project_hash TEXT,
+                     source_path  TEXT NOT NULL,
+                     chunk_index  INTEGER NOT NULL,
+                     content      TEXT NOT NULL,
+                     lang         TEXT NOT NULL,
+                     updated_at   INTEGER NOT NULL,
+                     PRIMARY KEY (source_path, chunk_index)
+                 );
+
+                 CREATE TABLE rag_queue (
+                     source_path  TEXT NOT NULL PRIMARY KEY,
+                     status       TEXT NOT NULL,
+                     queued_at    INTEGER NOT NULL,
+                     updated_at   INTEGER NOT NULL
+                 );
+
+                 CREATE VIRTUAL TABLE rag_chunks_fts
+                 USING fts5(content, content=rag_chunks, content_rowid=rowid);
+
+                 CREATE TRIGGER rag_chunks_ai AFTER INSERT ON rag_chunks BEGIN
+                     INSERT INTO rag_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+                 END;
+                 CREATE TRIGGER rag_chunks_ad AFTER DELETE ON rag_chunks BEGIN
+                     INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+                     VALUES('delete', old.rowid, old.content);
+                 END;
+                 CREATE TRIGGER rag_chunks_au AFTER UPDATE ON rag_chunks BEGIN
+                     INSERT INTO rag_chunks_fts(rag_chunks_fts, rowid, content)
+                     VALUES('delete', old.rowid, old.content);
+                     INSERT INTO rag_chunks_fts(rowid, content) VALUES (new.rowid, new.content);
+                 END;
+
+                 -- Reset indexed_at so all projects get re-indexed
+                 UPDATE projects SET indexed_at = NULL;",
+            )?;
+            tracing::info!("RAG migration: rebuilt rag_chunks and rag_queue with global schema");
+        }
 
         Ok(())
     }

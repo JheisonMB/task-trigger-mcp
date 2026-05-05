@@ -61,26 +61,43 @@ impl Queue {
 
 pub struct IngestionManager {
     db: Arc<Database>,
+    data_dir: std::path::PathBuf,
     queue: Arc<Mutex<Queue>>,
     notify: Arc<Notify>,
 }
 
 impl IngestionManager {
-    pub fn new(db: Arc<Database>) -> Self {
+    pub fn new(db: Arc<Database>, data_dir: std::path::PathBuf) -> Self {
+        crate::rag::ragignore::ensure_ragignore(&data_dir);
         Self {
             db,
+            data_dir,
             queue: Arc::new(Mutex::new(Queue::new())),
             notify: Arc::new(Notify::new()),
         }
     }
 
+    /// Register a project path and enqueue all its files into the in-memory worker.
+    pub async fn register_and_enqueue(&self, path: &std::path::Path) {
+        let project = match self.db.register_project_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("RAG register_and_enqueue failed for {:?}: {e}", path);
+                return;
+            }
+        };
+        // Merge project's .gitignore into global ragignore
+        crate::rag::ragignore::merge_gitignore(&self.data_dir, path);
+        self.enqueue_project(&project).await;
+    }
+
     /// Enqueue a file for (re)indexing. Returns false if queue is full.
-    pub async fn enqueue(&self, project_hash: &str, source_path: &str) -> bool {
+    pub async fn enqueue(&self, source_path: &str) -> bool {
         let mut q = self.queue.lock().await;
-        let ok = q.push(project_hash, source_path);
+        let ok = q.push("", source_path);
         if ok {
             let now = chrono::Utc::now().timestamp();
-            if let Err(e) = self.db.enqueue_rag_item(project_hash, source_path, now) {
+            if let Err(e) = self.db.enqueue_rag_item(source_path, now) {
                 tracing::warn!("RAG queue state error {source_path}: {e}");
             }
             self.notify.notify_one();
@@ -96,7 +113,7 @@ impl IngestionManager {
     /// Enqueue all supported files under `root` for a project.
     pub async fn enqueue_project(&self, project: &Project) {
         let root = std::path::Path::new(&project.path);
-        let patterns = crate::rag::ragignore::load_patterns(root);
+        let patterns = crate::rag::ragignore::load_patterns(&self.data_dir);
 
         let walker = walkdir::WalkDir::new(root)
             .max_depth(10)
@@ -108,7 +125,7 @@ impl IngestionManager {
         for entry in walker {
             let path = entry.path().to_string_lossy().to_string();
             if detect_lang(&path).is_some() {
-                self.enqueue(&project.hash, &path).await;
+                self.enqueue(&path).await;
             }
         }
     }
@@ -142,45 +159,25 @@ impl IngestionManager {
 
     async fn drain_queue(&self, ct: &tokio_util::sync::CancellationToken) {
         let mut processed = 0usize;
-        let mut modified_projects = std::collections::HashSet::new();
 
         loop {
-            // Honour pause: spin-wait until unpaused or cancelled.
-            while self.is_paused() {
-                tokio::select! {
-                    _ = ct.cancelled() => return,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
-                }
+            if !self.wait_while_paused(ct).await {
+                return;
             }
-            if ct.is_cancelled() {
-                break;
-            }
-            let item = {
-                let mut q = self.queue.lock().await;
-                q.pop()
-            };
-            let Some((project_hash, source_path)) = item else {
-                break;
-            };
-            let now = chrono::Utc::now().timestamp();
-            let _ = self
-                .db
-                .mark_rag_item_processing(&project_hash, &source_path, now);
 
-            if let Err(e) = self.index_file(&project_hash, &source_path).await {
+            let Some((_ignored, source_path)) = self.queue.lock().await.pop() else {
+                break;
+            };
+
+            let now = chrono::Utc::now().timestamp();
+            let _ = self.db.mark_rag_item_processing(&source_path, now);
+
+            if let Err(e) = self.index_file(&source_path).await {
                 tracing::warn!("RAG index error {source_path}: {e}");
             } else {
                 processed += 1;
-                modified_projects.insert(project_hash.clone());
             }
-            let _ = self.db.remove_rag_item(&project_hash, &source_path);
-        }
-
-        if !modified_projects.is_empty() {
-            let now = chrono::Utc::now().timestamp();
-            for hash in modified_projects {
-                let _ = self.db.mark_project_indexed(&hash, now);
-            }
+            let _ = self.db.remove_rag_item(&source_path);
         }
 
         if processed > 0 {
@@ -188,16 +185,25 @@ impl IngestionManager {
         }
     }
 
-    async fn index_file(&self, project_hash: &str, source_path: &str) -> anyhow::Result<()> {
+    /// Spin-wait while RAG is paused. Returns `false` if cancelled.
+    async fn wait_while_paused(&self, ct: &tokio_util::sync::CancellationToken) -> bool {
+        while self.is_paused() {
+            tokio::select! {
+                _ = ct.cancelled() => return false,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+            }
+        }
+        !ct.is_cancelled()
+    }
+
+    async fn index_file(&self, source_path: &str) -> anyhow::Result<()> {
         let path = std::path::Path::new(source_path);
 
-        // File deleted → just remove chunks
         if !path.exists() {
-            self.db.replace_chunks(project_hash, source_path, &[])?;
+            self.db.replace_chunks(source_path, &[])?;
             return Ok(());
         }
 
-        // Size guard
         let meta = std::fs::metadata(path)?;
         if meta.len() > FILE_MAX_BYTES {
             tracing::debug!("RAG: skipping large file {source_path}");
@@ -215,7 +221,7 @@ impl IngestionManager {
             .into_iter()
             .map(|(i, text)| Chunk {
                 id: Uuid::new_v4().to_string(),
-                project_hash: project_hash.to_owned(),
+                project_hash: None,
                 source_path: source_path.to_owned(),
                 chunk_index: i as i32,
                 content: text,
@@ -224,7 +230,7 @@ impl IngestionManager {
             })
             .collect();
 
-        self.db.replace_chunks(project_hash, source_path, &chunks)?;
+        self.db.replace_chunks(source_path, &chunks)?;
         Ok(())
     }
 }

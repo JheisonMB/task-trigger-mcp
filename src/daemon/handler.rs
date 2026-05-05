@@ -41,8 +41,7 @@ pub struct TaskTriggerHandler {
     pub scheduler_notify: Arc<Notify>,
     pub notification_service: Arc<dyn NotificationService>,
     pub sync_manager: Arc<SyncManager>,
-    /// Shared ingestion manager — used by rag_index tool and startup enqueue.
-    #[allow(dead_code)]
+    /// Shared ingestion manager — used by register_and_enqueue and startup enqueue.
     pub ingestion: Arc<IngestionManager>,
     /// Rate limiters for rag_search (10 calls/min). Keyed by agent when available.
     pub rag_limiters: Arc<tokio::sync::Mutex<std::collections::HashMap<String, RateLimiter>>>,
@@ -107,65 +106,52 @@ impl TaskTriggerHandler {
         if let Err(e) = validate_prompt(&params.prompt) {
             return Ok(error_result(&e));
         }
-
         let cli = match Cli::resolve(params.cli.as_deref()) {
             Ok(c) => c,
             Err(e) => return Ok(error_result(&e)),
         };
-
         let schedule_expr = params.schedule.trim().to_string();
         if !validate_cron(&schedule_expr) {
             return Ok(error_result(&format!(
-                "Invalid cron expression '{}'. Must be a 5-field cron expression. Examples: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am), '0 9 * * 1-5' (weekdays 9am).",
+                "Invalid cron expression '{}'. Must be a 5-field cron expression. \
+                 Examples: '*/5 * * * *' (every 5 min), '0 9 * * *' (daily 9am).",
                 params.schedule
             )));
         }
 
-        let log_dir = data_dir()?.join("logs");
-        std::fs::create_dir_all(&log_dir)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let log_path = log_dir.join(&params.id).with_extension("log");
-
+        let log_path = make_log_path(&params.id)?;
         let expires_at = params
             .duration_minutes
-            .map(|mins| Utc::now() + chrono::Duration::minutes(mins));
+            .map(|m| Utc::now() + chrono::Duration::minutes(m));
 
-        let agent = Agent {
-            id: params.id.clone(),
-            prompt: params.prompt,
-            trigger: Some(Trigger::Cron {
-                schedule_expr: schedule_expr.clone(),
-            }),
+        let mut agent = new_agent_base(
+            params.id.clone(),
+            params.prompt,
             cli,
-            model: params.model,
-            working_dir: params.working_dir,
-            enabled: true,
-            created_at: Utc::now(),
-            log_path: log_path.to_string_lossy().to_string(),
-            timeout_minutes: params.timeout_minutes.unwrap_or(15),
-            expires_at,
-            last_run_at: None,
-            last_run_ok: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-        };
+            params.model,
+            params.working_dir,
+            params.timeout_minutes,
+            log_path,
+        );
+        agent.trigger = Some(Trigger::Cron {
+            schedule_expr: schedule_expr.clone(),
+        });
+        agent.expires_at = expires_at;
 
         self.db
             .upsert_agent(&agent)
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         if let Some(workdir) = agent.working_dir.as_deref() {
-            let _ = self.db.register_project_path(Path::new(workdir));
+            self.ingestion
+                .register_and_enqueue(Path::new(workdir))
+                .await;
         }
-
         self.scheduler_notify.notify_one();
 
         Ok(success_result(&format!(
             "Agent '{}' registered with schedule '{}'{}\nThe daemon's internal scheduler will execute this agent automatically.",
-            agent.id,
-            schedule_expr,
-            expires_at
-                .map(|e| format!(" (expires: {})", e.to_rfc3339()))
-                .unwrap_or_default()
+            agent.id, schedule_expr,
+            expires_at.map(|e| format!(" (expires: {})", e.to_rfc3339())).unwrap_or_default()
         )))
     }
 
@@ -194,39 +180,27 @@ impl TaskTriggerHandler {
             Ok(c) => c,
             Err(e) => return Ok(error_result(&e)),
         };
-
         let events = match WatchEvent::parse_list(&params.events) {
             Ok(e) => e,
             Err(e) => return Ok(error_result(&e)),
         };
 
-        let log_dir = data_dir()?.join("logs");
-        std::fs::create_dir_all(&log_dir)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        let log_path = log_dir.join(&params.id).with_extension("log");
-
-        let agent = Agent {
-            id: params.id.clone(),
-            prompt: params.prompt,
-            trigger: Some(Trigger::Watch {
-                path: params.path.clone(),
-                events: events.clone(),
-                debounce_seconds: params.debounce_seconds.unwrap_or(2),
-                recursive: params.recursive.unwrap_or(false),
-            }),
+        let log_path = make_log_path(&params.id)?;
+        let mut agent = new_agent_base(
+            params.id.clone(),
+            params.prompt,
             cli,
-            model: params.model,
-            working_dir: None,
-            enabled: true,
-            created_at: Utc::now(),
-            log_path: log_path.to_string_lossy().to_string(),
-            timeout_minutes: params.timeout_minutes.unwrap_or(15),
-            expires_at: None,
-            last_run_at: None,
-            last_run_ok: None,
-            last_triggered_at: None,
-            trigger_count: 0,
-        };
+            params.model,
+            None,
+            params.timeout_minutes,
+            log_path,
+        );
+        agent.trigger = Some(Trigger::Watch {
+            path: params.path.clone(),
+            events: events.clone(),
+            debounce_seconds: params.debounce_seconds.unwrap_or(2),
+            recursive: params.recursive.unwrap_or(false),
+        });
 
         self.db
             .upsert_agent(&agent)
@@ -264,56 +238,7 @@ impl TaskTriggerHandler {
         let mut lines = vec![format!("Found {} agent(s):\n", agents.len())];
 
         for a in &agents {
-            let prompt_preview = if a.prompt.len() > 80 {
-                format!("{}...", &a.prompt[..80])
-            } else {
-                a.prompt.clone()
-            };
-
-            let status = if !a.enabled {
-                "disabled"
-            } else if a.is_expired() {
-                "expired"
-            } else {
-                "active"
-            };
-
-            let trigger_label = a.trigger_type_label();
-            let trigger_detail = match &a.trigger {
-                Some(Trigger::Cron { schedule_expr }) => schedule_expr.clone(),
-                Some(Trigger::Watch { path, .. }) => path.clone(),
-                None => "manual".to_string(),
-            };
-
-            let mut info = format!(
-                "- **{}** [{}] ({})\n  Trigger: {} `{}`\n  CLI: {}\n  Prompt: {}\n",
-                a.id, status, trigger_label, trigger_label, trigger_detail, a.cli, prompt_preview
-            );
-
-            if let Some(last) = a.last_run_at {
-                let ok_str = a
-                    .last_run_ok
-                    .map(|ok| if ok { "success" } else { "failed" })
-                    .unwrap_or("unknown");
-                info.push_str(&format!("  Last run: {} ({})\n", last.to_rfc3339(), ok_str));
-            }
-
-            if let Some(last) = a.last_triggered_at {
-                info.push_str(&format!(
-                    "  Last triggered: {} (count: {})\n",
-                    last.to_rfc3339(),
-                    a.trigger_count
-                ));
-            }
-
-            if let Some(exp) = a.expires_at {
-                let remaining = exp.signed_duration_since(Utc::now());
-                if remaining.num_seconds() > 0 {
-                    info.push_str(&format!("  Expires in: {}m\n", remaining.num_minutes()));
-                } else {
-                    info.push_str("  Status: EXPIRED\n");
-                }
-            }
+            let mut info = format_agent_info(a);
 
             if a.is_watch() {
                 let runtime_active = self.watcher_engine.is_active(&a.id).await;
@@ -486,17 +411,7 @@ impl TaskTriggerHandler {
         let active_watchers = self.watcher_engine.active_count().await;
 
         let uptime = self.start_time.elapsed();
-        let uptime_str = if uptime.as_secs() > 3600 {
-            format!(
-                "{}h {}m",
-                uptime.as_secs() / 3600,
-                (uptime.as_secs() % 3600) / 60
-            )
-        } else if uptime.as_secs() > 60 {
-            format!("{}m {}s", uptime.as_secs() / 60, uptime.as_secs() % 60)
-        } else {
-            format!("{}s", uptime.as_secs())
-        };
+        let uptime_str = format_uptime(uptime.as_secs());
 
         let log_dir = data_dir()
             .map(|d| d.join("logs").to_string_lossy().to_string())
@@ -728,114 +643,29 @@ impl TaskTriggerHandler {
             )));
         };
 
+        // Apply scalar field updates
         if let Some(ref prompt) = params.prompt {
             if let Err(e) = validate_prompt(prompt) {
                 return Ok(error_result(&e));
             }
             agent.prompt = prompt.clone();
         }
-
         if let Some(ref cli) = params.cli {
             agent.cli = Cli::from_str(cli);
         }
-
-        if let Some(ref model_update) = params.model {
-            agent.model = model_update.clone();
+        if let Some(ref model) = params.model {
+            agent.model = model.clone();
         }
-
         if params.working_dir.is_some() {
             agent.working_dir = params.working_dir.clone().flatten();
         }
-
-        if params.enabled.is_some() {
-            agent.enabled = params.enabled.unwrap();
+        if let Some(enabled) = params.enabled {
+            agent.enabled = enabled;
         }
 
-        match &mut agent.trigger {
-            Some(Trigger::Cron { schedule_expr }) => {
-                if let Some(ref schedule) = params.schedule {
-                    let trimmed = schedule.trim();
-                    if !validate_cron(trimmed) {
-                        return Ok(error_result(&format!(
-                            "Invalid cron expression '{}'.",
-                            schedule
-                        )));
-                    }
-                    *schedule_expr = trimmed.to_string();
-                }
-
-                if let Some(duration) = params.duration_minutes {
-                    if duration.is_some() {
-                        let mins = duration.unwrap();
-                        if mins <= 0 {
-                            return Ok(error_result("duration_minutes must be positive"));
-                        }
-                        agent.expires_at = Some(Utc::now() + chrono::Duration::minutes(mins));
-                    } else {
-                        agent.expires_at = None;
-                    }
-                }
-            }
-            Some(Trigger::Watch {
-                path,
-                events,
-                debounce_seconds,
-                recursive,
-            }) => {
-                if let Some(ref new_path) = params.path {
-                    if let Err(e) = validate_watch_path(new_path) {
-                        return Ok(error_result(&e));
-                    }
-                    *path = new_path.clone();
-                }
-
-                if let Some(ref event_strs) = params.events {
-                    match WatchEvent::parse_list(event_strs) {
-                        Ok(parsed) => *events = parsed,
-                        Err(e) => return Ok(error_result(&e)),
-                    }
-                }
-
-                if let Some(ds) = params.debounce_seconds {
-                    *debounce_seconds = ds;
-                }
-
-                if let Some(r) = params.recursive {
-                    *recursive = r;
-                }
-            }
-            None => {
-                // Manual-only agent — can upgrade to cron or watch if schedule/path provided
-                if params.schedule.is_some() {
-                    let schedule = params.schedule.as_ref().unwrap();
-                    let trimmed = schedule.trim();
-                    if !validate_cron(trimmed) {
-                        return Ok(error_result(&format!(
-                            "Invalid cron expression '{}'.",
-                            schedule
-                        )));
-                    }
-                    agent.trigger = Some(Trigger::Cron {
-                        schedule_expr: trimmed.to_string(),
-                    });
-                } else if params.path.is_some() {
-                    let new_path = params.path.as_ref().unwrap();
-                    if let Err(e) = validate_watch_path(new_path) {
-                        return Ok(error_result(&e));
-                    }
-                    let new_events = match &params.events {
-                        Some(event_strs) => WatchEvent::parse_list(event_strs)
-                            .map_err(|e| McpError::internal_error(e, None))?,
-                        None => vec![WatchEvent::Create, WatchEvent::Modify],
-                    };
-                    agent.trigger = Some(Trigger::Watch {
-                        path: new_path.clone(),
-                        events: new_events,
-                        debounce_seconds: params.debounce_seconds.unwrap_or(2),
-                        recursive: params.recursive.unwrap_or(false),
-                    });
-                }
-            }
+        // Apply trigger-specific updates
+        if let Err(e) = apply_trigger_updates(&mut agent, &params, &validate_cron) {
+            return Ok(error_result(&e));
         }
 
         self.db
@@ -855,7 +685,6 @@ impl TaskTriggerHandler {
                 || params.prompt.is_some()
                 || params.model.is_some();
 
-            let mut restarted = false;
             if needs_restart {
                 let _ = self.watcher_engine.stop_watcher(&params.id).await;
                 if agent.enabled {
@@ -865,15 +694,11 @@ impl TaskTriggerHandler {
                             params.id, e
                         ))]));
                     }
-                    restarted = true;
+                    return Ok(success_result(&format!(
+                        "Agent '{}' updated successfully. Watcher restarted with new configuration.",
+                        params.id
+                    )));
                 }
-            }
-
-            if restarted {
-                return Ok(success_result(&format!(
-                    "Agent '{}' updated successfully. Watcher restarted with new configuration.",
-                    params.id
-                )));
             }
         }
 
@@ -1280,6 +1105,188 @@ impl TaskTriggerHandler {
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&out).unwrap_or_default(),
         )]))
+    }
+}
+
+// ── Formatting helpers ────────────────────────────────────────────────────
+
+fn format_uptime(secs: u64) -> String {
+    if secs > 3600 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs > 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+fn format_agent_info(a: &Agent) -> String {
+    let prompt_preview = if a.prompt.len() > 80 {
+        format!("{}...", &a.prompt[..80])
+    } else {
+        a.prompt.clone()
+    };
+
+    let status = if !a.enabled {
+        "disabled"
+    } else if a.is_expired() {
+        "expired"
+    } else {
+        "active"
+    };
+
+    let trigger_label = a.trigger_type_label();
+    let trigger_detail = match &a.trigger {
+        Some(Trigger::Cron { schedule_expr }) => schedule_expr.clone(),
+        Some(Trigger::Watch { path, .. }) => path.clone(),
+        None => "manual".to_string(),
+    };
+
+    let mut info = format!(
+        "- **{}** [{}] ({})\n  Trigger: {} `{}`\n  CLI: {}\n  Prompt: {}\n",
+        a.id, status, trigger_label, trigger_label, trigger_detail, a.cli, prompt_preview
+    );
+
+    if let Some(last) = a.last_run_at {
+        let ok_str = a
+            .last_run_ok
+            .map(|ok| if ok { "success" } else { "failed" })
+            .unwrap_or("unknown");
+        info.push_str(&format!("  Last run: {} ({})\n", last.to_rfc3339(), ok_str));
+    }
+
+    if let Some(last) = a.last_triggered_at {
+        info.push_str(&format!(
+            "  Last triggered: {} (count: {})\n",
+            last.to_rfc3339(),
+            a.trigger_count
+        ));
+    }
+
+    if let Some(exp) = a.expires_at {
+        let remaining = exp.signed_duration_since(Utc::now());
+        if remaining.num_seconds() > 0 {
+            info.push_str(&format!("  Expires in: {}m\n", remaining.num_minutes()));
+        } else {
+            info.push_str("  Status: EXPIRED\n");
+        }
+    }
+
+    info
+}
+
+// ── Handler helpers ───────────────────────────────────────────────
+
+// ── Handler helpers ───────────────────────────────────────────────
+
+fn apply_trigger_updates(
+    agent: &mut Agent,
+    params: &crate::daemon::params::TaskUpdateParams,
+    validate_cron: &impl Fn(&str) -> bool,
+) -> Result<(), String> {
+    match &mut agent.trigger {
+        Some(Trigger::Cron { schedule_expr }) => {
+            if let Some(ref schedule) = params.schedule {
+                let trimmed = schedule.trim();
+                if !validate_cron(trimmed) {
+                    return Err(format!("Invalid cron expression '{schedule}'."));
+                }
+                *schedule_expr = trimmed.to_string();
+            }
+            if let Some(duration_opt) = params.duration_minutes {
+                match duration_opt {
+                    Some(mins) if mins > 0 => {
+                        agent.expires_at = Some(Utc::now() + chrono::Duration::minutes(mins));
+                    }
+                    Some(_) => return Err("duration_minutes must be positive".to_string()),
+                    None => agent.expires_at = None,
+                }
+            }
+        }
+        Some(Trigger::Watch {
+            path,
+            events,
+            debounce_seconds,
+            recursive,
+        }) => {
+            if let Some(ref new_path) = params.path {
+                validate_watch_path(new_path)?;
+                *path = new_path.clone();
+            }
+            if let Some(ref event_strs) = params.events {
+                *events = WatchEvent::parse_list(event_strs)?;
+            }
+            if let Some(ds) = params.debounce_seconds {
+                *debounce_seconds = ds;
+            }
+            if let Some(r) = params.recursive {
+                *recursive = r;
+            }
+        }
+        None => {
+            if let Some(ref schedule) = params.schedule {
+                let trimmed = schedule.trim();
+                if !validate_cron(trimmed) {
+                    return Err(format!("Invalid cron expression '{schedule}'."));
+                }
+                agent.trigger = Some(Trigger::Cron {
+                    schedule_expr: trimmed.to_string(),
+                });
+            } else if let Some(ref new_path) = params.path {
+                validate_watch_path(new_path)?;
+                let new_events = match &params.events {
+                    Some(strs) => WatchEvent::parse_list(strs)?,
+                    None => vec![WatchEvent::Create, WatchEvent::Modify],
+                };
+                agent.trigger = Some(Trigger::Watch {
+                    path: new_path.clone(),
+                    events: new_events,
+                    debounce_seconds: params.debounce_seconds.unwrap_or(2),
+                    recursive: params.recursive.unwrap_or(false),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn make_log_path(id: &str) -> Result<String, McpError> {
+    let log_dir = data_dir()
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .join("logs");
+    std::fs::create_dir_all(&log_dir).map_err(|e| McpError::internal_error(e.to_string(), None))?;
+    Ok(log_dir
+        .join(id)
+        .with_extension("log")
+        .to_string_lossy()
+        .to_string())
+}
+
+fn new_agent_base(
+    id: String,
+    prompt: String,
+    cli: Cli,
+    model: Option<String>,
+    working_dir: Option<String>,
+    timeout_minutes: Option<u32>,
+    log_path: String,
+) -> Agent {
+    Agent {
+        id,
+        prompt,
+        cli,
+        model,
+        working_dir,
+        enabled: true,
+        created_at: Utc::now(),
+        log_path,
+        timeout_minutes: timeout_minutes.unwrap_or(15),
+        expires_at: None,
+        trigger: None,
+        last_run_at: None,
+        last_run_ok: None,
+        last_triggered_at: None,
+        trigger_count: 0,
     }
 }
 

@@ -423,46 +423,18 @@ impl NewAgentDialog {
         let include_files = self.task_type == NewTaskType::Background
             && self.background_trigger == BackgroundTrigger::Watch;
 
-        self.dir_entries.clear();
         let all: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-
-        // Collect dirs (always) and files (watcher only), skip hidden entries
-        let mut dirs: Vec<String> = all
-            .iter()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') {
-                    None
-                } else {
-                    Some(format!("📁 {name}"))
-                }
-            })
-            .collect();
-
-        let mut files: Vec<String> = if include_files {
-            all.iter()
-                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.starts_with('.') {
-                        None
-                    } else {
-                        Some(format!("  {name}"))
-                    }
-                })
-                .collect()
+        let mut dirs = collect_dir_names(&all, "📁 ");
+        let mut files = if include_files {
+            collect_file_names(&all, "  ")
         } else {
             Vec::new()
         };
-
         dirs.sort();
         files.sort();
+        dirs.extend(files);
 
-        let mut result = dirs;
-        result.extend(files);
-
-        self.dir_entries = result;
+        self.dir_entries = dirs;
         self.dir_selected = 0;
         self.dir_scroll = 0;
         self.dir_filter.clear();
@@ -738,4 +710,34 @@ mod tests {
 
         assert_eq!(dialog.selected_accent_color(), crate::tui::ui::ACCENT);
     }
+}
+
+fn collect_dir_names(entries: &[std::fs::DirEntry], prefix: &str) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                None
+            } else {
+                Some(format!("{prefix}{name}"))
+            }
+        })
+        .collect()
+}
+
+fn collect_file_names(entries: &[std::fs::DirEntry], prefix: &str) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                None
+            } else {
+                Some(format!("{prefix}{name}"))
+            }
+        })
+        .collect()
 }

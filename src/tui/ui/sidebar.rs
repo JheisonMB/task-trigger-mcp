@@ -507,21 +507,7 @@ fn draw_projects_list(frame: &mut Frame, area: Rect, app: &App) {
         y += row_h;
     }
 
-    if has_scroll_up {
-        let indicator = Paragraph::new("▲").style(Style::default().fg(DIM));
-        let indicator_area = Rect::new(area.x + area.width.saturating_sub(2), area.y, 1, 1);
-        frame.render_widget(indicator, indicator_area);
-    }
-    if has_scroll_down {
-        let indicator = Paragraph::new("▼").style(Style::default().fg(DIM));
-        let indicator_area = Rect::new(
-            area.x + area.width.saturating_sub(2),
-            area.y + area.height - 1,
-            1,
-            1,
-        );
-        frame.render_widget(indicator, indicator_area);
-    }
+    draw_scroll_indicators(frame, area, has_scroll_up, has_scroll_down);
 }
 
 fn draw_rag_queue(
@@ -550,10 +536,7 @@ fn draw_rag_queue(
                 Span::styled(icon, Style::default().fg(icon_color)),
                 Span::raw(" "),
                 Span::styled(
-                    truncate_str(
-                        item.project_name.as_deref().unwrap_or(&item.project_hash),
-                        area.width.saturating_sub(3) as usize,
-                    ),
+                    truncate_str(&item.source_path, area.width.saturating_sub(3) as usize),
                     Style::default().fg(Color::White),
                 ),
             ])),
@@ -587,8 +570,23 @@ fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
             " ◉ indexing ",
             Style::default().fg(Color::Yellow),
         ))
+    } else if app.rag_info.queued_items > 0 {
+        Line::from(Span::styled(
+            " ⏳ pending ",
+            Style::default().fg(Color::Yellow),
+        ))
     } else {
-        Line::from(Span::styled(" ✓ idle ", Style::default().fg(ACCENT)))
+        Line::from(Span::styled(" ✓ ready ", Style::default().fg(ACCENT)))
+    };
+    let queue_text = if app.rag_info.processing_items > 0 {
+        format!(
+            "{} queued · {} indexing",
+            app.rag_info.queued_items, app.rag_info.processing_items
+        )
+    } else if app.rag_info.queued_items > 0 {
+        format!("{} queued", app.rag_info.queued_items)
+    } else {
+        "empty".to_string()
     };
     let lines = vec![
         Line::from(vec![
@@ -601,7 +599,7 @@ fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
             ),
         ]),
         Line::from(vec![
-            Span::styled(" indexed ", Style::default().fg(DIM)),
+            Span::styled(" projects ", Style::default().fg(DIM)),
             Span::styled(
                 app.rag_info.indexed_projects.to_string(),
                 Style::default()
@@ -611,13 +609,7 @@ fn draw_rag_info(frame: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled(" queue ", Style::default().fg(DIM)),
-            Span::styled(
-                format!(
-                    "{} queued · {} active",
-                    app.rag_info.queued_items, app.rag_info.processing_items
-                ),
-                Style::default().fg(Color::White),
-            ),
+            Span::styled(queue_text, Style::default().fg(Color::White)),
         ]),
         status_line,
         Line::from(Span::styled(
@@ -714,21 +706,26 @@ fn draw_agent_list(frame: &mut Frame, area: Rect, indices: &[usize], app: &mut A
         }
     }
 
-    // Draw scroll indicators
-    if has_scroll_up {
-        let indicator = Paragraph::new("▲").style(Style::default().fg(DIM));
-        let indicator_area = Rect::new(area.x + area.width.saturating_sub(2), area.y, 1, 1);
-        frame.render_widget(indicator, indicator_area);
-    }
-    if has_scroll_down {
-        let indicator = Paragraph::new("▼").style(Style::default().fg(DIM));
-        let indicator_area = Rect::new(
-            area.x + area.width.saturating_sub(2),
-            area.y + area.height - 1,
-            1,
-            1,
+    draw_scroll_indicators(frame, area, has_scroll_up, has_scroll_down);
+}
+
+fn draw_scroll_indicators(frame: &mut Frame, area: Rect, has_up: bool, has_down: bool) {
+    if has_up {
+        frame.render_widget(
+            Paragraph::new("▲").style(Style::default().fg(DIM)),
+            Rect::new(area.x + area.width.saturating_sub(2), area.y, 1, 1),
         );
-        frame.render_widget(indicator, indicator_area);
+    }
+    if has_down {
+        frame.render_widget(
+            Paragraph::new("▼").style(Style::default().fg(DIM)),
+            Rect::new(
+                area.x + area.width.saturating_sub(2),
+                area.y + area.height - 1,
+                1,
+                1,
+            ),
+        );
     }
 }
 

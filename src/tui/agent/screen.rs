@@ -1,6 +1,20 @@
 use crate::tui::agent::sanitize::{is_ui_line, sanitize_line, strip_borders};
 use crate::tui::agent::InteractiveAgent;
 
+/// Read a single line from the vt100 screen at `row`, with panic protection.
+fn read_screen_line(screen: &vt100::Screen, row: u16, cols: u16) -> Option<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut line = String::with_capacity(cols as usize);
+        for c in 0..cols {
+            if let Some(cell) = screen.cell(row, c) {
+                line.push_str(cell.contents());
+            }
+        }
+        line
+    }))
+    .ok()
+}
+
 /// Read absolute buffer lines [from_abs, to_abs) from a vt100 parser.
 ///
 /// `set_scrollback(S)` shows the window at absolute positions
@@ -305,28 +319,15 @@ impl InteractiveAgent {
         if screen_rows == 0 || screen_cols == 0 {
             return None;
         }
-
-        // Adjust for scroll offset
         let actual_row = if self.in_alternate_screen() {
-            // In alternate screen, row is relative to visible area
             row.saturating_add(self.scroll_offset as u16)
         } else {
-            // In normal screen, row is absolute in scrollback
             row
         };
-
-        // Check if position is within screen bounds
         if actual_row >= screen_rows || col >= screen_cols {
             return None;
         }
-
-        let mut line = String::new();
-        for c in 0..screen_cols {
-            if let Some(cell) = screen.cell(actual_row, c) {
-                line.push_str(cell.contents());
-            }
-        }
-
+        let line = read_screen_line(screen, actual_row, screen_cols)?;
         let sanitized = sanitize_line(&line);
         if sanitized.trim().is_empty() {
             None
@@ -344,29 +345,16 @@ impl InteractiveAgent {
         if screen_rows == 0 || screen_cols == 0 {
             return None;
         }
-
-        let cursor_pos = screen.cursor_position();
-        let cursor_row = cursor_pos.0;
+        let cursor_row = screen.cursor_position().0;
         let actual_row = if self.in_alternate_screen() {
-            // In alternate screen, cursor row is relative to visible area
             cursor_row.saturating_add(self.scroll_offset as u16)
         } else {
-            // In normal screen, cursor row is absolute in scrollback
             cursor_row
         };
-
-        // Check if cursor position is within screen bounds
         if actual_row >= screen_rows {
             return None;
         }
-
-        let mut line = String::new();
-        for c in 0..screen_cols {
-            if let Some(cell) = screen.cell(actual_row, c) {
-                line.push_str(cell.contents());
-            }
-        }
-
+        let line = read_screen_line(screen, actual_row, screen_cols)?;
         let sanitized = sanitize_line(&line);
         if sanitized.trim().is_empty() {
             None
@@ -376,11 +364,8 @@ impl InteractiveAgent {
     }
 
     /// Get clean PTY line text at a specific screen position, excluding UI elements.
-    /// This is a non-blocking, fast-path version that avoids expensive operations.
     pub fn get_clean_pty_line_at_position(&self, col: u16, row: u16) -> Option<String> {
-        // Quick early return if position is obviously invalid
         if row > 1000 || col > 1000 {
-            // Reasonable upper bounds
             return None;
         }
 
@@ -388,56 +373,32 @@ impl InteractiveAgent {
         let screen = vt.screen();
         let (screen_rows, screen_cols) = screen.size();
 
-        // Early return for empty screen
         if screen_rows == 0 || screen_cols == 0 {
             return None;
         }
 
-        // Adjust for scroll offset and screen mode
         let actual_row = if self.in_alternate_screen() {
-            // In alternate screen, row is relative to visible area
             row.saturating_add(self.scroll_offset as u16)
         } else {
-            // In normal screen, row is absolute in scrollback
             row
         };
 
-        // Check if position is within screen bounds
         if actual_row >= screen_rows || col >= screen_cols {
             return None;
         }
 
-        // Get the full line with panic protection
-        let line = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut line = String::with_capacity(screen_cols as usize);
-            for c in 0..screen_cols {
-                if let Some(cell) = screen.cell(actual_row, c) {
-                    line.push_str(cell.contents());
-                }
-            }
-            line
-        }))
-        .ok()?;
-
+        let line = read_screen_line(screen, actual_row, screen_cols)?;
         let sanitized = sanitize_line(&line);
 
-        // Quick check for empty or UI-only lines
-        if sanitized.trim().is_empty() {
+        if sanitized.trim().is_empty() || is_ui_line(&sanitized) {
             return None;
         }
 
-        // Check if this line is UI noise that should be excluded
-        if is_ui_line(&sanitized) {
-            return None;
-        }
-
-        // Extract clean content, stripping borders and UI elements
-        let clean_content = strip_borders(&sanitized);
-
-        if clean_content.trim().is_empty() {
+        let clean = strip_borders(&sanitized);
+        if clean.trim().is_empty() {
             None
         } else {
-            Some(clean_content.to_string())
+            Some(clean.to_string())
         }
     }
 

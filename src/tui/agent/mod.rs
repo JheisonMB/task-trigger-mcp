@@ -138,19 +138,12 @@ impl InteractiveAgent {
         let mut cmd = CommandBuilder::new(cli.command_name());
         // Apply registry-driven interactive args (e.g. "--tui", "-c", etc.)
         // If primary args fail and fallback is available, try that instead.
-        let args_to_use = if let Some(args) = interactive_args {
-            Some(args)
-        } else {
-            fallback_args
-        };
+        let args_to_use = interactive_args.or(fallback_args);
         if let Some(args) = args_to_use {
-            for arg in args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.arg(arg);
-                }
+            for arg in args.split_whitespace().filter(|a| !a.is_empty()) {
+                cmd.arg(arg);
             }
         }
-        // Apply model flag if user selected a model (e.g. `-m gpt-4`)
         if let (Some(flag), Some(m)) = (model_flag, model) {
             if !m.is_empty() {
                 cmd.arg(flag);
